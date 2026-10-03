@@ -1,0 +1,20 @@
+{
+  "name": "sgit",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "entorno": "docker compose up -d --wait",
+    "dev:api": "npm run dev -w @sgit/api",
+    "dev:web": "npm run dev -w @sgit/web",
+    "dev:bot": "npm run dev -w @sgit/bot",
+    "comprobar": "npm run comprobar -w @sgit/api && npm run comprobar -w @sgit/web && npm run comprobar -w @sgit/bot",
+    "test": "npm run test -w @sgit/api && npm run test -w @sgit/web && npm run test -w @sgit/bot && tsx --test test/repositorio.test.ts",
+    "prueba:identidad": "npm test"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.3"
+  }
+}

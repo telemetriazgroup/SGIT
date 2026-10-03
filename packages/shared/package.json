@@ -1,0 +1,8 @@
+{
+  "name": "@sgit/shared",
+  "private": true,
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

@@ -1,0 +1,105 @@
+:root {
+  color: #1c1915;
+  background: #efe8dc;
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  line-height: 1.4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#raiz {
+  min-height: 100vh;
+}
+
+.ingreso,
+.inicio {
+  width: min(420px, calc(100% - 32px));
+  margin: 10vh auto 0;
+  padding: 28px 28px 32px;
+  background: #fffdf8;
+  border: 1px solid #d9d0c3;
+  border-top: 6px solid #1f4d3a;
+}
+
+.inicio {
+  width: min(720px, calc(100% - 32px));
+}
+
+.marca {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5c564c;
+}
+
+h1 {
+  margin: 8px 0 0;
+  font-size: 2rem;
+  font-weight: 650;
+}
+
+.bajada {
+  margin: 8px 0 22px;
+  color: #5c564c;
+}
+
+form {
+  display: grid;
+  gap: 6px;
+}
+
+label {
+  margin-top: 8px;
+  font-size: 0.92rem;
+}
+
+input {
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid #c9c0b3;
+  background: #fff;
+  font: inherit;
+}
+
+button {
+  margin-top: 16px;
+  height: 42px;
+  border: 0;
+  background: #1f4d3a;
+  color: #f7f3ea;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.inicio header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.inicio header button {
+  margin-top: 0;
+  padding: 0 16px;
+  background: transparent;
+  color: #1f4d3a;
+  border: 1px solid #1f4d3a;
+}
+
+.error {
+  margin: 12px 0 0;
+  color: #8c2f2f;
+}
