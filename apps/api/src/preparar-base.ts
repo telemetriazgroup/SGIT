@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import path from 'path';
 import { Conexiones } from './conexiones';
 
@@ -8,8 +8,13 @@ export class PrepararBase {
   constructor(private readonly conexiones: Conexiones) {}
 
   async onModuleInit(): Promise<void> {
-    const sql = readFileSync(path.join(__dirname, 'db', '001_usuario.sql'), 'utf8');
-    await this.conexiones.pg.query(sql);
+    const carpeta = path.join(__dirname, 'db');
+    const archivos = readdirSync(carpeta)
+      .filter((nombre) => nombre.endsWith('.sql'))
+      .sort();
+    for (const archivo of archivos) {
+      await this.conexiones.pg.query(readFileSync(path.join(carpeta, archivo), 'utf8'));
+    }
     await this.sembrarOperador();
     await this.conexiones.asegurarBucket();
   }

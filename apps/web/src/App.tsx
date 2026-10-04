@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { SesionPublica } from '@sgit/shared';
+import { Bandeja } from './Bandeja';
 import { Ingreso } from './Ingreso';
 import { leerSesionGuardada, olvidarSesion, guardarSesion } from './sesion';
 import { urlDelApi } from './url-api';
@@ -25,29 +26,16 @@ export function App() {
     };
   }, [apiUrl, sesion]);
 
-  if (sesion) {
+  if (sesion && apiUrl) {
     return (
-      <main className="inicio">
-        <header>
-          <div>
-            <p className="marca">SGIT</p>
-            <h1>Sesión iniciada</h1>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              olvidarSesion();
-              setSesion(null);
-            }}
-          >
-            Salir
-          </button>
-        </header>
-        <p>
-          {sesion.usuario.nombre} · {sesion.usuario.rol}
-        </p>
-        <p className="bajada">La bandeja de correos llega en el sprint 1.</p>
-      </main>
+      <Bandeja
+        apiUrl={apiUrl}
+        sesion={sesion}
+        onSalir={() => {
+          olvidarSesion();
+          setSesion(null);
+        }}
+      />
     );
   }
 

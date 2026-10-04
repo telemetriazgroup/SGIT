@@ -14,6 +14,7 @@
 | 8 | [Plan y fases](08-plan-y-fases.md) | Fases 0 a 6 y dependencias |
 | | [Sprints](../sprint_sgit.md) | Entregable mínimo y pruebas de cada sprint |
 | | [Puesta en marcha](puesta-en-marcha.md) | Cómo levantar el sprint 0 |
+| | [Conectar Gmail](configurar-gmail.md) | Alta del permiso de telemetria@zgroup.com.pe |
 | | [Acta de descubrimientos](acta-descubrimientos.md) | Modelos, casilla, feriados y firmas del sprint 0 |
 | 9 | [Requisitos, riesgos y seguridad](09-requisitos-riesgos-seguridad.md) | No funcionales, secretos, riesgos, preguntas de la Fase 0 |
 | 10 | [Backlog y aceptación](10-backlog-y-criterios-de-aceptacion.md) | Historias H-00 a H-62 |

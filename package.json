@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "entorno": "docker compose up -d --wait",
+    "entorno": "docker compose up -d --build --wait",
     "dev:api": "npm run dev -w @sgit/api",
     "dev:web": "npm run dev -w @sgit/web",
     "dev:bot": "npm run dev -w @sgit/bot",

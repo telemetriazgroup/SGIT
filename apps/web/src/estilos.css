@@ -99,7 +99,609 @@ button:disabled {
   border: 1px solid #1f4d3a;
 }
 
+.bandeja {
+  width: min(960px, calc(100% - 32px));
+}
+
+.rango {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.rango input[type='search'] {
+  flex: 1;
+  min-width: 220px;
+}
+
+.rango .bajada {
+  flex-basis: 100%;
+}
+
+.rango button,
+.bandeja section button {
+  margin-top: 0;
+  padding: 0 16px;
+}
+
+.paginas {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.paginas button {
+  margin-top: 0;
+  padding: 0 16px;
+}
+
+.bandeja progress {
+  width: 100%;
+  height: 8px;
+  margin: 0 0 16px;
+}
+
+.lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fila {
+  width: 100%;
+  height: auto;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: #fff;
+  color: #1c1915;
+  border: 1px solid #d9d0c3;
+  text-align: left;
+}
+
+.lectura {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.lectura h2 {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+}
+
+.hilo {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tarjeta {
+  background: #fff;
+  border: 1px solid #d9d0c3;
+}
+
+.cabecera-mensaje {
+  width: 100%;
+  height: auto;
+  margin: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: transparent;
+  color: #1c1915;
+  border: 0;
+  text-align: left;
+}
+
+.correo {
+  margin: 0;
+  padding: 0 12px 12px;
+}
+
+.cuerpo img {
+  max-width: 100%;
+}
+
 .error {
   margin: 12px 0 0;
   color: #8c2f2f;
+}
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #1f4d3a;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.logo svg {
+  width: 32px;
+  height: 32px;
+  display: block;
+}
+
+.ingreso .logo {
+  margin-top: 12px;
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.correo-app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f4f6f4;
+  color: #1c1915;
+}
+
+.correo-app button {
+  margin: 0;
+  height: auto;
+  padding: 8px 12px;
+  background: transparent;
+  color: inherit;
+  border: 0;
+  border-radius: 8px;
+}
+
+.barra {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 8px 16px;
+}
+
+.buscar {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  max-width: 720px;
+  background: #e7eee8;
+  border-radius: 24px;
+  padding: 0 6px 0 16px;
+}
+
+.buscar input {
+  flex: 1;
+  height: 46px;
+  border: 0;
+  background: transparent;
+}
+
+.buscar button,
+.cuenta button,
+.primario {
+  background: #1f4d3a;
+  color: #f7f3ea;
+}
+
+.cuenta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cuenta small {
+  display: block;
+  color: #5c564c;
+  font-size: 0.78rem;
+}
+
+.cuerpo-app {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.nav-correo {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 8px 12px 16px;
+}
+
+.redactar {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  height: 52px;
+  margin: 0 0 12px;
+  padding: 0 22px;
+  border-radius: 16px;
+  background: #d7e4da;
+  color: #1f4d3a;
+  font-weight: 650;
+}
+
+.redactar svg {
+  width: 22px;
+  height: 22px;
+}
+
+.nav-correo > button:not(.redactar) {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: 0 16px 16px 0;
+  text-align: left;
+}
+
+.nav-correo > button:not(.redactar).activo {
+  background: #d3e5d8;
+  color: #143528;
+  font-weight: 700;
+}
+
+.panel {
+  background: #fff;
+  border-radius: 16px;
+  margin: 0 16px 16px 0;
+  min-height: calc(100vh - 88px);
+  overflow: auto;
+}
+
+.herramientas {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #fff;
+  border-bottom: 1px solid #ece7df;
+}
+
+.estado-buzon {
+  color: #5c564c;
+  font-size: 0.85rem;
+}
+
+.sync-auto {
+  border: 1px solid #1f4d3a;
+  color: #1f4d3a;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.sync-auto.activa {
+  background: #1f4d3a;
+  color: #f7f3ea;
+}
+
+.correo-app .paginas {
+  margin: 0;
+  align-items: center;
+}
+
+.correo-app .paginas button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.correo-app .rango {
+  align-items: center;
+  margin: 8px 12px;
+  color: #5c564c;
+  font-size: 0.85rem;
+}
+
+.correo-app .rango p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.correo-app .lista .fila {
+  display: grid;
+  grid-template-columns: 36px minmax(120px, 200px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 6px 16px;
+  background: #fff;
+  border: 0;
+  border-bottom: 1px solid #f0ebe4;
+  border-radius: 0;
+  text-align: left;
+}
+
+.correo-app .lista .fila:hover {
+  background: #f3f7f4;
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #1f4d3a;
+  color: #f7f3ea;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.quien {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 650;
+}
+
+.quien small,
+.extracto {
+  color: #5c564c;
+  font-weight: 400;
+}
+
+.n-hilo {
+  color: #5c564c;
+  font-weight: 650;
+}
+
+.resumen-fila {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.resumen-fila strong {
+  font-weight: 650;
+}
+
+.correo-app time {
+  color: #5c564c;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.lectura-panel {
+  padding: 8px 20px 28px;
+}
+
+.lectura {
+  align-items: flex-start;
+}
+
+.lectura h2 {
+  margin: 12px 0;
+  font-size: 1.35rem;
+}
+
+.hilo {
+  gap: 0;
+}
+
+.tarjeta {
+  border: 0;
+  border-bottom: 1px solid #ece7df;
+  border-radius: 12px;
+}
+
+.tarjeta.abierta {
+  margin: 8px 0;
+  border: 1px solid #e4ddd2;
+  box-shadow: 0 1px 2px rgb(28 25 21 / 6%);
+}
+
+.cabecera-mensaje {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+}
+
+.cabecera-mensaje .quien {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.correo {
+  padding: 0 16px 16px 60px;
+}
+
+.adjuntos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.adjuntos button {
+  border: 1px solid #d9d0c3;
+  background: #fff;
+}
+
+.vacio {
+  max-width: 460px;
+  margin: 48px auto;
+  padding: 0 16px;
+  text-align: left;
+}
+
+.vacio h2 {
+  margin: 0 0 8px;
+}
+
+.redaccion {
+  position: fixed;
+  right: 24px;
+  bottom: 0;
+  z-index: 2;
+  width: min(480px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #d9d0c3;
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 8px 28px rgb(28 25 21 / 18%);
+}
+
+.redaccion header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: #1f4d3a;
+  color: #f7f3ea;
+  border-radius: 12px 12px 0 0;
+}
+
+.redaccion header button {
+  color: #f7f3ea;
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.redaccion input,
+.redaccion textarea {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #ece7df;
+  border-radius: 0;
+}
+
+.redaccion textarea {
+  height: auto;
+  min-height: 180px;
+  padding: 12px;
+  resize: vertical;
+  font: inherit;
+}
+
+.redaccion footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+}
+
+.redaccion footer p {
+  margin: 0;
+  color: #5c564c;
+  font-size: 0.82rem;
+}
+
+.primario:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 800px) {
+  .barra {
+    flex-wrap: wrap;
+    height: auto;
+  }
+
+  .buscar {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .cuenta span {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cuerpo-app {
+    grid-template-columns: 1fr;
+    min-width: 0;
+  }
+
+  .nav-correo {
+    flex-direction: row;
+    align-items: center;
+    overflow: auto;
+  }
+
+  .redactar {
+    margin: 0;
+    height: 42px;
+  }
+
+  .panel,
+  .herramientas {
+    min-width: 0;
+  }
+
+  .panel {
+    margin: 0 8px 8px;
+    border-radius: 12px;
+  }
+
+  .herramientas {
+    flex-wrap: wrap;
+  }
+
+  .estado-buzon {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  .correo-app .lista .fila {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    grid-template-areas:
+      'avatar quien fecha'
+      'avatar resumen fecha';
+  }
+
+  .correo-app .lista .avatar {
+    grid-area: avatar;
+  }
+
+  .correo-app .lista .quien {
+    grid-area: quien;
+  }
+
+  .correo-app .lista .resumen-fila {
+    grid-area: resumen;
+  }
+
+  .correo-app .lista time {
+    grid-area: fecha;
+  }
+
+  .correo {
+    padding-left: 16px;
+  }
 }

@@ -1,5 +1,6 @@
 import { FormEvent, useState } from 'react';
 import type { SesionPublica } from '@sgit/shared';
+import { Logo } from './Logo';
 import { entrar } from './sesion';
 
 type Props = {
@@ -30,6 +31,7 @@ export function Ingreso({ apiUrl, onSesion }: Props) {
   return (
     <main className="ingreso">
       <p className="marca">ZGroup · Desarrollo</p>
+      <Logo palabra={false} />
       <h1>SGIT</h1>
       <p className="bajada">Sistema de gestión de instalación de telemetrías</p>
       {apiUrl === null ? (

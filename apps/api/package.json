@@ -5,7 +5,7 @@
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
     "comprobar": "tsc --noEmit",
-    "test": "tsx --test test/prueba.identidad.ts"
+    "test": "tsx --test test/prueba.rangos.ts test/prueba.identidad.ts test/prueba.buzon.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.848.0",

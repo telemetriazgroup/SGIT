@@ -26,11 +26,10 @@ Esa contraseña solo existe en la base local. No la uses fuera de esta máquina.
 
 ## 2. Procesos
 
-En tres terminales, desde la raíz:
+El API y la web suben con el mismo Compose que PostgreSQL, Redis y MinIO. `npm run entorno` los deja escuchando; no hace falta otra terminal ni reiniciar el proceso a mano.
 
 ```bash
-npm run dev:api
-npm run dev:web
+npm run entorno
 npm run dev:bot
 ```
 
@@ -56,3 +55,7 @@ Con el API y la web ya corriendo, el mismo recorrido del navegador se puede repe
 ```bash
 npm run verificar -w @sgit/web
 ```
+
+## 4. Buzón del sprint 1
+
+La contraseña de Gmail no se configura. El permiso de lectura de `telemetria@zgroup.com.pe` se da con los pasos de [configurar-gmail.md](configurar-gmail.md).

@@ -17,6 +17,14 @@ export type Configuracion = {
     password: string;
     rol: RolSemilla;
   };
+  claveCifrado: string;
+  iniciarSync: boolean;
+  gmail: {
+    clientId: string;
+    clientSecret: string;
+    redirectUri: string;
+    correo: string;
+  } | null;
 };
 
 const OBLIGATORIAS = [
@@ -38,9 +46,12 @@ export function leerConfiguracion(env: NodeJS.ProcessEnv = process.env): Configu
   }
 
   const rol = env.SEED_OPERATOR_ROL === 'administrador' ? 'administrador' : 'operador';
+  const clientId = env.GOOGLE_CLIENT_ID?.trim() ?? '';
+  const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim() ?? '';
+  const port = Number(env.PORT ?? 18003);
 
   return {
-    port: Number(env.PORT ?? 18003),
+    port,
     webOrigin: env.WEB_ORIGIN ?? 'http://localhost:18004',
     databaseUrl: env.DATABASE_URL!.trim(),
     redisUrl: env.REDIS_URL!.trim(),
@@ -56,5 +67,16 @@ export function leerConfiguracion(env: NodeJS.ProcessEnv = process.env): Configu
       password: env.SEED_OPERATOR_PASSWORD!,
       rol,
     },
+    claveCifrado: env.CLAVE_CIFRADO?.trim() || env.SESION_SECRETO!.trim(),
+    iniciarSync: env.INICIAR_SYNC === 'true',
+    gmail:
+      clientId && clientSecret
+        ? {
+            clientId,
+            clientSecret,
+            redirectUri: env.GOOGLE_REDIRECT_URI?.trim() || `http://localhost:${port}/buzon/oauth/callback`,
+            correo: (env.GMAIL_CORREO?.trim() || 'telemetria@zgroup.com.pe').toLowerCase(),
+          }
+        : null,
   };
 }

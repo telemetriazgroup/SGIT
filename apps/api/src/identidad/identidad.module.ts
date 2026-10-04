@@ -12,5 +12,6 @@ import { IdentidadService } from './identidad.service';
       useFactory: (conexiones: Conexiones) => new IdentidadService(conexiones),
     },
   ],
+  exports: [IdentidadService],
 })
 export class IdentidadModule {}
