@@ -4,6 +4,8 @@ import type { Conexiones } from '../conexiones';
 import { dictaminar, referenciasCitadas, type Clase } from './clasificar';
 import { extraer, type Extraccion } from './extraer';
 import { AREAS, armarSeguimiento, resumenHilo, type ResumenHilo, type Seguimiento } from './seguimiento';
+import { AlmacenCorreo } from '../buzon/almacen';
+import { barridoCorre, claveHora, entraHoraria } from './barrido';
 import { evaluarCita, type Cita } from './cita';
 import { cotsDe, normalizarFecha, plano } from './texto';
 
@@ -16,6 +18,9 @@ export type ResultadoProceso = {
   avisos: 0;
   motivo: 'dos cot' | 'sin referencia' | 'falta cot' | 'interna' | null;
 };
+
+type Autor = { correo: string; nombre: string };
+type ArchivoNota = { nombre: string; mime: string; contenido: Buffer };
 
 type FilaMensaje = {
   id: string;
@@ -223,7 +228,14 @@ export class TareasService {
     if (!tarea) return null;
     const guardados = Array.isArray(tarea.cots) ? tarea.cots.map(String) : [];
     const numeros = (guardados.length > 0 ? guardados : String(tarea.cot ?? '').split('+')).filter((numero) => /^\d{6,}$/.test(numero));
-    if (numeros.length === 0) return { ...tarea, seguimiento: { momento: null, areas: [], linea: [] }, situaciones: await this.situacionesDe(tarea.id) };
+    if (numeros.length === 0) {
+      return {
+        ...tarea,
+        seguimiento: { momento: null, areas: [], linea: [] },
+        situaciones: await this.situacionesDe(tarea.id),
+        ...(await this.capaBitacora(tarea)),
+      };
+    }
     const donde = numeros
       .map((_, indice) => `asunto ~ ('(^|[^0-9])' || $${indice + 1} || '([^0-9]|$)') OR texto ~ ('(^|[^0-9])' || $${indice + 1} || '([^0-9]|$)')`)
       .join(' OR ');
@@ -237,7 +249,7 @@ export class TareasService {
     );
     const terminos = await this.terminosActivos();
     const situaciones = await this.situacionesDe(tarea.id);
-    return { ...tarea, seguimiento: armarSeguimiento(mensajes.rows, terminos), situaciones };
+    return { ...tarea, seguimiento: armarSeguimiento(mensajes.rows, terminos), situaciones, ...(await this.capaBitacora(tarea)) };
   }
 
   async diccionario(): Promise<Array<{ id: string; termino: string; activo: boolean }>> {
@@ -598,6 +610,170 @@ export class TareasService {
     if (resultado.rowCount === 0) throw new NotFoundException('No está esa tarea.');
   }
 
+  async tomar(id: string, autor: Autor): Promise<void> {
+    const tarea = await this.filaTarea(id);
+    if (tarea.responsable_correo && tarea.responsable_correo !== autor.correo) {
+      throw new BadRequestException(`La tarea ya la tomó ${tarea.responsable_nombre}.`);
+    }
+    await this.conexiones.pg.query(
+      `UPDATE tarea SET responsable_correo = $2, responsable_nombre = $3 WHERE id = $1`,
+      [id, autor.correo, autor.nombre],
+    );
+  }
+
+  async anotar(id: string, autor: Autor, tipo: string, texto: string, archivo: ArchivoNota | null): Promise<void> {
+    if (tipo !== 'seguimiento' && tipo !== 'incidente') throw new BadRequestException('La nota es un seguimiento o un incidente.');
+    const limpio = texto.trim();
+    if (!limpio) throw new BadRequestException('Escribe la nota.');
+    await this.filaTarea(id);
+    const imagen = await this.prepararImagen(archivo);
+    const notaId = randomUUID();
+    if (imagen) await new AlmacenCorreo(this.conexiones).guardar(imagen.clave(notaId), imagen.contenido, imagen.mime);
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (
+         id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime
+       ) VALUES ($1,$2,$3,'web',$4,$5,$6,$7,$8,$9)`,
+      [notaId, id, tipo, limpio, autor.correo, autor.nombre, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
+    );
+    if (tipo === 'seguimiento') {
+      await this.conexiones.pg.query(
+        `UPDATE tarea SET estado = CASE WHEN estado = 'en_validacion' THEN estado ELSE 'en_seguimiento' END WHERE id = $1`,
+        [id],
+      );
+    }
+  }
+
+  async validar(id: string, horas: number, ahora = new Date()): Promise<Date> {
+    if (!Number.isInteger(horas) || horas < 1 || horas > 48) throw new BadRequestException('Las horas van de 1 a 48.');
+    await this.filaTarea(id);
+    const recordar = new Date(ahora.getTime() + horas * 60 * 60 * 1000);
+    await this.conexiones.pg.query(
+      `UPDATE recordatorio SET estado = 'cancelado' WHERE tarea_id = $1 AND tipo = 'snooze' AND estado = 'pendiente'`,
+      [id],
+    );
+    await this.conexiones.pg.query(
+      `INSERT INTO recordatorio (id, tarea_id, tipo, recordar_en, estado, hora_bucket)
+       VALUES ($1,$2,'snooze',$3,'pendiente',$4)`,
+      [randomUUID(), id, recordar.toISOString(), recordar.toISOString()],
+    );
+    await this.conexiones.pg.query(`UPDATE tarea SET estado = 'en_validacion', recordar_en = $2 WHERE id = $1`, [id, recordar.toISOString()]);
+    return recordar;
+  }
+
+  async anular(id: string, notaId: string, autor: Autor, texto: string): Promise<void> {
+    const limpio = texto.trim();
+    if (!limpio) throw new BadRequestException('Escribe por qué se anula.');
+    const nota = await this.conexiones.pg.query<{ id: string }>(
+      `SELECT id FROM nota_bitacora WHERE id = $1 AND tarea_id = $2 AND tipo <> 'anulacion'`,
+      [notaId, id],
+    );
+    if (!nota.rows[0]) throw new NotFoundException('No está esa nota.');
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, anula_id)
+       VALUES ($1,$2,'anulacion','web',$3,$4,$5,$6)`,
+      [randomUUID(), id, limpio, autor.correo, autor.nombre, notaId],
+    );
+  }
+
+  async barrido(ahora = new Date()): Promise<{ corre: boolean; horarias: string[]; vencidos: string[] }> {
+    const feriados = await this.feriados();
+    const corre = barridoCorre(ahora, feriados);
+    const horarias: string[] = [];
+    if (corre) {
+      const tareas = await this.conexiones.pg.query<{ id: string; estado: string; recordar_en: Date | null; seguimiento: boolean }>(
+        `SELECT t.id, t.estado, t.recordar_en,
+                EXISTS (SELECT 1 FROM nota_bitacora n WHERE n.tarea_id = t.id AND n.tipo = 'seguimiento') AS seguimiento
+         FROM tarea t
+         WHERE t.cot <> '10000000000' AND t.estado = 'detectada'`,
+      );
+      const bucket = claveHora(ahora);
+      for (const tarea of tareas.rows) {
+        if (!entraHoraria({ estado: tarea.estado, seguimiento: tarea.seguimiento, recordarEn: tarea.recordar_en }, ahora, feriados)) continue;
+        const alta = await this.conexiones.pg.query(
+          `INSERT INTO recordatorio (id, tarea_id, tipo, recordar_en, estado, hora_bucket)
+           VALUES ($1,$2,'horario',$3,'pendiente',$4)
+           ON CONFLICT (tarea_id, hora_bucket) WHERE tipo = 'horario' DO NOTHING
+           RETURNING id`,
+          [randomUUID(), tarea.id, ahora.toISOString(), bucket],
+        );
+        if ((alta.rowCount ?? 0) > 0) horarias.push(tarea.id);
+      }
+    }
+    const vencidos = await this.conexiones.pg.query<{ tarea_id: string }>(
+      `UPDATE recordatorio SET estado = 'enviado'
+       WHERE tipo = 'snooze' AND estado = 'pendiente' AND recordar_en <= $1
+       RETURNING tarea_id`,
+      [ahora.toISOString()],
+    );
+    return { corre, horarias, vencidos: vencidos.rows.map((fila) => fila.tarea_id) };
+  }
+
+  async leerArchivo(tareaId: string, notaId: string): Promise<{ nombre: string; mime: string; bytes: Buffer }> {
+    const nota = await this.conexiones.pg.query<{ archivo_clave: string | null; archivo_nombre: string | null; archivo_mime: string | null }>(
+      `SELECT archivo_clave, archivo_nombre, archivo_mime FROM nota_bitacora WHERE id = $1 AND tarea_id = $2`,
+      [notaId, tareaId],
+    );
+    const fila = nota.rows[0];
+    if (!fila?.archivo_clave) throw new NotFoundException('Esa nota no tiene archivo.');
+    const bytes = await new AlmacenCorreo(this.conexiones).leer(fila.archivo_clave);
+    return { nombre: fila.archivo_nombre ?? 'foto', mime: fila.archivo_mime ?? 'application/octet-stream', bytes };
+  }
+
+  private async capaBitacora(tarea: FilaTarea): Promise<{ notas: NotaBitacora[]; en_barrido: boolean }> {
+    const notas = await this.notasDe(tarea.id);
+    const feriados = await this.feriados();
+    const recordar = tarea.recordar_en instanceof Date ? tarea.recordar_en : tarea.recordar_en ? new Date(String(tarea.recordar_en)) : null;
+    return {
+      notas,
+      en_barrido: entraHoraria(
+        {
+          estado: String(tarea.estado ?? ''),
+          seguimiento: notas.some((nota) => nota.tipo === 'seguimiento'),
+          recordarEn: recordar && !Number.isNaN(recordar.getTime()) ? recordar : null,
+        },
+        new Date(),
+        feriados,
+      ),
+    };
+  }
+
+  private async notasDe(tareaId: string): Promise<NotaBitacora[]> {
+    const resultado = await this.conexiones.pg.query<NotaBitacora>(
+      `SELECT id, tipo, canal, texto, autor_nombre, autor_correo, archivo_nombre, archivo_mime, anula_id, creado_en
+       FROM nota_bitacora WHERE tarea_id = $1 ORDER BY creado_en`,
+      [tareaId],
+    );
+    return resultado.rows;
+  }
+
+  private async feriados(): Promise<Set<string>> {
+    const resultado = await this.conexiones.pg.query<{ fecha: string }>(`SELECT to_char(fecha, 'YYYY-MM-DD') AS fecha FROM feriado`);
+    return new Set(resultado.rows.map((fila) => fila.fecha));
+  }
+
+  private async filaTarea(id: string): Promise<{ responsable_correo: string | null; responsable_nombre: string | null }> {
+    const resultado = await this.conexiones.pg.query<{ responsable_correo: string | null; responsable_nombre: string | null }>(
+      `SELECT responsable_correo, responsable_nombre FROM tarea WHERE id = $1`,
+      [id],
+    );
+    const fila = resultado.rows[0];
+    if (!fila) throw new NotFoundException('No está esa tarea.');
+    return fila;
+  }
+
+  private async prepararImagen(archivo: ArchivoNota | null): Promise<{ nombre: string; mime: string; contenido: Buffer; clave: (id: string) => string } | null> {
+    if (!archivo) return null;
+    const mime = archivo.mime.toLowerCase();
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mime)) {
+      throw new BadRequestException('La foto tiene que ser una imagen.');
+    }
+    if (archivo.contenido.length === 0 || archivo.contenido.length > 4 * 1024 * 1024) {
+      throw new BadRequestException('La foto pasa de 4 MB.');
+    }
+    const nombre = archivo.nombre.trim().slice(0, 180) || 'foto';
+    return { nombre, mime, contenido: archivo.contenido, clave: (id) => `bitacora/${id}` };
+  }
+
   private async anexarPorHilo(mensaje: FilaMensaje, lectura: Extraccion): Promise<string | null> {
     const encontrada = await this.conexiones.pg.query<{ id: string }>(
       `SELECT id FROM (
@@ -804,7 +980,20 @@ function patronArea(area: string | null): string | null {
   if (!patron) throw new BadRequestException('Esa área no está en el encargo.');
   return patron;
 }
-type FilaTarea = Record<string, unknown> & { id: string; cot: string };
+type FilaTarea = Record<string, unknown> & { id: string; cot: string; estado?: string; recordar_en?: Date | string | null };
+
+type NotaBitacora = {
+  id: string;
+  tipo: string;
+  canal: string;
+  texto: string;
+  autor_nombre: string;
+  autor_correo: string;
+  archivo_nombre: string | null;
+  archivo_mime: string | null;
+  anula_id: string | null;
+  creado_en: Date;
+};
 
 function unirReferencias(actuales: string[], nuevas: string[]): string[] {
   const todas: string[] = [];

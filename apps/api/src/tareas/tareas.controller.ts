@@ -9,6 +9,7 @@ import {
   Param,
   Post,
   Query,
+  StreamableFile,
   UnauthorizedException,
 } from '@nestjs/common';
 import { IdentidadService } from '../identidad/identidad.service';
@@ -97,6 +98,58 @@ export class TareasController {
     return tarea;
   }
 
+  @Post('tareas/:id/tomar')
+  async tomar(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    const usuario = await this.exigir(autorizacion);
+    await this.tareas.tomar(id, usuario);
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/notas')
+  async nota(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { tipo?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string } },
+  ) {
+    const usuario = await this.exigir(autorizacion);
+    await this.tareas.anotar(id, usuario, cuerpo?.tipo ?? '', cuerpo?.texto ?? '', archivoDe(cuerpo?.archivo));
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/validar')
+  async validar(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { horas?: number },
+  ) {
+    await this.exigir(autorizacion);
+    await this.tareas.validar(id, Number(cuerpo?.horas));
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/notas/:notaId/anular')
+  async anular(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('notaId') notaId: string,
+    @Body() cuerpo: { texto?: string },
+  ) {
+    const usuario = await this.exigir(autorizacion);
+    await this.tareas.anular(id, notaId, usuario, cuerpo?.texto ?? '');
+    return this.fichaDe(id);
+  }
+
+  @Get('tareas/:id/notas/:notaId/archivo')
+  async archivo(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('notaId') notaId: string,
+  ) {
+    await this.exigir(autorizacion);
+    const archivo = await this.tareas.leerArchivo(id, notaId);
+    return new StreamableFile(archivo.bytes, { type: archivo.mime, disposition: `inline; filename="${archivo.nombre.replace(/"/g, '')}"` });
+  }
+
   @Post('tareas/:id/correccion')
   async corregir(
     @Headers('authorization') autorizacion: string | undefined,
@@ -105,9 +158,7 @@ export class TareasController {
   ) {
     await this.exigir(autorizacion);
     await this.tareas.corregir(id, cuerpo?.campo ?? '', cuerpo?.valor ?? '');
-    const tarea = await this.tareas.ficha(id);
-    if (!tarea) throw new NotFoundException('No está esa tarea.');
-    return tarea;
+    return this.fichaDe(id);
   }
 
   @Post('tareas/:id/releer')
@@ -118,6 +169,10 @@ export class TareasController {
   ) {
     await this.exigir(autorizacion);
     await this.tareas.releer(id, cuerpo?.campo ?? '');
+    return this.fichaDe(id);
+  }
+
+  private async fichaDe(id: string) {
     const tarea = await this.tareas.ficha(id);
     if (!tarea) throw new NotFoundException('No está esa tarea.');
     return tarea;
@@ -158,6 +213,15 @@ export class TareasController {
     if (!token) throw new UnauthorizedException('Sesión no válida.');
     return this.identidad.actual(token);
   }
+}
+
+function archivoDe(archivo?: { nombre?: string; mime?: string; contenido?: string }): { nombre: string; mime: string; contenido: Buffer } | null {
+  if (!archivo?.contenido) return null;
+  return {
+    nombre: archivo.nombre ?? 'foto',
+    mime: archivo.mime ?? '',
+    contenido: Buffer.from(archivo.contenido, 'base64'),
+  };
 }
 
 function numero(valor?: string): number {

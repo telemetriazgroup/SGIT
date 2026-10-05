@@ -676,6 +676,191 @@ button:disabled {
   margin: 12px 0 4px;
 }
 
+.bitacora-cabeza h3 {
+  margin-bottom: 0;
+}
+
+.bitacora-cabeza p,
+.bitacora-vacia,
+.modal .meta {
+  margin: 2px 0 0;
+  color: #5c564c;
+}
+
+.bitacora-acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.bitacora-acciones button,
+.modal-acciones button {
+  margin-top: 0;
+  height: 40px;
+  padding: 0 14px;
+}
+
+.bitacora-acciones button:not(.primario),
+.modal-acciones button:not(.primario) {
+  border: 1px solid #1f4d3a;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f4d3a;
+}
+
+.bitacora-tiempo {
+  list-style: none;
+  margin: 4px 0 20px;
+  padding: 4px 0 4px 8px;
+  border-left: 2px solid #d9d0c3;
+}
+
+.bitacora-tiempo li {
+  position: relative;
+  margin: 0 0 12px 18px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #ece7df;
+  border-radius: 10px;
+}
+
+.bitacora-tiempo li::before {
+  content: '';
+  position: absolute;
+  left: -24px;
+  top: 16px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #1f4d3a;
+  box-shadow: 0 0 0 3px #fffdf8;
+}
+
+.bitacora-tiempo li.incidente::before {
+  background: #8a3b2a;
+}
+
+.bitacora-tiempo li.anulacion {
+  background: #f7f4ef;
+}
+
+.bitacora-tiempo li.anulacion::before {
+  background: #8a8478;
+}
+
+.bitacora-tiempo li.anulacion p {
+  text-decoration: line-through;
+  color: #5c564c;
+}
+
+.bitacora-evento {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.bitacora-evento time,
+.bitacora-evento span {
+  color: #5c564c;
+  font-size: 0.88rem;
+}
+
+.bitacora-tiempo p {
+  margin: 0;
+}
+
+.bitacora-tiempo button {
+  margin-top: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #1f4d3a;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f4d3a;
+  font-size: 0.82rem;
+}
+
+.modal-fondo {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(28, 25, 21, 0.45);
+}
+
+.modal {
+  width: 100%;
+  max-height: 92vh;
+  overflow: auto;
+  padding: 18px 16px 20px;
+  background: #fffdf8;
+  border-top: 6px solid #1f4d3a;
+}
+
+.modal h3 {
+  margin: 0;
+}
+
+.modal textarea,
+.modal input[type='file'] {
+  width: 100%;
+  border: 1px solid #c9c0b3;
+  background: #fff;
+  font: inherit;
+}
+
+.modal textarea {
+  min-height: 120px;
+  padding: 10px 12px;
+}
+
+.modal input[type='file'] {
+  height: auto;
+  padding: 8px 0;
+}
+
+.modal-acciones {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.nota-foto {
+  display: block;
+  max-width: min(240px, 100%);
+  margin-top: 6px;
+}
+
+@media (min-width: 700px) {
+  .modal-fondo {
+    align-items: center;
+    padding: 24px;
+  }
+
+  .modal {
+    width: min(520px, 100%);
+    border: 1px solid #d9d0c3;
+    border-top: 6px solid #1f4d3a;
+  }
+}
+
+@media (max-width: 699px) {
+  .bitacora-acciones {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .bitacora-acciones button {
+    width: 100%;
+  }
+}
+
 .seguimiento {
   margin: 8px 0 20px;
 }

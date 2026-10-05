@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react';
 
 type TareaLista = {
   id: string;
@@ -42,6 +42,19 @@ type Tarea = TareaLista & {
   seguimiento: { momento: Momento | null; areas: AreaEncargo[]; linea: Paso[] };
   campos_corregidos?: string[];
   situaciones?: Situacion[];
+  responsable_nombre?: string | null;
+  recordar_en?: string | null;
+  en_barrido?: boolean;
+  notas?: NotaBitacora[];
+};
+
+type NotaBitacora = {
+  id: string;
+  tipo: string;
+  texto: string;
+  autor_nombre: string;
+  archivo_nombre: string | null;
+  creado_en: string;
 };
 
 type Situacion = {
@@ -347,7 +360,6 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
         <h2>COT {cotVisible(ficha.cot, ficha.cots)}</h2>
         <p className="estado-tarea">{etiquetaEstado(ficha.estado)}</p>
         {aviso ? <p className="error">{aviso}</p> : null}
-        <Seguimiento seguimiento={ficha.seguimiento} />
         <h3>Datos de la cotización</h3>
         <dl>
           <Campo nombre="Ticket" valor={ficha.ticket} />
@@ -366,7 +378,10 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
           <Campo nombre="Teléfono" valor={ficha.comercial_telefono} />
         </dl>
         <Correccion apiUrl={apiUrl} token={token} ficha={ficha} alGuardar={setFicha} alFallar={setAviso} />
+        <Seguimiento seguimiento={ficha.seguimiento} parte="encargo" />
+        <Bitacora apiUrl={apiUrl} token={token} ficha={ficha} alGuardar={setFicha} alFallar={setAviso} />
         <Situaciones situaciones={ficha.situaciones ?? []} />
+        <Seguimiento seguimiento={ficha.seguimiento} parte="correos" />
       </section>
     );
   }
@@ -701,12 +716,22 @@ function etiquetaSituacion(tipo: string): string {
   return 'Informativa';
 }
 
-function Seguimiento({ seguimiento, mostrarVacio = true }: { seguimiento: Tarea['seguimiento'] | undefined; mostrarVacio?: boolean }) {
+function Seguimiento({
+  seguimiento,
+  mostrarVacio = true,
+  parte = 'completa',
+}: {
+  seguimiento: Tarea['seguimiento'] | undefined;
+  mostrarVacio?: boolean;
+  parte?: 'completa' | 'encargo' | 'correos';
+}) {
   if (!seguimiento) return null;
   const { momento, areas, linea } = seguimiento;
+  const encargo = parte === 'completa' || parte === 'encargo';
+  const correos = parte === 'completa' || parte === 'correos';
   return (
     <div className="seguimiento">
-      {momento || mostrarVacio ? (
+      {encargo && (momento || mostrarVacio) ? (
       <article className="momento">
         <h3>Por qué nos corresponde</h3>
         {momento ? (
@@ -729,7 +754,7 @@ function Seguimiento({ seguimiento, mostrarVacio = true }: { seguimiento: Tarea[
         )}
       </article>
       ) : null}
-      {areas.length > 0 ? (
+      {encargo && areas.length > 0 ? (
         <section>
           <h3>Áreas del encargo</h3>
           <ol className="areas">
@@ -742,7 +767,7 @@ function Seguimiento({ seguimiento, mostrarVacio = true }: { seguimiento: Tarea[
           </ol>
         </section>
       ) : null}
-      {linea.length > 0 ? (
+      {correos && linea.length > 0 ? (
         <section>
           <h3>Línea de tiempo</h3>
           <ol className="linea-tiempo">
@@ -857,8 +882,246 @@ function cita(fecha: string | null, hora: string | null): string | null {
 
 function etiquetaEstado(estado: string): string {
   if (estado === 'detectada') return 'Detectada';
+  if (estado === 'en_seguimiento') return 'En seguimiento';
+  if (estado === 'en_validacion') return 'En validación';
   if (estado === 'informativa') return 'Informativa';
   return estado;
+}
+
+function Bitacora({
+  apiUrl,
+  token,
+  ficha,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  ficha: Tarea;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (mensaje: string) => void;
+}) {
+  const [modal, setModal] = useState<'seguimiento' | 'incidente' | null>(null);
+  const [textoNota, setTextoNota] = useState('');
+  const [foto, setFoto] = useState<File | null>(null);
+  const [guardando, setGuardando] = useState(false);
+  const [anulando, setAnulando] = useState<string | null>(null);
+  const [motivo, setMotivo] = useState('');
+  const notas = ficha.notas ?? [];
+
+  function abrir(tipo: 'seguimiento' | 'incidente') {
+    setTextoNota('');
+    setFoto(null);
+    setModal(tipo);
+  }
+
+  function limpiar() {
+    setModal(null);
+    setAnulando(null);
+    setTextoNota('');
+    setFoto(null);
+    setMotivo('');
+  }
+
+  function cerrar() {
+    if (guardando) return;
+    limpiar();
+  }
+
+  async function tomar() {
+    alGuardar(await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/tomar`, { method: 'POST' }));
+  }
+
+  async function enviar(evento: FormEvent) {
+    evento.preventDefault();
+    if (!modal) return;
+    setGuardando(true);
+    try {
+      const cuerpo: { tipo: string; texto: string; archivo?: { nombre: string; mime: string; contenido: string } } = { tipo: modal, texto: textoNota };
+      if (foto) cuerpo.archivo = await leerFoto(foto);
+      alGuardar(await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas`, { method: 'POST', body: JSON.stringify(cuerpo) }));
+      setGuardando(false);
+      limpiar();
+    } catch (error: unknown) {
+      setGuardando(false);
+      alFallar(texto(error));
+    }
+  }
+
+  async function validar() {
+    alGuardar(await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/validar`, { method: 'POST', body: JSON.stringify({ horas: 4 }) }));
+  }
+
+  async function anular(evento: FormEvent) {
+    evento.preventDefault();
+    if (!anulando) return;
+    setGuardando(true);
+    try {
+      alGuardar(
+        await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${anulando}/anular`, {
+          method: 'POST',
+          body: JSON.stringify({ texto: motivo }),
+        }),
+      );
+      setGuardando(false);
+      limpiar();
+    } catch (error: unknown) {
+      setGuardando(false);
+      alFallar(texto(error));
+    }
+  }
+
+  return (
+    <section className="bitacora">
+      <div className="bitacora-cabeza">
+        <h3>Bitácora</h3>
+        <p>{ficha.responsable_nombre ? `La tomó ${ficha.responsable_nombre}.` : 'Nadie la ha tomado.'}</p>
+        <p>{ficha.recordar_en ? `Vuelve a salir: ${cuando(ficha.recordar_en)}.` : ficha.en_barrido ? 'Entra al recordatorio de esta hora.' : 'No entra al recordatorio de cada hora.'}</p>
+      </div>
+      <div className="bitacora-acciones">
+        {ficha.responsable_nombre ? null : (
+          <button type="button" className="primario" onClick={() => void tomar().catch((error: unknown) => alFallar(texto(error)))}>
+            Tomar tarea
+          </button>
+        )}
+        <button type="button" className="primario" onClick={() => abrir('seguimiento')}>
+          Anotar seguimiento
+        </button>
+        <button type="button" onClick={() => abrir('incidente')}>
+          Registrar incidente
+        </button>
+        <button type="button" onClick={() => void validar().catch((error: unknown) => alFallar(texto(error)))}>
+          Recordarme en 4 horas
+        </button>
+      </div>
+      {notas.length > 0 ? (
+        <ol className="bitacora-tiempo">
+          {notas.map((nota) => (
+            <li key={nota.id} className={nota.tipo}>
+              <div className="bitacora-evento">
+                <time>{cuando(nota.creado_en)}</time>
+                <strong>{etiquetaNota(nota.tipo)}</strong>
+                <span>{nota.autor_nombre}</span>
+              </div>
+              <p>{nota.texto}</p>
+              {nota.archivo_nombre ? <FotoNota apiUrl={apiUrl} token={token} tareaId={ficha.id} notaId={nota.id} nombre={nota.archivo_nombre} /> : null}
+              {nota.tipo !== 'anulacion' ? (
+                <button type="button" onClick={() => { setMotivo(''); setAnulando(nota.id); }}>
+                  Anular
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="bitacora-vacia">Todavía no hay notas del equipo.</p>
+      )}
+      {modal ? (
+        <Cuadro
+          titulo={modal === 'seguimiento' ? 'Seguimiento' : 'Incidente'}
+          ayuda={modal === 'seguimiento' ? 'Lo que te dijeron. Con esta nota la tarea sale del recordatorio de cada hora.' : 'Queda en la línea de tiempo. No vuelve a entrar al recordatorio.'}
+          alCerrar={cerrar}
+        >
+          <form onSubmit={(evento) => void enviar(evento)}>
+            <label htmlFor="texto-nota">Qué pasó</label>
+            <textarea id="texto-nota" value={textoNota} onChange={(evento) => setTextoNota(evento.target.value)} rows={5} required autoFocus />
+            <label htmlFor="foto-nota">Foto</label>
+            <input id="foto-nota" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(evento) => setFoto(evento.target.files?.[0] ?? null)} />
+            <p className="meta">{foto ? foto.name : 'La foto es opcional.'}</p>
+            <div className="modal-acciones">
+              <button type="button" onClick={cerrar} disabled={guardando}>
+                Cancelar
+              </button>
+              <button type="submit" className="primario" disabled={guardando}>
+                {guardando ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </form>
+        </Cuadro>
+      ) : null}
+      {anulando ? (
+        <Cuadro titulo="Anular nota" ayuda="La nota se queda. Esta explicación se suma a la línea de tiempo." alCerrar={cerrar}>
+          <form onSubmit={(evento) => void anular(evento)}>
+            <label htmlFor="motivo-anulacion">Por qué se anula</label>
+            <textarea id="motivo-anulacion" value={motivo} onChange={(evento) => setMotivo(evento.target.value)} rows={4} required autoFocus />
+            <div className="modal-acciones">
+              <button type="button" onClick={cerrar} disabled={guardando}>
+                Cancelar
+              </button>
+              <button type="submit" className="primario" disabled={guardando}>
+                {guardando ? 'Guardando…' : 'Guardar anulación'}
+              </button>
+            </div>
+          </form>
+        </Cuadro>
+      ) : null}
+    </section>
+  );
+}
+
+function Cuadro({ titulo, ayuda, alCerrar, children }: { titulo: string; ayuda: string; alCerrar: () => void; children: ReactNode }) {
+  useEffect(() => {
+    const previo = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const tecla = (evento: KeyboardEvent) => {
+      if (evento.key === 'Escape') alCerrar();
+    };
+    window.addEventListener('keydown', tecla);
+    return () => {
+      document.body.style.overflow = previo;
+      window.removeEventListener('keydown', tecla);
+    };
+  }, [alCerrar]);
+
+  return (
+    <div className="modal-fondo" onMouseDown={alCerrar}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="titulo-modal" onMouseDown={(evento) => evento.stopPropagation()}>
+        <h3 id="titulo-modal">{titulo}</h3>
+        <p className="meta">{ayuda}</p>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function FotoNota({ apiUrl, token, tareaId, notaId, nombre }: { apiUrl: string; token: string; tareaId: string; notaId: string; nombre: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let vigente = true;
+    let objeto = '';
+    void fetch(`${apiUrl}/tareas/${tareaId}/notas/${notaId}/archivo`, { headers: { authorization: `Bearer ${token}` } })
+      .then((respuesta) => (respuesta.ok ? respuesta.blob() : null))
+      .then((blob) => {
+        if (!blob || !vigente) return;
+        objeto = URL.createObjectURL(blob);
+        setUrl(objeto);
+      })
+      .catch(() => undefined);
+    return () => {
+      vigente = false;
+      if (objeto) URL.revokeObjectURL(objeto);
+    };
+  }, [apiUrl, token, tareaId, notaId]);
+  if (!url) return <span>{nombre}</span>;
+  return <img className="nota-foto" src={url} alt={nombre} />;
+}
+
+function etiquetaNota(tipo: string): string {
+  if (tipo === 'seguimiento') return 'Seguimiento';
+  if (tipo === 'incidente') return 'Incidente';
+  return 'Anulación';
+}
+
+function leerFoto(archivo: File): Promise<{ nombre: string; mime: string; contenido: string }> {
+  return new Promise((resolve, reject) => {
+    const lector = new FileReader();
+    lector.onload = () => {
+      const data = String(lector.result ?? '');
+      resolve({ nombre: archivo.name, mime: archivo.type, contenido: data.slice(data.indexOf(',') + 1) });
+    };
+    lector.onerror = () => reject(lector.error);
+    lector.readAsDataURL(archivo);
+  });
 }
 
 async function pedir<T>(apiUrl: string, token: string, ruta: string, init?: RequestInit): Promise<T> {
