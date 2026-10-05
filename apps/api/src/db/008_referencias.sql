@@ -1,0 +1,1 @@
+ALTER TABLE tarea ADD COLUMN IF NOT EXISTS referencias text[] NOT NULL DEFAULT '{}';

@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import type { SesionPublica } from '@sgit/shared';
 import { Logo } from './Logo';
+import { PanelDiccionario, PanelTareas } from './Tareas';
 
 type Avance = {
   fase: 'ocioso' | 'listando' | 'importando' | 'listo' | 'error';
@@ -56,6 +57,7 @@ type Detalle = Mensaje & {
   htmlSeguro: string;
   texto: string;
   para: string;
+  clasificacion: string | null;
   adjuntos: Adjunto[];
 };
 
@@ -86,8 +88,10 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
   const [paginas, setPaginas] = useState(1);
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
-  const [vista, setVista] = useState<'recibidos' | 'enviados'>('recibidos');
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario'>('recibidos');
   const [redactando, setRedactando] = useState(false);
+  const [notaProceso, setNotaProceso] = useState<string | null>(null);
+  const [tareaAbierta, setTareaAbierta] = useState<string | null>(null);
 
   async function leerEstado() {
     const estado = await pedir<Resumen>(apiUrl, sesion.token, '/buzon');
@@ -112,6 +116,26 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
   useEffect(() => {
     void cargar().catch((error: unknown) => setAviso(texto(error)));
   }, [apiUrl, sesion.token]);
+
+  async function procesar(id: string) {
+    setAviso(null);
+    setNotaProceso(null);
+    const respuesta = await pedir<{
+      resultados: Array<{ clasificacion: string; cot: string | null; tareaId: string | null; creada: boolean }>;
+    }>(apiUrl, sesion.token, `/mensajes/${id}/procesar`, { method: 'POST' });
+    const conTarea = respuesta.resultados.find((resultado) => resultado.tareaId);
+    if (conTarea?.tareaId) {
+      setTareaAbierta(conTarea.tareaId);
+      setNotaProceso(conTarea.creada ? `Tarea COT ${conTarea.cot} abierta.` : `La COT ${conTarea.cot} ya tiene tarea.`);
+    } else if (respuesta.resultados.some((resultado) => resultado.clasificacion === 'interna')) {
+      setNotaProceso('Asunto interno. Quedó aparte, en Asuntos internos.');
+    } else if (respuesta.resultados.some((resultado) => resultado.clasificacion === 'pendiente')) {
+      setNotaProceso('Pendiente de decisión. Hay cotización o ticket, y no se abrió tarea.');
+    } else {
+      setNotaProceso('Quedó en Otros. El asunto no trae cotización ni ticket.');
+    }
+    await abrir(id);
+  }
 
   async function alternarSync() {
     if (!resumen) return;
@@ -282,6 +306,26 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
           >
             Enviados
           </button>
+          <button
+            type="button"
+            className={vista === 'tareas' ? 'activo' : ''}
+            onClick={() => {
+              setVista('tareas');
+              setHilo(null);
+            }}
+          >
+            Tareas
+          </button>
+          <button
+            type="button"
+            className={vista === 'diccionario' ? 'activo' : ''}
+            onClick={() => {
+              setVista('diccionario');
+              setHilo(null);
+            }}
+          >
+            Diccionario
+          </button>
         </nav>
         <section className="panel">
           <div className="herramientas">
@@ -323,12 +367,12 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
               </div>
             ) : null}
           </div>
-          {resumen?.avance && resumen.avance.fase !== 'ocioso' ? (
+          {vista === 'recibidos' && resumen?.avance && resumen.avance.fase !== 'ocioso' ? (
             <p className={resumen.avance.fase === 'error' ? 'error' : 'bajada'} role="status">
               {resumen.avance.detalle}
             </p>
           ) : null}
-          {resumen?.avance.fase === 'importando' && resumen.avance.porBajar > 0 ? (
+          {vista === 'recibidos' && resumen?.avance.fase === 'importando' && resumen.avance.porBajar > 0 ? (
             <progress value={resumen.avance.hechos} max={resumen.avance.porBajar} />
           ) : null}
           {aviso ? (
@@ -344,7 +388,11 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
               {!resumen.clavesListas ? <p>El servidor todavía no tiene el cliente OAuth. El alta está en docs/configurar-gmail.md.</p> : null}
             </section>
           ) : null}
-          {vista === 'enviados' ? (
+          {vista === 'tareas' ? (
+            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} />
+          ) : vista === 'diccionario' ? (
+            <PanelDiccionario apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'enviados' ? (
             <VacioEnviados onRedactar={() => setRedactando(true)} />
           ) : hilo ? (
             <Lectura
@@ -352,6 +400,12 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
               abiertos={abiertos}
               htmls={htmls}
               enfocado={enfocado}
+              nota={notaProceso}
+              onProcesar={(id) => void procesar(id).catch((error: unknown) => setAviso(texto(error)))}
+              onVerTarea={() => {
+                setVista('tareas');
+                setHilo(null);
+              }}
               onIr={(indice) => void irAlMensaje(indice)}
               onAlternar={(mensaje, indice) => void alternar(mensaje, indice)}
               onDescargar={(adjunto) => void descargar(adjunto)}
@@ -431,6 +485,9 @@ function Lectura({
   abiertos,
   htmls,
   enfocado,
+  nota,
+  onProcesar,
+  onVerTarea,
   onIr,
   onAlternar,
   onDescargar,
@@ -439,6 +496,9 @@ function Lectura({
   abiertos: string[];
   htmls: Record<string, string>;
   enfocado: number;
+  nota: string | null;
+  onProcesar: (id: string) => void;
+  onVerTarea: () => void;
   onIr: (indice: number) => void;
   onAlternar: (mensaje: Detalle, indice: number) => void;
   onDescargar: (adjunto: Adjunto) => void;
@@ -449,6 +509,19 @@ function Lectura({
       <div className="lectura">
         <h2>{hilo.asunto || '(sin asunto)'}</h2>
         <div className="paginas">
+          <button type="button" className="primario" onClick={() => onProcesar(hilo.mensajes[0]?.id ?? '')}>
+            Procesar
+          </button>
+          {nota ? (
+            <span>
+              {nota}{' '}
+              {nota.startsWith('Tarea') || nota.startsWith('La COT') ? (
+                <button type="button" onClick={onVerTarea}>
+                  Ver ficha
+                </button>
+              ) : null}
+            </span>
+          ) : null}
           <button type="button" disabled={enfocado <= 0} onClick={() => onIr(enfocado - 1)}>
             Anterior
           </button>

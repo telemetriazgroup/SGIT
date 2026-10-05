@@ -1,0 +1,761 @@
+import { FormEvent, useEffect, useRef, useState } from 'react';
+
+type TareaLista = {
+  id: string;
+  cot: string;
+  estado: string;
+  ticket: string | null;
+  lugar: string | null;
+  cliente: string | null;
+  descripcion: string | null;
+  cita_fecha: string | null;
+  cita_hora: string | null;
+  comercial_nombre: string | null;
+  fecha: string | null;
+  cots?: string[];
+  referencias?: string[];
+};
+
+type Momento = {
+  area: string | null;
+  cuando: string | null;
+  de: string | null;
+  extracto: string;
+  frases: string[];
+};
+
+type AreaEncargo = { area: string; texto: string; nuestra: boolean };
+type Paso = { cuando: string | null; de: string; resumen: string; convoca: boolean };
+
+type Tarea = TareaLista & {
+  cantidad: number | null;
+  temperatura: string | null;
+  producto: string | null;
+  contenedor: string | null;
+  comercial_cargo: string | null;
+  comercial_correo: string | null;
+  comercial_telefono: string | null;
+  cita_direccion: string | null;
+  cita_mapa: string | null;
+  cita_parcial_fecha: string | null;
+  cita_parcial_hora: string | null;
+  seguimiento: { momento: Momento | null; areas: AreaEncargo[]; linea: Paso[] };
+};
+
+type Termino = { id: string; termino: string; activo: boolean };
+
+type ResumenProceso = {
+  mensajes: number;
+  nuevas: number;
+  repetidas: number;
+  pendientes: number;
+  otros: number;
+  internos?: number;
+};
+
+type Sector = 'tareas' | 'pendiente' | 'otros' | 'internos';
+type Cola = 'por_atender' | 'atendido' | 'todas';
+type Cuentas = { tareas: number; pendientes: number; otros: number; internos: number };
+type CorreoSector = {
+  id: string;
+  asunto: string;
+  de: string;
+  fecha: string | null;
+  correos: number;
+  areas: string[];
+  resumen: string;
+  atencion?: string;
+};
+type Pagina = { total: number; pagina: number; paginas: number; cuentas: Cuentas };
+type MensajeVisible = {
+  id: string;
+  de: string;
+  fecha: string | null;
+  asunto: string;
+  htmlSeguro: string;
+  texto: string;
+};
+
+type Conversacion = { asunto: string; mensajes: MensajeVisible[] };
+
+type ResumenHilo = {
+  id: string;
+  asunto: string;
+  de: string;
+  fecha: string | null;
+  cots: string[];
+  motivo: 'dos cot' | 'sin referencia' | 'falta cot' | 'interna' | null;
+  resumen: string;
+  atencion?: 'por_atender' | 'atendido';
+  respuesta?: string;
+  seguimiento: Tarea['seguimiento'];
+};
+
+export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token: string; tareaId: string | null }) {
+  const [tareas, setTareas] = useState<TareaLista[]>([]);
+  const [ficha, setFicha] = useState<Tarea | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [procesando, setProcesando] = useState(false);
+  const [resumen, setResumen] = useState<ResumenProceso | null>(null);
+  const [sector, setSector] = useState<Sector>('tareas');
+  const [pagina, setPagina] = useState(1);
+  const [paginas, setPaginas] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [cuentas, setCuentas] = useState<Cuentas>({ tareas: 0, pendientes: 0, otros: 0, internos: 0 });
+  const [correos, setCorreos] = useState<CorreoSector[]>([]);
+  const [areasPosibles, setAreasPosibles] = useState<string[]>([]);
+  const [area, setArea] = useState<string | null>(null);
+  const [hilo, setHilo] = useState<ResumenHilo | null>(null);
+  const [correo, setCorreo] = useState<Conversacion | null>(null);
+  const [busqueda, setBusqueda] = useState('');
+  const [consulta, setConsulta] = useState('');
+  const [cola, setCola] = useState<Cola>('por_atender');
+  const [respuesta, setRespuesta] = useState('');
+  const [moviendo, setMoviendo] = useState<string | null>(null);
+  const pedido = useRef(0);
+
+  async function cargar(paginaDestino = pagina, sectorDestino = sector, consultaDestino = consulta) {
+    const actual = ++pedido.current;
+    if (sectorDestino === 'tareas') {
+      const parametros = new URLSearchParams({ pagina: String(paginaDestino) });
+      if (consultaDestino) parametros.set('q', consultaDestino);
+      const lista = await pedir<Pagina & { tareas: TareaLista[] }>(apiUrl, token, `/tareas?${parametros}`);
+      if (actual !== pedido.current) return;
+      setTareas(lista.tareas);
+      aplicarPagina(lista);
+      return;
+    }
+    const parametros = new URLSearchParams({ sector: sectorDestino, pagina: String(paginaDestino) });
+    if (area) parametros.set('area', area);
+    if (consultaDestino) parametros.set('q', consultaDestino);
+    if (sectorDestino === 'internos' && cola !== 'todas') parametros.set('atencion', cola);
+    const lista = await pedir<Pagina & { correos: CorreoSector[]; areas: string[] }>(apiUrl, token, `/sectores?${parametros}`);
+    if (actual !== pedido.current) return;
+    setCorreos(lista.correos);
+    setAreasPosibles(lista.areas);
+    aplicarPagina(lista);
+  }
+
+  function aplicarPagina(lista: Pagina) {
+    setTotal(lista.total);
+    setPagina(lista.pagina);
+    setPaginas(lista.paginas);
+    setCuentas(lista.cuentas);
+  }
+
+  function elegir(siguiente: Sector) {
+    setSector(siguiente);
+    setPagina(1);
+    setArea(null);
+    setCola('por_atender');
+    setFicha(null);
+    setHilo(null);
+    setCorreo(null);
+  }
+
+  function fijarArea(siguiente: string | null) {
+    setArea(siguiente);
+    setPagina(1);
+    setHilo(null);
+    setCorreo(null);
+  }
+
+  async function verMensaje(id: string) {
+    const conversacion = await pedir<Conversacion>(apiUrl, token, `/buzon/mensajes/${id}/hilo`);
+    setCorreo(conversacion);
+  }
+
+  async function abrirHilo(id: string) {
+    const detalle = await pedir<ResumenHilo>(apiUrl, token, `/hilos/${id}/resumen`);
+    setRespuesta(detalle.respuesta ?? '');
+    setHilo(detalle);
+  }
+
+  async function decidir(id: string, destino: 'otros' | 'interna' | 'archivado') {
+    setAviso(null);
+    setMoviendo(id);
+    try {
+      await pedir(apiUrl, token, `/hilos/${id}/destino`, {
+        method: 'POST',
+        body: JSON.stringify({ destino }),
+      });
+      setHilo(null);
+      setCorreo(null);
+      await cargar(pagina, sector, consulta);
+    } catch (error) {
+      setAviso(texto(error));
+    } finally {
+      setMoviendo(null);
+    }
+  }
+
+  async function guardarAtencion(estado: 'por_atender' | 'atendido') {
+    if (!hilo) return;
+    const guardado = await pedir<{ atencion: 'por_atender' | 'atendido'; respuesta: string }>(apiUrl, token, `/hilos/${hilo.id}/atencion`, {
+      method: 'POST',
+      body: JSON.stringify({ estado, respuesta }),
+    });
+    setHilo({ ...hilo, atencion: guardado.atencion, respuesta: guardado.respuesta });
+    await cargar(pagina, sector, consulta);
+  }
+
+  async function abrir(id: string) {
+    setFicha(await pedir<Tarea>(apiUrl, token, `/tareas/${id}`));
+  }
+
+  function enviarBusqueda(evento: FormEvent) {
+    evento.preventDefault();
+    setConsulta(busqueda.trim());
+    setPagina(1);
+    setFicha(null);
+    setHilo(null);
+    setCorreo(null);
+  }
+
+  useEffect(() => {
+    void cargar(pagina, sector, consulta).catch((error: unknown) => setAviso(texto(error)));
+  }, [apiUrl, token, pagina, sector, area, consulta, cola]);
+
+  useEffect(() => {
+    if (!tareaId) return;
+    void abrir(tareaId).catch((error: unknown) => setAviso(texto(error)));
+  }, [tareaId, apiUrl, token]);
+
+  async function procesarCorreos() {
+    setProcesando(true);
+    setAviso(null);
+    try {
+      const resultado = await pedir<ResumenProceso>(apiUrl, token, '/tareas/procesar-buzon', {
+        method: 'POST',
+        body: JSON.stringify({ desde: '2026-08-01' }),
+      });
+      setResumen(resultado);
+      setFicha(null);
+      setPagina(1);
+      await cargar(1, sector);
+    } catch (error) {
+      setAviso(texto(error));
+    } finally {
+      setProcesando(false);
+    }
+  }
+
+  if (correo) {
+    return (
+      <section className="ficha">
+        <div className="herramientas">
+          <button type="button" onClick={() => setCorreo(null)}>
+            Volver
+          </button>
+          {sector === 'otros' && correo.mensajes[0] ? (
+            <div className="decisiones decisiones-ficha">
+              <button type="button" disabled={moviendo === correo.mensajes[0].id} onClick={() => void decidir(correo.mensajes[0].id, 'archivado')}>
+                Archivar
+              </button>
+            </div>
+          ) : null}
+        </div>
+        {aviso ? <p className="error">{aviso}</p> : null}
+        <h2>{correo.asunto || '(sin asunto)'}</h2>
+        {correo.mensajes.map((mensaje) => (
+          <article key={mensaje.id} className="correo">
+            <p className="meta">{[nombreDe(mensaje.de), cuando(mensaje.fecha)].filter(Boolean).join(' · ')}</p>
+            {mensaje.htmlSeguro ? (
+              <div className="cuerpo" dangerouslySetInnerHTML={{ __html: mensaje.htmlSeguro }} />
+            ) : (
+              <p className="cuerpo">{mensaje.texto}</p>
+            )}
+          </article>
+        ))}
+      </section>
+    );
+  }
+
+  if (hilo) {
+    return (
+      <section className="ficha">
+        <button type="button" onClick={() => setHilo(null)}>
+          Volver
+        </button>
+        <h2>{hilo.asunto || '(sin asunto)'}</h2>
+        <p className="estado-tarea">{etiquetaMotivo(hilo.motivo)}</p>
+        <p className="meta">{[nombreDe(hilo.de), cuando(hilo.fecha)].filter(Boolean).join(' · ')}</p>
+        <article className="momento">
+          <h3>Resumen</h3>
+          <p>{hilo.resumen}</p>
+        </article>
+        {sector === 'pendiente' ? (
+          <div className="decisiones decisiones-ficha">
+            <button type="button" disabled={moviendo === hilo.id} onClick={() => void decidir(hilo.id, 'otros')}>
+              Enviar a Otros
+            </button>
+            <button type="button" disabled={moviendo === hilo.id} onClick={() => void decidir(hilo.id, 'interna')}>
+              Enviar a asuntos internos
+            </button>
+          </div>
+        ) : null}
+        {sector === 'pendiente' && aviso ? <p className="error">{aviso}</p> : null}
+        {hilo.motivo === 'interna' ? (
+          <form
+            className="atencion"
+            onSubmit={(evento) => {
+              evento.preventDefault();
+              void guardarAtencion(hilo.atencion === 'atendido' ? 'atendido' : 'por_atender').catch((error: unknown) => setAviso(texto(error)));
+            }}
+          >
+            <p>COT 10000000000 · cliente ZGROUP. Este asunto se atiende solo. La respuesta queda guardada aquí; el buzón todavía no envía el correo.</p>
+            <label htmlFor="respuesta-interna">Respuesta</label>
+            <textarea id="respuesta-interna" value={respuesta} onChange={(evento) => setRespuesta(evento.target.value)} rows={5} />
+            {aviso ? <p className="error">{aviso}</p> : null}
+            <div className="herramientas">
+              <button type="submit">Guardar respuesta</button>
+              <button
+                type="button"
+                className="primario"
+                onClick={() => void guardarAtencion(hilo.atencion === 'atendido' ? 'por_atender' : 'atendido').catch((error: unknown) => setAviso(texto(error)))}
+              >
+                {hilo.atencion === 'atendido' ? 'Volver a por atender' : 'Marcar atendido'}
+              </button>
+            </div>
+          </form>
+        ) : null}
+        <Seguimiento seguimiento={hilo.seguimiento} mostrarVacio={false} />
+      </section>
+    );
+  }
+
+  if (ficha) {
+    return (
+      <section className="ficha">
+        <button type="button" onClick={() => setFicha(null)}>
+          Volver a tareas
+        </button>
+        <h2>COT {cotVisible(ficha.cot, ficha.cots)}</h2>
+        <p className="estado-tarea">{etiquetaEstado(ficha.estado)}</p>
+        {aviso ? <p className="error">{aviso}</p> : null}
+        <Seguimiento seguimiento={ficha.seguimiento} />
+        <h3>Datos de la cotización</h3>
+        <dl>
+          <Campo nombre="Ticket" valor={ficha.ticket} />
+          <Campo nombre="Descripción" valor={ficha.descripcion} />
+          <Campo nombre="Cliente" valor={ficha.cliente} />
+          <Campo nombre="Lugar" valor={ficha.lugar} />
+          <Campo nombre="Cita" valor={cita(ficha.cita_fecha, ficha.cita_hora)} />
+          <Campo nombre="Dirección" valor={direccionLimpia(ficha.cita_direccion)} />
+          <Campo nombre="Mapa" valor={ficha.cita_mapa} enlace />
+          <Campo nombre="También citado" valor={cita(ficha.cita_parcial_fecha, ficha.cita_parcial_hora)} />
+          <Campo nombre="Temperatura" valor={[ficha.temperatura, ficha.producto].filter(Boolean).join(' · ') || null} />
+          <Campo nombre="Telemetrías" valor={ficha.cantidad === null ? null : String(ficha.cantidad)} />
+          <Campo nombre="Contenedor" valor={ficha.contenedor} />
+          <Campo nombre="Comercial" valor={[ficha.comercial_nombre, ficha.comercial_cargo].filter(Boolean).join(', ') || null} />
+          <Campo nombre="Correo" valor={ficha.comercial_correo} />
+          <Campo nombre="Teléfono" valor={ficha.comercial_telefono} />
+        </dl>
+      </section>
+    );
+  }
+
+  return (
+    <section className="ficha">
+      <div className="herramientas">
+        <h2>Tareas</h2>
+        <form className="buscar buscar-tareas" onSubmit={enviarBusqueda}>
+          <label className="sr" htmlFor="buscar-tareas">
+            Buscar en tareas
+          </label>
+          <input
+            id="buscar-tareas"
+            type="search"
+            value={busqueda}
+            placeholder="Buscar COT, cliente, lugar o referencia"
+            onChange={(evento) => setBusqueda(evento.target.value)}
+          />
+          <button type="submit">Buscar</button>
+        </form>
+        <button type="button" className="primario" disabled={procesando} onClick={() => void procesarCorreos()}>
+          {procesando ? 'Procesando…' : 'Procesar correos'}
+        </button>
+      </div>
+      <div className="sectores" role="tablist">
+        <button type="button" className={sector === 'tareas' ? 'activo' : ''} onClick={() => elegir('tareas')}>
+          Tareas <span>{cuentas.tareas}</span>
+        </button>
+        <button type="button" className={sector === 'pendiente' ? 'activo' : ''} onClick={() => elegir('pendiente')}>
+          Pendiente de decisión <span>{cuentas.pendientes}</span>
+        </button>
+        <button type="button" className={sector === 'otros' ? 'activo' : ''} onClick={() => elegir('otros')}>
+          Otros <span>{cuentas.otros}</span>
+        </button>
+        <button type="button" className={sector === 'internos' ? 'activo' : ''} onClick={() => elegir('internos')}>
+          Asuntos internos <span>{cuentas.internos}</span>
+        </button>
+      </div>
+      <p>{textoSector(sector)}</p>
+      {sector === 'internos' ? (
+        <div className="filtro-area">
+          <button type="button" className={cola === 'por_atender' ? 'activo' : ''} onClick={() => { setCola('por_atender'); setPagina(1); }}>
+            Por atender
+          </button>
+          <button type="button" className={cola === 'atendido' ? 'activo' : ''} onClick={() => { setCola('atendido'); setPagina(1); }}>
+            Atendidos
+          </button>
+          <button type="button" className={cola === 'todas' ? 'activo' : ''} onClick={() => { setCola('todas'); setPagina(1); }}>
+            Todas
+          </button>
+        </div>
+      ) : null}
+      {sector !== 'tareas' && sector !== 'internos' ? (
+        <div className="filtro-area">
+          <button type="button" className={area ? '' : 'activo'} onClick={() => fijarArea(null)}>
+            Todas
+          </button>
+          {areasPosibles.map((nombre) => (
+            <button type="button" key={nombre} className={area === nombre ? 'activo' : ''} onClick={() => fijarArea(nombre)}>
+              {nombre}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {aviso ? <p className="error">{aviso}</p> : null}
+      {resumen ? (
+        <div className="resumen-proceso">
+          <p>
+            {resumen.mensajes} correos clasificados. {resumen.nuevas} tareas nuevas, {resumen.repetidas} correos de una COT que ya tenía tarea, {resumen.pendientes} pendientes de decisión, {resumen.internos ?? 0} asuntos internos y {resumen.otros} en Otros.
+          </p>
+        </div>
+      ) : null}
+      <div className="paginas">
+        <span>
+          {total === 0 ? '0' : `${(pagina - 1) * 10 + 1}–${Math.min(pagina * 10, total)}`} de {total}
+        </span>
+        <button type="button" aria-label="Anterior" disabled={pagina <= 1} onClick={() => setPagina(pagina - 1)}>
+          ‹
+        </button>
+        <button type="button" aria-label="Siguiente" disabled={pagina >= paginas} onClick={() => setPagina(pagina + 1)}>
+          ›
+        </button>
+      </div>
+      {sector === 'tareas' ? (
+        tareas.length === 0 ? (
+          <p>{consulta ? 'No hay tareas con ese texto.' : 'Todavía no hay tareas. Pulsa Procesar correos.'}</p>
+        ) : (
+          <ul className="lista">
+            {tareas.map((tarea) => (
+              <li key={tarea.id}>
+                <button type="button" className="fila" onClick={() => void abrir(tarea.id).catch((error: unknown) => setAviso(texto(error)))}>
+                  <span className="avatar" aria-hidden="true">
+                    C
+                  </span>
+                  <span className="quien">COT {cotVisible(tarea.cot, tarea.cots)}</span>
+                  <span className="resumen-fila">
+                    <strong>{tarea.cliente || tarea.lugar || tarea.descripcion || 'Sin cliente'}</strong>
+                    {tarea.cliente && tarea.lugar ? <span className="extracto"> — {tarea.lugar}</span> : null}
+                    {tarea.referencias && tarea.referencias.length > 0 ? (
+                      <span className="senales">
+                        {tarea.referencias.map((frase) => (
+                          <mark key={frase}>{frase}</mark>
+                        ))}
+                      </span>
+                    ) : null}
+                  </span>
+                  <time>{cuando(tarea.fecha)}</time>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )
+      ) : correos.length === 0 ? (
+        <p>{consulta ? 'No hay correos con ese texto.' : sector === 'internos' ? 'No hay asuntos internos en esta cola.' : 'No hay correos en este grupo.'}</p>
+      ) : (
+        <ul className="lista">
+          {correos.map((correo) => (
+            <li key={correo.id} className={sector === 'pendiente' || sector === 'otros' ? 'con-decision' : undefined}>
+              <button
+                type="button"
+                className="fila"
+                onClick={() => {
+                  const abrir = sector === 'otros' ? verMensaje(correo.id) : abrirHilo(correo.id);
+                  void abrir.catch((error: unknown) => setAviso(texto(error)));
+                }}
+              >
+                <span className="avatar" aria-hidden="true">
+                  {sector === 'pendiente' ? 'P' : sector === 'internos' ? 'I' : 'O'}
+                </span>
+                <span className="quien">{nombreDe(correo.de)}</span>
+                <span className="resumen-fila">
+                  <strong>{correo.asunto || '(sin asunto)'}</strong>
+                  {sector !== 'otros' && correo.resumen ? <span className="resumen-pendiente">{correo.resumen}</span> : null}
+                  {sector === 'internos' ? <span className="areas-correo"><span>{correo.atencion === 'atendido' ? 'Atendido' : 'Por atender'}</span></span> : null}
+                  {correo.areas.length > 0 ? (
+                    <span className="areas-correo">
+                      {correo.areas.map((nombre) => (
+                        <span key={nombre}>{nombre}</span>
+                      ))}
+                    </span>
+                  ) : null}
+                </span>
+                <time>{cuando(correo.fecha)}</time>
+              </button>
+              {sector === 'pendiente' ? (
+                <div className="decisiones">
+                  <button type="button" disabled={moviendo === correo.id} onClick={() => void decidir(correo.id, 'otros')}>
+                    Enviar a Otros
+                  </button>
+                  <button type="button" disabled={moviendo === correo.id} onClick={() => void decidir(correo.id, 'interna')}>
+                    Enviar a asuntos internos
+                  </button>
+                </div>
+              ) : null}
+              {sector === 'otros' ? (
+                <div className="decisiones">
+                  <button type="button" disabled={moviendo === correo.id} onClick={() => void decidir(correo.id, 'archivado')}>
+                    Archivar
+                  </button>
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+export function PanelDiccionario({ apiUrl, token }: { apiUrl: string; token: string }) {
+  const [terminos, setTerminos] = useState<Termino[]>([]);
+  const [nuevo, setNuevo] = useState('');
+  const [aviso, setAviso] = useState<string | null>(null);
+
+  async function cargar() {
+    setTerminos(await pedir<Termino[]>(apiUrl, token, '/diccionario'));
+  }
+
+  useEffect(() => {
+    void cargar().catch((error: unknown) => setAviso(texto(error)));
+  }, [apiUrl, token]);
+
+  async function agregar(evento: FormEvent) {
+    evento.preventDefault();
+    setAviso(null);
+    await pedir(apiUrl, token, '/diccionario', { method: 'POST', body: JSON.stringify({ termino: nuevo }) });
+    setNuevo('');
+    await cargar();
+  }
+
+  async function fijar(termino: Termino) {
+    setAviso(null);
+    await pedir(apiUrl, token, `/diccionario/${termino.id}`, {
+      method: 'POST',
+      body: JSON.stringify({ activo: !termino.activo }),
+    });
+    await cargar();
+  }
+
+  return (
+    <section className="ficha">
+      <h2>Diccionario</h2>
+      <p>Cada término activo, palabra o frase, se busca en el correo. Si hay cotización, abre la tarea y esas referencias quedan resaltadas. Puede haber una o más.</p>
+      {aviso ? <p className="error">{aviso}</p> : null}
+      <form
+        className="rango"
+        onSubmit={(evento) => void agregar(evento).catch((error: unknown) => setAviso(texto(error)))}
+      >
+        <label htmlFor="termino">Término</label>
+        <input id="termino" value={nuevo} onChange={(evento) => setNuevo(evento.target.value)} required />
+        <button type="submit" className="primario">
+          Agregar
+        </button>
+      </form>
+      <ul className="diccionario">
+        {terminos.map((termino) => (
+          <li key={termino.id}>
+            <span>{termino.termino}</span>
+            <button type="button" className={termino.activo ? 'sync-auto activa' : 'sync-auto'} onClick={() => void fijar(termino).catch((error: unknown) => setAviso(texto(error)))}>
+              {termino.activo ? 'Activo' : 'Inactivo'}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function Seguimiento({ seguimiento, mostrarVacio = true }: { seguimiento: Tarea['seguimiento'] | undefined; mostrarVacio?: boolean }) {
+  if (!seguimiento) return null;
+  const { momento, areas, linea } = seguimiento;
+  return (
+    <div className="seguimiento">
+      {momento || mostrarVacio ? (
+      <article className="momento">
+        <h3>Por qué nos corresponde</h3>
+        {momento ? (
+          <>
+            <p className="meta">{[momento.area, momento.cuando, momento.de].filter(Boolean).join(' · ')}</p>
+            <p className="extracto-motivo">
+              <Marcado texto={momento.extracto} frases={momento.frases} />
+            </p>
+            {momento.frases.length > 0 ? (
+              <p className="senales">
+                Referencias:{' '}
+                {momento.frases.map((frase) => (
+                  <mark key={frase}>{frase}</mark>
+                ))}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p>En estos correos no aparece la convocatoria a Luis y Eusebio.</p>
+        )}
+      </article>
+      ) : null}
+      {areas.length > 0 ? (
+        <section>
+          <h3>Áreas del encargo</h3>
+          <ol className="areas">
+            {areas.map((area) => (
+              <li key={area.area} className={area.nuestra ? 'nuestra' : undefined}>
+                <strong>{area.area}</strong>
+                <span>{area.texto}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+      {linea.length > 0 ? (
+        <section>
+          <h3>Línea de tiempo</h3>
+          <ol className="linea-tiempo">
+            {linea.map((paso, indice) => (
+              <li key={`${paso.cuando}-${indice}`} className={paso.convoca ? 'nuestra' : undefined}>
+                <time>{paso.cuando}</time>
+                <strong>{paso.de}</strong>
+                <span>{paso.resumen}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function Marcado({ texto, frases }: { texto: string; frases: string[] }) {
+  return (
+    <>
+      {tramos(texto, frases).map((tramo, indice) =>
+        tramo.marca ? <mark key={indice}>{tramo.texto}</mark> : <span key={indice}>{tramo.texto}</span>,
+      )}
+    </>
+  );
+}
+
+function tramos(texto: string, frases: string[]): Array<{ texto: string; marca: boolean }> {
+  const bajos = texto.toLowerCase();
+  const marcas = frases
+    .map((frase) => {
+      const inicio = bajos.indexOf(frase.toLowerCase());
+      return inicio < 0 ? null : { inicio, fin: inicio + frase.length };
+    })
+    .filter((marca): marca is { inicio: number; fin: number } => marca !== null)
+    .sort((a, b) => a.inicio - b.inicio || b.fin - a.fin);
+  const usadas: Array<{ inicio: number; fin: number }> = [];
+  for (const marca of marcas) {
+    if (usadas.some((previa) => marca.inicio < previa.fin && marca.fin > previa.inicio)) continue;
+    usadas.push(marca);
+  }
+  const partes: Array<{ texto: string; marca: boolean }> = [];
+  let cursor = 0;
+  for (const marca of usadas) {
+    if (marca.inicio > cursor) partes.push({ texto: texto.slice(cursor, marca.inicio), marca: false });
+    partes.push({ texto: texto.slice(marca.inicio, marca.fin), marca: true });
+    cursor = marca.fin;
+  }
+  if (cursor < texto.length) partes.push({ texto: texto.slice(cursor), marca: false });
+  return partes.length > 0 ? partes : [{ texto, marca: false }];
+}
+
+function direccionLimpia(valor: string | null): string | null {
+  if (!valor) return null;
+  const limpia = valor.replace(/<\s*https?:\/\/[^>]*>/gi, ' ').replace(/https?:\/\/\S+/gi, ' ').replace(/[<>]/g, ' ').replace(/\s+/g, ' ').trim();
+  return limpia || null;
+}
+
+function etiquetaMotivo(motivo: ResumenHilo['motivo']): string {
+  if (motivo === 'dos cot') return 'Más de una COT';
+  if (motivo === 'sin referencia') return 'Cotización sin cita a desarrollo';
+  if (motivo === 'falta cot') return 'Sin COT';
+  if (motivo === 'interna') return 'Aviso interno';
+  return 'Otros';
+}
+
+function textoSector(sector: Sector): string {
+  if (sector === 'tareas') return 'Cotizaciones que citan una palabra o frase del diccionario. Una tarea puede reunir una o más cotizaciones y una o más referencias.';
+  if (sector === 'internos') return 'Asuntos internos de ZGROUP, COT 10000000000. Cada asunto se atiende aparte. No es una instalación de telemetría.';
+  if (sector === 'pendiente') return 'Hay cotización o ticket, y no queda claro que nos corresponda. Hay que decidir.';
+  return 'El asunto no trae cotización ni ticket, ni una referencia a desarrollo.';
+}
+
+function nombreDe(de: string): string {
+  const nombre = de.replace(/<[^>]*>/g, ' ').replace(/[a-z0-9._+-]+@[a-z0-9.-]+/gi, ' ').replace(/\s+/g, ' ').trim();
+  return nombre || 'Sin nombre';
+}
+
+function cuando(fecha: string | null): string {
+  if (!fecha) return '';
+  return new Intl.DateTimeFormat('es-PE', {
+    timeZone: 'America/Lima',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(fecha));
+}
+
+function Campo({ nombre, valor, enlace = false }: { nombre: string; valor: string | null; enlace?: boolean }) {
+  if (!valor) return null;
+  return (
+    <>
+      <dt>{nombre}</dt>
+      <dd>{enlace ? <a href={valor}>{valor}</a> : valor}</dd>
+    </>
+  );
+}
+
+function cotVisible(cot: string, cots?: string[]): string {
+  const lista = cots && cots.length > 0 ? cots : cot.split('+').filter(Boolean);
+  return lista.join(' · ');
+}
+
+function cita(fecha: string | null, hora: string | null): string | null {
+  if (!fecha && !hora) return null;
+  const dia = fecha ? fecha.slice(0, 10).split('-').reverse().join('/') : '';
+  return [dia, hora].filter(Boolean).join(' ');
+}
+
+function etiquetaEstado(estado: string): string {
+  if (estado === 'detectada') return 'Detectada';
+  if (estado === 'informativa') return 'Informativa';
+  return estado;
+}
+
+async function pedir<T>(apiUrl: string, token: string, ruta: string, init?: RequestInit): Promise<T> {
+  const respuesta = await fetch(`${apiUrl}${ruta}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(init?.body ? { 'content-type': 'application/json' } : {}),
+    },
+  });
+  if (!respuesta.ok) {
+    const cuerpo = (await respuesta.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(cuerpo?.message ?? 'No se pudo completar la operación.');
+  }
+  if (respuesta.status === 204) return undefined as T;
+  return (await respuesta.json()) as T;
+}
+
+function texto(error: unknown): string {
+  return error instanceof Error ? error.message : 'No se pudo completar la operación.';
+}

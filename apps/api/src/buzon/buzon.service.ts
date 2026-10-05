@@ -240,7 +240,7 @@ export class BuzonService {
 
   async detalle(id: string) {
     const mensaje = await this.conexiones.pg.query(
-      `SELECT id, gmail_message_id, gmail_thread_id, de, para, cc, fecha, asunto, html_seguro, texto, replica
+      `SELECT id, gmail_message_id, gmail_thread_id, de, para, cc, fecha, asunto, html_seguro, texto, replica, clasificacion
        FROM mensaje_correo WHERE id = $1`,
       [id],
     );

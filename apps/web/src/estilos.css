@@ -81,7 +81,7 @@ button {
 
 button:disabled {
   opacity: 0.7;
-  cursor: wait;
+  cursor: not-allowed;
 }
 
 .inicio header {
@@ -365,6 +365,29 @@ button:disabled {
   overflow: auto;
 }
 
+.buscar-tareas {
+  flex: 1;
+  max-width: 480px;
+}
+
+.buscar-tareas input {
+  height: 38px;
+}
+
+.atencion {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.atencion textarea {
+  width: 100%;
+  min-height: 120px;
+  border: 1px solid #d9d0c3;
+  border-radius: 8px;
+  padding: 8px;
+}
+
 .herramientas {
   position: sticky;
   top: 0;
@@ -415,6 +438,48 @@ button:disabled {
 .correo-app .rango p {
   flex-basis: 100%;
   margin: 0;
+}
+
+.correo-app .lista li.con-decision {
+  display: flex;
+  align-items: stretch;
+  background: #fff;
+  border-bottom: 1px solid #f0ebe4;
+}
+
+.correo-app .lista li.con-decision .fila {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.decisiones {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  flex: none;
+  padding: 6px 12px 6px 0;
+}
+
+.decisiones button {
+  padding: 4px 8px;
+  border: 1px solid #1f4d3a;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f4d3a;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.decisiones button:hover:not(:disabled) {
+  background: #e7f0eb;
+}
+
+.decisiones-ficha {
+  flex-direction: row;
+  flex-wrap: wrap;
+  padding: 0 0 12px;
 }
 
 .correo-app .lista .fila {
@@ -545,6 +610,187 @@ button:disabled {
 .adjuntos button {
   border: 1px solid #d9d0c3;
   background: #fff;
+}
+
+.sectores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.sectores button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sectores button.activo,
+.filtro-area button.activo {
+  background: #1f4d3a;
+  color: #fffdf8;
+  border-color: #1f4d3a;
+}
+
+.filtro-area {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.filtro-area button {
+  padding: 4px 8px;
+  font-size: 0.82rem;
+}
+
+.resumen-pendiente,
+.areas-correo {
+  display: block;
+  margin-top: 4px;
+  color: #5c564c;
+  font-weight: 400;
+}
+
+.areas-correo span {
+  display: inline-block;
+  margin: 4px 6px 0 0;
+  padding: 1px 6px;
+  border: 1px solid #d9d0c3;
+  border-radius: 999px;
+  background: #fffdf8;
+  font-size: 0.75rem;
+}
+
+.sectores button span {
+  font-variant-numeric: tabular-nums;
+}
+
+.ficha {
+  padding: 8px 20px 32px;
+}
+
+.ficha h2,
+.ficha h3 {
+  margin: 12px 0 4px;
+}
+
+.seguimiento {
+  margin: 8px 0 20px;
+}
+
+.momento,
+.areas,
+.linea-tiempo {
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.momento {
+  padding: 12px 14px;
+  background: #f4faf6;
+  border-left: 4px solid #1f4d3a;
+}
+
+.momento .meta,
+.senales {
+  margin: 0 0 6px;
+  color: #5c564c;
+  font-size: 0.92rem;
+}
+
+.extracto-motivo {
+  margin: 0;
+}
+
+.extracto-motivo mark,
+.senales mark {
+  background: #f3e2a4;
+  padding: 0 2px;
+  margin-right: 4px;
+}
+
+.areas,
+.linea-tiempo {
+  list-style: none;
+}
+
+.areas li,
+.linea-tiempo li {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 4px 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #ece7df;
+}
+
+.linea-tiempo li {
+  grid-template-columns: 150px 180px minmax(0, 1fr);
+}
+
+.areas li.nuestra,
+.linea-tiempo li.nuestra {
+  background: #f4faf6;
+  border-left: 4px solid #1f4d3a;
+}
+
+.areas strong,
+.linea-tiempo strong,
+.linea-tiempo time {
+  color: #1c1915;
+}
+
+@media (max-width: 800px) {
+  .areas li,
+  .linea-tiempo li {
+    grid-template-columns: 1fr;
+  }
+}
+
+.resumen-proceso {
+  margin: 0 0 16px;
+  color: #3d3832;
+}
+
+.resumen-proceso small {
+  color: #5c564c;
+  white-space: nowrap;
+}
+
+.estado-tarea {
+  margin: 0 0 16px;
+  color: #1f4d3a;
+  font-weight: 650;
+}
+
+.ficha dl {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.ficha dt {
+  color: #5c564c;
+}
+
+.ficha dd {
+  margin: 0;
+}
+
+.diccionario {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+}
+
+.diccionario li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #ece7df;
 }
 
 .vacio {
@@ -683,6 +929,16 @@ button:disabled {
     grid-template-areas:
       'avatar quien fecha'
       'avatar resumen fecha';
+  }
+
+  .correo-app .lista li.con-decision {
+    flex-direction: column;
+  }
+
+  .decisiones {
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: 0 12px 8px;
   }
 
   .correo-app .lista .avatar {
