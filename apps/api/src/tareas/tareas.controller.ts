@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Headers,
   Inject,
@@ -13,6 +14,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { IdentidadService } from '../identidad/identidad.service';
+import { puedeEditarTarea, puedeOperarSistema } from '../identidad/permisos';
 import { TareasService } from './tareas.service';
 
 @Controller()
@@ -24,7 +26,7 @@ export class TareasController {
 
   @Post('tareas/procesar-buzon')
   async procesarBuzon(@Headers('authorization') autorizacion: string | undefined, @Body() cuerpo: { desde?: string }) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     const desde = cuerpo?.desde && /^\d{4}-\d{2}-\d{2}$/.test(cuerpo.desde) ? cuerpo.desde : '2026-08-01';
     const inicio = new Date(`${desde}T00:00:00-05:00`);
     if (Number.isNaN(inicio.getTime())) throw new BadRequestException('La fecha no tiene la forma aaaa-mm-dd.');
@@ -33,7 +35,7 @@ export class TareasController {
 
   @Get('hilos/:id/resumen')
   async resumen(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     return this.tareas.resumenDeMensaje(id);
   }
 
@@ -46,7 +48,7 @@ export class TareasController {
     @Query('q') busqueda?: string,
     @Query('atencion') atencion?: string,
   ) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     if (sector !== 'pendiente' && sector !== 'otros' && sector !== 'internos') {
       throw new BadRequestException('El sector es pendiente, otros o internos.');
     }
@@ -60,7 +62,7 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { destino?: string },
   ) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     if (cuerpo?.destino !== 'otros' && cuerpo?.destino !== 'interna' && cuerpo?.destino !== 'archivado' && cuerpo?.destino !== 'evento') {
       throw new BadRequestException('El destino es otros, asuntos internos, archivado o telemetría.');
     }
@@ -73,7 +75,7 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { estado?: string; respuesta?: string },
   ) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     if (cuerpo?.estado !== 'por_atender' && cuerpo?.estado !== 'atendido') {
       throw new BadRequestException('El estado es por atender o atendido.');
     }
@@ -100,7 +102,7 @@ export class TareasController {
 
   @Post('tareas/:id/tomar')
   async tomar(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
-    const usuario = await this.exigir(autorizacion);
+    const usuario = await this.exigirEdicion(autorizacion);
     await this.tareas.tomar(id, usuario);
     return this.fichaDe(id);
   }
@@ -122,7 +124,7 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { horas?: number },
   ) {
-    await this.exigir(autorizacion);
+    await this.exigirEdicion(autorizacion);
     await this.tareas.validar(id, Number(cuerpo?.horas));
     return this.fichaDe(id);
   }
@@ -134,7 +136,7 @@ export class TareasController {
     @Param('notaId') notaId: string,
     @Body() cuerpo: { texto?: string },
   ) {
-    const usuario = await this.exigir(autorizacion);
+    const usuario = await this.exigirEdicion(autorizacion);
     await this.tareas.anular(id, notaId, usuario, cuerpo?.texto ?? '');
     return this.fichaDe(id);
   }
@@ -156,7 +158,7 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { campo?: string; valor?: string },
   ) {
-    await this.exigir(autorizacion);
+    await this.exigirEdicion(autorizacion);
     await this.tareas.corregir(id, cuerpo?.campo ?? '', cuerpo?.valor ?? '');
     return this.fichaDe(id);
   }
@@ -167,7 +169,7 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { campo?: string },
   ) {
-    await this.exigir(autorizacion);
+    await this.exigirEdicion(autorizacion);
     await this.tareas.releer(id, cuerpo?.campo ?? '');
     return this.fichaDe(id);
   }
@@ -180,19 +182,19 @@ export class TareasController {
 
   @Post('mensajes/:id/procesar')
   async procesar(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     return this.tareas.procesarHilo(id);
   }
 
   @Get('diccionario')
   async diccionario(@Headers('authorization') autorizacion?: string) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     return this.tareas.diccionario();
   }
 
   @Post('diccionario')
   async agregar(@Headers('authorization') autorizacion: string | undefined, @Body() cuerpo: { termino?: string }) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     return this.tareas.agregarTermino(cuerpo?.termino ?? '');
   }
 
@@ -202,7 +204,7 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { activo?: boolean },
   ) {
-    await this.exigir(autorizacion);
+    await this.exigirSistema(autorizacion);
     if (typeof cuerpo?.activo !== 'boolean') throw new BadRequestException('Indica si el término queda activo.');
     await this.tareas.fijarTermino(id, cuerpo.activo);
     return { id, activo: cuerpo.activo };
@@ -212,6 +214,18 @@ export class TareasController {
     const token = bearer(autorizacion);
     if (!token) throw new UnauthorizedException('Sesión no válida.');
     return this.identidad.actual(token);
+  }
+
+  private async exigirEdicion(autorizacion?: string) {
+    const usuario = await this.exigir(autorizacion);
+    if (!puedeEditarTarea(usuario.rol)) throw new ForbiddenException('No tienes permiso para editar la tarea.');
+    return usuario;
+  }
+
+  private async exigirSistema(autorizacion?: string) {
+    const usuario = await this.exigir(autorizacion);
+    if (!puedeOperarSistema(usuario.rol)) throw new ForbiddenException('No tienes permiso para esta operación.');
+    return usuario;
   }
 }
 

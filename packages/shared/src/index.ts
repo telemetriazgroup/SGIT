@@ -7,7 +7,7 @@ export type Salud = {
   archivos: EstadoServicio;
 };
 
-export type Rol = 'operador' | 'administrador';
+export type Rol = 'operador' | 'administrador' | 'superusuario' | 'tecnico';
 
 export type UsuarioPublico = {
   nombre: string;

@@ -51,6 +51,7 @@ type Tarea = TareaLista & {
 type NotaBitacora = {
   id: string;
   tipo: string;
+  canal?: string;
   texto: string;
   autor_nombre: string;
   archivo_nombre: string | null;
@@ -115,7 +116,19 @@ type ResumenHilo = {
   seguimiento: Tarea['seguimiento'];
 };
 
-export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token: string; tareaId: string | null }) {
+export function PanelTareas({
+  apiUrl,
+  token,
+  tareaId,
+  editar,
+  sistema,
+}: {
+  apiUrl: string;
+  token: string;
+  tareaId: string | null;
+  editar: boolean;
+  sistema: boolean;
+}) {
   const [tareas, setTareas] = useState<TareaLista[]>([]);
   const [ficha, setFicha] = useState<Tarea | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
@@ -377,9 +390,9 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
           <Campo nombre="Correo" valor={ficha.comercial_correo} />
           <Campo nombre="Teléfono" valor={ficha.comercial_telefono} />
         </dl>
-        <Correccion apiUrl={apiUrl} token={token} ficha={ficha} alGuardar={setFicha} alFallar={setAviso} />
+        {editar ? <Correccion apiUrl={apiUrl} token={token} ficha={ficha} alGuardar={setFicha} alFallar={setAviso} /> : null}
         <Seguimiento seguimiento={ficha.seguimiento} parte="encargo" />
-        <Bitacora apiUrl={apiUrl} token={token} ficha={ficha} alGuardar={setFicha} alFallar={setAviso} />
+        <Bitacora apiUrl={apiUrl} token={token} ficha={ficha} editar={editar} alGuardar={setFicha} alFallar={setAviso} />
         <Situaciones situaciones={ficha.situaciones ?? []} />
         <Seguimiento seguimiento={ficha.seguimiento} parte="correos" />
       </section>
@@ -403,10 +416,13 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
           />
           <button type="submit">Buscar</button>
         </form>
-        <button type="button" className="primario" disabled={procesando} onClick={() => void procesarCorreos()}>
-          {procesando ? 'Procesando…' : 'Procesar correos'}
-        </button>
+        {sistema ? (
+          <button type="button" className="primario" disabled={procesando} onClick={() => void procesarCorreos()}>
+            {procesando ? 'Procesando…' : 'Procesar correos'}
+          </button>
+        ) : null}
       </div>
+      {sistema ? (
       <div className="sectores" role="tablist">
         <button type="button" className={sector === 'tareas' ? 'activo' : ''} onClick={() => elegir('tareas')}>
           Tareas <span>{cuentas.tareas}</span>
@@ -421,6 +437,7 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
           Asuntos internos <span>{cuentas.internos}</span>
         </button>
       </div>
+      ) : null}
       <p>{textoSector(sector)}</p>
       {sector === 'internos' ? (
         <div className="filtro-area">
@@ -468,7 +485,7 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
       </div>
       {sector === 'tareas' ? (
         tareas.length === 0 ? (
-          <p>{consulta ? 'No hay tareas con ese texto.' : 'Todavía no hay tareas. Pulsa Procesar correos.'}</p>
+          <p>{consulta ? 'No hay tareas con ese texto.' : sistema ? 'Todavía no hay tareas. Pulsa Procesar correos.' : 'Todavía no hay tareas.'}</p>
         ) : (
           <ul className="lista">
             {tareas.map((tarea) => (
@@ -892,12 +909,14 @@ function Bitacora({
   apiUrl,
   token,
   ficha,
+  editar,
   alGuardar,
   alFallar,
 }: {
   apiUrl: string;
   token: string;
   ficha: Tarea;
+  editar: boolean;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
@@ -979,20 +998,22 @@ function Bitacora({
         <p>{ficha.recordar_en ? `Vuelve a salir: ${cuando(ficha.recordar_en)}.` : ficha.en_barrido ? 'Entra al recordatorio de esta hora.' : 'No entra al recordatorio de cada hora.'}</p>
       </div>
       <div className="bitacora-acciones">
-        {ficha.responsable_nombre ? null : (
+        {editar && !ficha.responsable_nombre ? (
           <button type="button" className="primario" onClick={() => void tomar().catch((error: unknown) => alFallar(texto(error)))}>
             Tomar tarea
           </button>
-        )}
+        ) : null}
         <button type="button" className="primario" onClick={() => abrir('seguimiento')}>
           Anotar seguimiento
         </button>
         <button type="button" onClick={() => abrir('incidente')}>
           Registrar incidente
         </button>
-        <button type="button" onClick={() => void validar().catch((error: unknown) => alFallar(texto(error)))}>
-          Recordarme en 4 horas
-        </button>
+        {editar ? (
+          <button type="button" onClick={() => void validar().catch((error: unknown) => alFallar(texto(error)))}>
+            Recordarme en 4 horas
+          </button>
+        ) : null}
       </div>
       {notas.length > 0 ? (
         <ol className="bitacora-tiempo">
@@ -1000,12 +1021,12 @@ function Bitacora({
             <li key={nota.id} className={nota.tipo}>
               <div className="bitacora-evento">
                 <time>{cuando(nota.creado_en)}</time>
-                <strong>{etiquetaNota(nota.tipo)}</strong>
+                <strong>{etiquetaNota(nota.tipo)}{nota.canal === 'whatsapp' ? ' · WhatsApp' : ''}</strong>
                 <span>{nota.autor_nombre}</span>
               </div>
               <p>{nota.texto}</p>
               {nota.archivo_nombre ? <FotoNota apiUrl={apiUrl} token={token} tareaId={ficha.id} notaId={nota.id} nombre={nota.archivo_nombre} /> : null}
-              {nota.tipo !== 'anulacion' ? (
+              {editar && nota.tipo !== 'anulacion' ? (
                 <button type="button" onClick={() => { setMotivo(''); setAnulando(nota.id); }}>
                   Anular
                 </button>

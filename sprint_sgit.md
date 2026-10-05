@@ -321,6 +321,8 @@ Con el número de laboratorio, no con el número operativo:
 
 **Sale cuando.** Un miembro puede informar una novedad desde el teléfono y otro la lee en la ficha.
 
+**Cierre — 5 de octubre de 2026.** El técnico habilitado recibe el aviso, entra a la cotización, deja seguimiento o incidente con foto y eso se lee en la ficha. Un número no registrado no anota. La barra muestra Gmail y WhatsApp en línea, y Reiniciar si alguno está fuera. La suite `prueba.bot` quedó actualizada al menú y no se volvió a correr sobre esta base: limpia el líder y marca la sesión desconectada. El sprint 6 no se abre.
+
 ---
 
 ## Sprint 6 — Recordatorios y despacho

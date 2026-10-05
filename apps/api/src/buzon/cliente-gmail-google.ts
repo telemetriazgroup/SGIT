@@ -46,7 +46,7 @@ export class ClienteGmailGoogle implements ClienteGmail {
       url.searchParams.set('startHistoryId', inicio);
       url.searchParams.set('historyTypes', 'messageAdded');
       if (page) url.searchParams.set('pageToken', page);
-      const json = await this.pedirJson(url);
+      const json = await this.pedirHistoria(url);
       if (json.historyId) historyId = String(json.historyId);
       for (const entrada of (json.history ?? []) as Array<{ messagesAdded?: Array<{ message?: { id?: string } }> }>) {
         for (const agregado of entrada.messagesAdded ?? []) {
@@ -73,12 +73,22 @@ export class ClienteGmailGoogle implements ClienteGmail {
     return Buffer.from(String(json.data ?? ''), 'base64url');
   }
 
+  private async pedirHistoria(url: URL): Promise<Record<string, any>> {
+    try {
+      return await this.pedirJson(url);
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : '';
+      if (mensaje.startsWith('Gmail 404')) throw new Error(`Gmail rechazó startHistoryId. ${mensaje}`);
+      throw error;
+    }
+  }
+
   private async pedirJson(url: URL): Promise<Record<string, any>> {
     const token = await this.token();
     const respuesta = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
     if (!respuesta.ok) {
       const texto = await respuesta.text();
-      throw new Error(`Gmail ${respuesta.status}: ${texto.slice(0, 300)}`);
+      throw new Error(`Gmail ${respuesta.status} ${url.pathname}: ${texto.slice(0, 240)}`);
     }
     return (await respuesta.json()) as Record<string, any>;
   }

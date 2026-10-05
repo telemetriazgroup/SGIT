@@ -4,7 +4,7 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "comprobar": "tsc --noEmit",
-    "test": "tsx --test test/estado.test.ts"
+    "test": "tsx --test test/estado.test.ts test/lider.test.ts"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

@@ -35,6 +35,14 @@ export function App() {
           olvidarSesion();
           setSesion(null);
         }}
+        onNombre={(nombre) => {
+          setSesion((actual) => {
+            if (!actual) return actual;
+            const siguiente = { ...actual, usuario: { ...actual.usuario, nombre } };
+            guardarSesion(siguiente);
+            return siguiente;
+          });
+        }}
       />
     );
   }

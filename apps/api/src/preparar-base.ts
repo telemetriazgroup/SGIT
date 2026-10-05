@@ -16,6 +16,7 @@ export class PrepararBase {
       await this.conexiones.pg.query(readFileSync(path.join(carpeta, archivo), 'utf8'));
     }
     await this.sembrarOperador();
+    await this.sembrarCuentas();
     await this.conexiones.asegurarBucket();
   }
 
@@ -36,5 +37,22 @@ export class PrepararBase {
              activo = true`,
       [randomUUID(), nombre, correo, hash, rol],
     );
+  }
+
+  private async sembrarCuentas(): Promise<void> {
+    const cuentas = [
+      ['Superusuario', 'superusuario@sgit.local', 'superusuario-prueba', 'superusuario'],
+      ['Administrador', 'admin@sgit.local', 'admin-prueba', 'administrador'],
+      ['Técnico de prueba', 'tecnico@sgit.local', 'tecnico-prueba', 'tecnico'],
+    ] as const;
+    for (const [nombre, correo, password, rol] of cuentas) {
+      const hash = await bcrypt.hash(password, 10);
+      await this.conexiones.pg.query(
+        `INSERT INTO usuario (id, nombre, correo, contrasena_hash, rol)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (correo) DO NOTHING`,
+        [randomUUID(), nombre, correo, hash, rol],
+      );
+    }
   }
 }

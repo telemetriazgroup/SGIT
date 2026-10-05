@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import type { SesionPublica } from '@sgit/shared';
+import { PanelBot } from './Bot';
+import { MiCuenta, PanelEquipo } from './Equipo';
 import { Logo } from './Logo';
 import { PanelDiccionario, PanelTareas } from './Tareas';
 
@@ -13,11 +15,20 @@ type Avance = {
   detalle: string;
 };
 
+type EstadoWhatsapp = {
+  estado: string;
+  enLinea: boolean;
+  proceso: boolean;
+  detalle: string;
+};
+
 type Resumen = {
   correo: string;
   conectado: boolean;
   clavesListas: boolean;
   estado: string;
+  enLinea: boolean;
+  detalle: string;
   ultimaSync: string | null;
   guardados: number;
   conversaciones: number;
@@ -70,10 +81,30 @@ type Props = {
   apiUrl: string;
   sesion: SesionPublica;
   onSalir: () => void;
+  onNombre: (nombre: string) => void;
 };
 
-export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
+function operaElSistema(rol: string): boolean {
+  return rol === 'superusuario' || rol === 'operador';
+}
+
+function editaTareas(rol: string): boolean {
+  return operaElSistema(rol) || rol === 'administrador';
+}
+
+function etiquetaRol(rol: string): string {
+  if (rol === 'superusuario') return 'Superusuario';
+  if (rol === 'administrador') return 'Administrador';
+  if (rol === 'tecnico') return 'Técnico';
+  return 'Operador';
+}
+
+export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
+  const sistema = operaElSistema(sesion.usuario.rol);
+  const editar = editaTareas(sesion.usuario.rol);
   const [resumen, setResumen] = useState<Resumen | null>(null);
+  const [whatsapp, setWhatsapp] = useState<EstadoWhatsapp | null>(null);
+  const [reiniciando, setReiniciando] = useState<'gmail' | 'whatsapp' | null>(null);
   const [mensajes, setMensajes] = useState<Mensaje[]>([]);
   const [hilo, setHilo] = useState<Hilo | null>(null);
   const [abiertos, setAbiertos] = useState<string[]>([]);
@@ -88,7 +119,7 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
   const [paginas, setPaginas] = useState(1);
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario'>('recibidos');
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
   const [redactando, setRedactando] = useState(false);
   const [notaProceso, setNotaProceso] = useState<string | null>(null);
   const [tareaAbierta, setTareaAbierta] = useState<string | null>(null);
@@ -113,8 +144,55 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
     setPaginas(lista.paginas);
   }
 
+  async function leerWhatsapp() {
+    const estado = await pedir<EstadoWhatsapp>(apiUrl, sesion.token, '/bot');
+    setWhatsapp(estado);
+    return estado;
+  }
+
+  async function reiniciarGmail() {
+    if (!window.confirm('¿Reiniciar la sincronización de Gmail?')) return;
+    setReiniciando('gmail');
+    setAviso('Reiniciando Gmail…');
+    try {
+      const estado = await pedir<Resumen>(apiUrl, sesion.token, '/buzon/reiniciar', { method: 'POST' });
+      setResumen(estado);
+      setAviso(estado.enLinea ? 'Gmail en línea.' : 'Gmail sigue fuera de línea. La sincronización quedó relanzada.');
+    } catch (error) {
+      setAviso(texto(error));
+    } finally {
+      setReiniciando(null);
+    }
+  }
+
+  async function reiniciarWhatsapp() {
+    if (!window.confirm('¿Reiniciar WhatsApp? Se vuelve a abrir la misma sesión.')) return;
+    setReiniciando('whatsapp');
+    setAviso('Reiniciando WhatsApp…');
+    try {
+      const estado = await pedir<EstadoWhatsapp>(apiUrl, sesion.token, '/bot/reiniciar', { method: 'POST' });
+      setWhatsapp(estado);
+      setAviso(estado.detalle);
+    } catch (error) {
+      setAviso(texto(error));
+    } finally {
+      setReiniciando(null);
+    }
+  }
+
   useEffect(() => {
+    if (!sistema) return;
     void cargar().catch((error: unknown) => setAviso(texto(error)));
+    void leerWhatsapp().catch((error: unknown) => setAviso(texto(error)));
+  }, [apiUrl, sesion.token]);
+
+  useEffect(() => {
+    if (!sistema) return;
+    const id = window.setInterval(() => {
+      void leerEstado().catch(() => undefined);
+      void leerWhatsapp().catch(() => undefined);
+    }, 15000);
+    return () => window.clearInterval(id);
   }, [apiUrl, sesion.token]);
 
   async function procesar(id: string) {
@@ -247,6 +325,7 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
       <p className="sr">Sesión iniciada</p>
       <header className="barra">
         <Logo />
+        {sistema ? (
         <form
           className="buscar"
           onSubmit={(evento) => {
@@ -269,10 +348,33 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
           />
           <button type="submit">Buscar</button>
         </form>
+        ) : null}
+        {sistema ? (
+          <div className="verificador" aria-label="Estado de Gmail y WhatsApp">
+            <span className={resumen?.enLinea ? 'en-linea' : 'fuera'} title={resumen?.detalle ?? 'Consultando Gmail'}>
+              <i />
+              Gmail {resumen ? (resumen.enLinea ? 'en línea' : 'fuera de línea') : '…'}
+            </span>
+            {resumen && !resumen.enLinea ? (
+              <button type="button" disabled={reiniciando !== null} onClick={() => void reiniciarGmail()}>
+                Reiniciar
+              </button>
+            ) : null}
+            <span className={whatsapp?.enLinea ? 'en-linea' : 'fuera'} title={whatsapp?.detalle ?? 'Consultando WhatsApp'}>
+              <i />
+              WhatsApp {whatsapp ? (whatsapp.enLinea ? 'en línea' : 'fuera de línea') : '…'}
+            </span>
+            {whatsapp && !whatsapp.enLinea ? (
+              <button type="button" disabled={reiniciando !== null} onClick={() => void reiniciarWhatsapp()}>
+                Reiniciar
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <div className="cuenta">
           <span>
             {sesion.usuario.nombre}
-            <small>{sesion.usuario.rol}</small>
+            <small>{etiquetaRol(sesion.usuario.rol)}</small>
           </span>
           <button type="button" onClick={onSalir}>
             Salir
@@ -281,10 +383,14 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
       </header>
       <div className="cuerpo-app">
         <nav className="nav-correo" aria-label="Carpetas">
+          {sistema ? (
           <button type="button" className="redactar" onClick={() => setRedactando(true)}>
             <Lapiz />
             Redactar
           </button>
+          ) : null}
+          {sistema ? (
+          <>
           <button
             type="button"
             className={vista === 'recibidos' && !hilo ? 'activo' : ''}
@@ -306,6 +412,8 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
           >
             Enviados
           </button>
+          </>
+          ) : null}
           <button
             type="button"
             className={vista === 'tareas' ? 'activo' : ''}
@@ -316,6 +424,7 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
           >
             Tareas
           </button>
+          {sistema ? (
           <button
             type="button"
             className={vista === 'diccionario' ? 'activo' : ''}
@@ -326,8 +435,30 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
           >
             Diccionario
           </button>
+          ) : null}
+          {sistema ? (
+          <button
+            type="button"
+            className={vista === 'bot' ? 'activo' : ''}
+            onClick={() => {
+              setVista('bot');
+              setHilo(null);
+            }}
+          >
+            Bot
+          </button>
+          ) : null}
+          {sesion.usuario.rol === 'superusuario' ? (
+            <button type="button" className={vista === 'equipo' ? 'activo' : ''} onClick={() => { setVista('equipo'); setHilo(null); }}>
+              Cuentas
+            </button>
+          ) : null}
+          <button type="button" className={vista === 'cuenta' ? 'activo' : ''} onClick={() => { setVista('cuenta'); setHilo(null); }}>
+            Mi cuenta
+          </button>
         </nav>
         <section className="panel">
+          {sistema ? (
           <div className="herramientas">
             {hilo ? (
               <button type="button" onClick={volver}>
@@ -367,6 +498,7 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
               </div>
             ) : null}
           </div>
+          ) : null}
           {vista === 'recibidos' && resumen?.avance && resumen.avance.fase !== 'ocioso' ? (
             <p className={resumen.avance.fase === 'error' ? 'error' : 'bajada'} role="status">
               {resumen.avance.detalle}
@@ -389,9 +521,15 @@ export function Bandeja({ apiUrl, sesion, onSalir }: Props) {
             </section>
           ) : null}
           {vista === 'tareas' ? (
-            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} />
+            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} sistema={sistema} />
+          ) : vista === 'equipo' ? (
+            <PanelEquipo apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'cuenta' ? (
+            <MiCuenta apiUrl={apiUrl} token={sesion.token} alCambiarNombre={onNombre} />
           ) : vista === 'diccionario' ? (
             <PanelDiccionario apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'bot' ? (
+            <PanelBot apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'enviados' ? (
             <VacioEnviados onRedactar={() => setRedactando(true)} />
           ) : hilo ? (

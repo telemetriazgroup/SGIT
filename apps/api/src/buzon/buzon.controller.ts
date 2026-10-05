@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Headers,
   Inject,
@@ -16,6 +17,7 @@ import {
 import type { Response } from 'express';
 import type { Configuracion } from '../configuracion';
 import { IdentidadService } from '../identidad/identidad.service';
+import { puedeOperarSistema } from '../identidad/permisos';
 import { BuzonService } from './buzon.service';
 import { estadoVigente } from './cifrado';
 
@@ -64,6 +66,12 @@ export class BuzonController {
       throw new BadRequestException('Indica si la sincronización queda activa.');
     }
     return this.buzon.fijarSyncAutomatica(cuerpo.activa);
+  }
+
+  @Post('buzon/reiniciar')
+  async reiniciar(@Headers('authorization') autorizacion: string | undefined) {
+    await this.exigir(autorizacion);
+    return this.buzon.reiniciarSync();
   }
 
   @Post('buzon/importar')
@@ -117,7 +125,9 @@ export class BuzonController {
   private async exigir(autorizacion?: string) {
     const token = bearer(autorizacion);
     if (!token) throw new UnauthorizedException('Sesión no válida.');
-    return this.identidad.actual(token);
+    const usuario = await this.identidad.actual(token);
+    if (!puedeOperarSistema(usuario.rol)) throw new ForbiddenException('No tienes permiso para el buzón.');
+    return usuario;
   }
 }
 

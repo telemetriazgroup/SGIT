@@ -2,13 +2,14 @@ import { Module } from '@nestjs/common';
 import { Conexiones } from './conexiones';
 import { ConexionesModule } from './conexiones.module';
 import { BuzonModule } from './buzon/buzon.module';
+import { BotModule } from './bot/bot.module';
 import { TareasModule } from './tareas/tareas.module';
 import { IdentidadModule } from './identidad/identidad.module';
 import { PrepararBase } from './preparar-base';
 import { SaludModule } from './salud/salud.module';
 
 @Module({
-  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule],
+  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule],
   providers: [
     {
       provide: PrepararBase,

@@ -14,5 +14,6 @@ import { TareasService } from './tareas.service';
       useFactory: (conexiones: Conexiones) => new TareasService(conexiones),
     },
   ],
+  exports: [TareasService],
 })
 export class TareasModule {}

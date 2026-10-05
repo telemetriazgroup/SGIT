@@ -8,6 +8,7 @@ import { AlmacenCorreo } from '../buzon/almacen';
 import { barridoCorre, claveHora, entraHoraria } from './barrido';
 import { evaluarCita, type Cita } from './cita';
 import { cotsDe, normalizarFecha, plano } from './texto';
+import { BotService } from '../bot/bot.service';
 
 export type ResultadoProceso = {
   mensajeId: string;
@@ -309,6 +310,7 @@ export class TareasService {
     const existente = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM tarea WHERE cot = $1`, [lectura.cot.valor]);
     const tareaId = existente.rows[0]?.id ?? null;
     if (tareaId) await this.anotarSituacion(tareaId, mensaje, lectura);
+    if (creada && tareaId) await new BotService(this.conexiones).alNacer(tareaId);
     return {
       mensajeId: mensaje.id,
       clasificacion,
@@ -621,7 +623,7 @@ export class TareasService {
     );
   }
 
-  async anotar(id: string, autor: Autor, tipo: string, texto: string, archivo: ArchivoNota | null): Promise<void> {
+  async anotar(id: string, autor: Autor, tipo: string, texto: string, archivo: ArchivoNota | null, canal: 'web' | 'whatsapp' = 'web'): Promise<void> {
     if (tipo !== 'seguimiento' && tipo !== 'incidente') throw new BadRequestException('La nota es un seguimiento o un incidente.');
     const limpio = texto.trim();
     if (!limpio) throw new BadRequestException('Escribe la nota.');
@@ -632,8 +634,8 @@ export class TareasService {
     await this.conexiones.pg.query(
       `INSERT INTO nota_bitacora (
          id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime
-       ) VALUES ($1,$2,$3,'web',$4,$5,$6,$7,$8,$9)`,
-      [notaId, id, tipo, limpio, autor.correo, autor.nombre, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [notaId, id, tipo, canal, limpio, autor.correo, autor.nombre, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
     );
     if (tipo === 'seguimiento') {
       await this.conexiones.pg.query(
@@ -763,7 +765,7 @@ export class TareasService {
 
   private async prepararImagen(archivo: ArchivoNota | null): Promise<{ nombre: string; mime: string; contenido: Buffer; clave: (id: string) => string } | null> {
     if (!archivo) return null;
-    const mime = archivo.mime.toLowerCase();
+    const mime = archivo.mime.toLowerCase().split(';')[0].trim().replace('image/jpg', 'image/jpeg');
     if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mime)) {
       throw new BadRequestException('La foto tiene que ser una imagen.');
     }
@@ -828,10 +830,11 @@ export class TareasService {
     };
     const efecto = evaluarCita(vigente, propuesta);
     const tipo = Number(fila.previas) === 0 ? 'origen' : efecto.reprograma ? 'reprogramacion' : 'informativa';
-    await this.conexiones.pg.query(
+    const alta = await this.conexiones.pg.query(
       `INSERT INTO situacion_hilo (id, tarea_id, mensaje_id, tipo, resumen, cita_anterior)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-       ON CONFLICT (mensaje_id) DO NOTHING`,
+       ON CONFLICT (mensaje_id) DO NOTHING
+       RETURNING id`,
       [
         randomUUID(),
         tareaId,
@@ -850,6 +853,9 @@ export class TareasService {
        WHERE id = $1`,
       [tareaId, efecto.fecha, efecto.hora, efecto.direccion],
     );
+    if ((alta.rowCount ?? 0) > 0 && tipo === 'reprogramacion') {
+      await new BotService(this.conexiones).alReprogramar(tareaId, mensaje.id);
+    }
   }
 
   private async situacionesDe(tareaId: string): Promise<SituacionHilo[]> {

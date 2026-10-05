@@ -42,6 +42,7 @@ export class BuzonService {
   private temporizador: NodeJS.Timeout | null = null;
   private readonly almacen: AlmacenCorreo;
   private importando = false;
+  private ultimoError: string | null = null;
   private avance: AvanceBuzon = { ...AVANCE_QUIETO };
 
   constructor(
@@ -69,14 +70,26 @@ export class BuzonService {
     return this.resumen();
   }
 
+  async reiniciarSync() {
+    await this.asegurarFila();
+    await this.conexiones.pg.query(`UPDATE buzon SET sync_automatica = true`);
+    this.ultimoError = null;
+    this.detenerSync();
+    this.arrancarSync();
+    return this.resumen();
+  }
+
   async resumen() {
     const fila = await this.fila();
     const cuentas = await this.contarEstados();
+    const enLinea = this.gmailEnLinea(fila);
     return {
       correo: this.config.gmail?.correo ?? 'telemetria@zgroup.com.pe',
       conectado: Boolean(fila?.refresh_token_cifrado),
       clavesListas: Boolean(this.config.gmail),
       estado: fila?.estado ?? 'sin_conectar',
+      enLinea,
+      detalle: this.textoGmail(fila, enLinea),
       ultimaSync: fila?.ultima_sync_ok ?? null,
       guardados: cuentas.guardados,
       conversaciones: cuentas.conversaciones,
@@ -158,8 +171,8 @@ export class BuzonService {
       const cambios = await this.cliente.historial(historyId);
       for (const id of cambios.ids) {
         if (await this.esCompleto(id)) continue;
-        const mensaje = await this.cliente.obtener(id);
-        if (esEnviado(mensaje.etiquetas)) continue;
+        const mensaje = await this.leerSiExiste(id);
+        if (!mensaje || esEnviado(mensaje.etiquetas)) continue;
         await this.guardar(mensaje);
       }
       await this.guardarHistory(cambios.historyId);
@@ -355,8 +368,8 @@ export class BuzonService {
     const conocidos = await this.idsCompletos(ids);
     for (const id of ids) {
       if (conocidos.has(id)) continue;
-      const mensaje = await this.cliente.obtener(id);
-      if (esEnviado(mensaje.etiquetas)) continue;
+      const mensaje = await this.leerSiExiste(id);
+      if (!mensaje || esEnviado(mensaje.etiquetas)) continue;
       await this.guardar(mensaje);
     }
     await this.guardarHistory(marca);
@@ -489,7 +502,8 @@ export class BuzonService {
       [desde, hasta],
     );
     for (const fila of pendientes.rows) {
-      await this.guardar(await this.cliente.obtener(fila.gmail_message_id));
+      const mensaje = await this.leerSiExiste(fila.gmail_message_id);
+      if (mensaje) await this.guardar(mensaje);
     }
     return pendientes.rows.length;
   }
@@ -583,12 +597,27 @@ export class BuzonService {
     );
   }
 
+  private async leerSiExiste(id: string): Promise<MensajeDescargado | null> {
+    try {
+      return await this.cliente.obtener(id);
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : '';
+      if (mensaje.includes('Gmail 404')) return null;
+      throw error;
+    }
+  }
+
   private async reintentarIncompletos(): Promise<void> {
     const pendientes = await this.conexiones.pg.query<{ gmail_message_id: string }>(
       `SELECT gmail_message_id FROM mensaje_correo WHERE replica = 'incompleto'`,
     );
     for (const fila of pendientes.rows) {
-      await this.guardar(await this.cliente.obtener(fila.gmail_message_id));
+      const mensaje = await this.leerSiExiste(fila.gmail_message_id);
+      if (!mensaje) {
+        await this.conexiones.pg.query(`UPDATE mensaje_correo SET replica = 'ausente' WHERE gmail_message_id = $1 AND replica = 'incompleto'`, [fila.gmail_message_id]);
+        continue;
+      }
+      await this.guardar(mensaje);
     }
   }
 
@@ -597,6 +626,7 @@ export class BuzonService {
     const correr = () => {
       void this.sincronizarReciente().catch((error: unknown) => {
         const mensaje = error instanceof Error ? error.message : 'falló la sync';
+        this.ultimoError = mensaje.slice(0, 180);
         console.error(`Sync reciente: ${mensaje}`);
       });
     };
@@ -656,7 +686,23 @@ export class BuzonService {
   }
 
   private async marcarSyncOk(): Promise<void> {
+    this.ultimoError = null;
     await this.conexiones.pg.query(`UPDATE buzon SET ultima_sync_ok = now(), estado = 'conectado'`);
+  }
+
+  private gmailEnLinea(fila: FilaBuzon | null): boolean {
+    if (!fila?.refresh_token_cifrado || this.temporizador === null || this.ultimoError || !fila.ultima_sync_ok) return false;
+    const edad = Date.now() - new Date(fila.ultima_sync_ok).getTime();
+    return edad < INTERVALO_SYNC_MS * 2 + 60_000;
+  }
+
+  private textoGmail(fila: FilaBuzon | null, enLinea: boolean): string {
+    if (!fila?.refresh_token_cifrado) return 'Gmail no está conectado.';
+    if (this.temporizador === null) return 'La sincronización está en pausa.';
+    if (this.ultimoError) return this.ultimoError;
+    if (!fila.ultima_sync_ok) return 'Todavía no hay una sync correcta.';
+    if (!enLinea) return 'La última sync correcta ya no es reciente.';
+    return 'Sincronización al día.';
   }
 }
 
