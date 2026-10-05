@@ -60,8 +60,8 @@ export class TareasController {
     @Body() cuerpo: { destino?: string },
   ) {
     await this.exigir(autorizacion);
-    if (cuerpo?.destino !== 'otros' && cuerpo?.destino !== 'interna' && cuerpo?.destino !== 'archivado') {
-      throw new BadRequestException('El destino es otros, asuntos internos o archivado.');
+    if (cuerpo?.destino !== 'otros' && cuerpo?.destino !== 'interna' && cuerpo?.destino !== 'archivado' && cuerpo?.destino !== 'evento') {
+      throw new BadRequestException('El destino es otros, asuntos internos, archivado o telemetría.');
     }
     return this.tareas.decidir(id, cuerpo.destino);
   }
@@ -92,6 +92,32 @@ export class TareasController {
   @Get('tareas/:id')
   async ficha(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     await this.exigir(autorizacion);
+    const tarea = await this.tareas.ficha(id);
+    if (!tarea) throw new NotFoundException('No está esa tarea.');
+    return tarea;
+  }
+
+  @Post('tareas/:id/correccion')
+  async corregir(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { campo?: string; valor?: string },
+  ) {
+    await this.exigir(autorizacion);
+    await this.tareas.corregir(id, cuerpo?.campo ?? '', cuerpo?.valor ?? '');
+    const tarea = await this.tareas.ficha(id);
+    if (!tarea) throw new NotFoundException('No está esa tarea.');
+    return tarea;
+  }
+
+  @Post('tareas/:id/releer')
+  async releer(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { campo?: string },
+  ) {
+    await this.exigir(autorizacion);
+    await this.tareas.releer(id, cuerpo?.campo ?? '');
     const tarea = await this.tareas.ficha(id);
     if (!tarea) throw new NotFoundException('No está esa tarea.');
     return tarea;

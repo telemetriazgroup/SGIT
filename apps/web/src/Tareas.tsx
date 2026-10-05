@@ -40,6 +40,17 @@ type Tarea = TareaLista & {
   cita_parcial_fecha: string | null;
   cita_parcial_hora: string | null;
   seguimiento: { momento: Momento | null; areas: AreaEncargo[]; linea: Paso[] };
+  campos_corregidos?: string[];
+  situaciones?: Situacion[];
+};
+
+type Situacion = {
+  tipo: string;
+  resumen: string;
+  cita_anterior: { fecha: string | null; hora: string | null; direccion: string | null } | null;
+  de: string;
+  fecha: string | null;
+  asunto: string;
 };
 
 type Termino = { id: string; termino: string; activo: boolean };
@@ -171,7 +182,7 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
     setHilo(detalle);
   }
 
-  async function decidir(id: string, destino: 'otros' | 'interna' | 'archivado') {
+  async function decidir(id: string, destino: 'otros' | 'interna' | 'archivado' | 'evento') {
     setAviso(null);
     setMoviendo(id);
     try {
@@ -292,6 +303,9 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
             <button type="button" disabled={moviendo === hilo.id} onClick={() => void decidir(hilo.id, 'interna')}>
               Enviar a asuntos internos
             </button>
+            <button type="button" disabled={moviendo === hilo.id} onClick={() => void decidir(hilo.id, 'evento')}>
+              Es telemetría
+            </button>
           </div>
         ) : null}
         {sector === 'pendiente' && aviso ? <p className="error">{aviso}</p> : null}
@@ -351,6 +365,8 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
           <Campo nombre="Correo" valor={ficha.comercial_correo} />
           <Campo nombre="Teléfono" valor={ficha.comercial_telefono} />
         </dl>
+        <Correccion apiUrl={apiUrl} token={token} ficha={ficha} alGuardar={setFicha} alFallar={setAviso} />
+        <Situaciones situaciones={ficha.situaciones ?? []} />
       </section>
     );
   }
@@ -504,6 +520,9 @@ export function PanelTareas({ apiUrl, token, tareaId }: { apiUrl: string; token:
                   <button type="button" disabled={moviendo === correo.id} onClick={() => void decidir(correo.id, 'interna')}>
                     Enviar a asuntos internos
                   </button>
+                  <button type="button" disabled={moviendo === correo.id} onClick={() => void decidir(correo.id, 'evento')}>
+                    Es telemetría
+                  </button>
                 </div>
               ) : null}
               {sector === 'otros' ? (
@@ -578,6 +597,108 @@ export function PanelDiccionario({ apiUrl, token }: { apiUrl: string; token: str
       </ul>
     </section>
   );
+}
+
+const CAMPOS_CORREGIBLES = [
+  { id: 'cliente', nombre: 'Cliente' },
+  { id: 'lugar', nombre: 'Lugar' },
+  { id: 'descripcion', nombre: 'Descripción' },
+  { id: 'cita_fecha', nombre: 'Fecha de la cita' },
+  { id: 'cita_hora', nombre: 'Hora de la cita' },
+  { id: 'cita_direccion', nombre: 'Dirección' },
+  { id: 'comercial_nombre', nombre: 'Comercial' },
+  { id: 'comercial_telefono', nombre: 'Teléfono' },
+];
+
+function Correccion({
+  apiUrl,
+  token,
+  ficha,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  ficha: Tarea;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (aviso: string) => void;
+}) {
+  const [campo, setCampo] = useState('cliente');
+  const [valor, setValor] = useState('');
+  const corregidos = ficha.campos_corregidos ?? [];
+
+  async function guardar(evento: FormEvent) {
+    evento.preventDefault();
+    const tarea = await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/correccion`, {
+      method: 'POST',
+      body: JSON.stringify({ campo, valor }),
+    });
+    setValor('');
+    alGuardar(tarea);
+  }
+
+  async function releer(nombre: string) {
+    const tarea = await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/releer`, {
+      method: 'POST',
+      body: JSON.stringify({ campo: nombre }),
+    });
+    alGuardar(tarea);
+  }
+
+  return (
+    <section>
+      <h3>Corregir un dato</h3>
+      <form className="rango" onSubmit={(evento) => void guardar(evento).catch((error: unknown) => alFallar(texto(error)))}>
+        <label htmlFor="campo-corregir">Campo</label>
+        <select id="campo-corregir" value={campo} onChange={(evento) => setCampo(evento.target.value)}>
+          {CAMPOS_CORREGIBLES.map((opcion) => (
+            <option key={opcion.id} value={opcion.id}>
+              {opcion.nombre}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="valor-corregir">Valor</label>
+        <input id="valor-corregir" value={valor} onChange={(evento) => setValor(evento.target.value)} required />
+        <button type="submit">Guardar corrección</button>
+      </form>
+      {corregidos.length > 0 ? (
+        <div className="decisiones decisiones-ficha">
+          {corregidos.map((nombre) => (
+            <button key={nombre} type="button" onClick={() => void releer(nombre).catch((error: unknown) => alFallar(texto(error)))}>
+              Volver a leer {CAMPOS_CORREGIBLES.find((opcion) => opcion.id === nombre)?.nombre ?? nombre}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function Situaciones({ situaciones }: { situaciones: Situacion[] }) {
+  if (situaciones.length === 0) return null;
+  return (
+    <section>
+      <h3>Situaciones del hilo</h3>
+      <ol className="linea-tiempo">
+        {situaciones.map((situacion, indice) => (
+          <li key={`${situacion.fecha ?? ''}-${indice}`} className={situacion.tipo === 'reprogramacion' ? 'nuestra' : undefined}>
+            <time>{cuando(situacion.fecha)}</time>
+            <strong>{[etiquetaSituacion(situacion.tipo), nombreDe(situacion.de)].filter(Boolean).join(' · ')}</strong>
+            <span>{situacion.resumen}</span>
+            {situacion.cita_anterior ? (
+              <span>Cita anterior: {[situacion.cita_anterior.fecha, situacion.cita_anterior.hora, situacion.cita_anterior.direccion].filter(Boolean).join(' · ')}</span>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function etiquetaSituacion(tipo: string): string {
+  if (tipo === 'origen') return 'Origen';
+  if (tipo === 'reprogramacion') return 'Reprogramación';
+  return 'Informativa';
 }
 
 function Seguimiento({ seguimiento, mostrarVacio = true }: { seguimiento: Tarea['seguimiento'] | undefined; mostrarVacio?: boolean }) {

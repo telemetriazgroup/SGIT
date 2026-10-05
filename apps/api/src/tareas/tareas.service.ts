@@ -4,6 +4,7 @@ import type { Conexiones } from '../conexiones';
 import { dictaminar, referenciasCitadas, type Clase } from './clasificar';
 import { extraer, type Extraccion } from './extraer';
 import { AREAS, armarSeguimiento, resumenHilo, type ResumenHilo, type Seguimiento } from './seguimiento';
+import { evaluarCita, type Cita } from './cita';
 import { cotsDe, normalizarFecha, plano } from './texto';
 
 export type ResultadoProceso = {
@@ -22,6 +23,7 @@ type FilaMensaje = {
   asunto: string;
   de: string;
   texto: string;
+  fecha: Date | string | null;
 };
 
 export class TareasService {
@@ -60,7 +62,7 @@ export class TareasService {
   }> {
     const terminos = await this.terminosActivos();
     const filas = await this.conexiones.pg.query<FilaMensaje>(
-      `SELECT id, gmail_thread_id, asunto, de, texto
+      `SELECT id, gmail_thread_id, asunto, de, texto, fecha
        FROM mensaje_correo
        WHERE fecha >= $1
        ORDER BY fecha ASC NULLS LAST, creado_en ASC`,
@@ -221,7 +223,7 @@ export class TareasService {
     if (!tarea) return null;
     const guardados = Array.isArray(tarea.cots) ? tarea.cots.map(String) : [];
     const numeros = (guardados.length > 0 ? guardados : String(tarea.cot ?? '').split('+')).filter((numero) => /^\d{6,}$/.test(numero));
-    if (numeros.length === 0) return { ...tarea, seguimiento: { momento: null, areas: [], linea: [] } };
+    if (numeros.length === 0) return { ...tarea, seguimiento: { momento: null, areas: [], linea: [] }, situaciones: await this.situacionesDe(tarea.id) };
     const donde = numeros
       .map((_, indice) => `asunto ~ ('(^|[^0-9])' || $${indice + 1} || '([^0-9]|$)') OR texto ~ ('(^|[^0-9])' || $${indice + 1} || '([^0-9]|$)')`)
       .join(' OR ');
@@ -234,7 +236,8 @@ export class TareasService {
       numeros,
     );
     const terminos = await this.terminosActivos();
-    return { ...tarea, seguimiento: armarSeguimiento(mensajes.rows, terminos) };
+    const situaciones = await this.situacionesDe(tarea.id);
+    return { ...tarea, seguimiento: armarSeguimiento(mensajes.rows, terminos), situaciones };
   }
 
   async diccionario(): Promise<Array<{ id: string; termino: string; activo: boolean }>> {
@@ -274,8 +277,8 @@ export class TareasService {
     const activos = terminos ?? (await this.terminosActivos());
     const dictamen = dictaminar(mensaje.asunto, mensaje.texto, activos, mensaje.de ?? '');
     const manual = await this.destinoManual(mensaje.gmail_thread_id);
-    const clasificacion = manual ?? dictamen.clase;
-    const lectura = extraer(mensaje.asunto, mensaje.texto);
+    const clasificacion = manual === 'evento' ? 'evento_desarrollo' : (manual ?? dictamen.clase);
+    const lectura = extraer(mensaje.asunto, mensaje.texto, anioLima(mensaje.fecha));
     const numeros = cotsDe(mensaje.asunto);
     if (clasificacion === 'evento_desarrollo' && numeros.length > 0) {
       lectura.cot = { valor: [...numeros].sort().join('+'), fragmento: numeros.join(', ') };
@@ -287,15 +290,18 @@ export class TareasService {
       JSON.stringify(lectura),
     ]);
     if (clasificacion !== 'evento_desarrollo' || !lectura.cot.valor) {
-      return { mensajeId: mensaje.id, clasificacion, cot: lectura.cot.valor, tareaId: null, creada: false, avisos: 0, motivo: dictamen.motivo };
+      const anexa = await this.anexarPorHilo(mensaje, lectura);
+      return { mensajeId: mensaje.id, clasificacion, cot: lectura.cot.valor, tareaId: anexa, creada: false, avisos: 0, motivo: dictamen.motivo };
     }
     const creada = await this.abrirTarea(mensaje.id, lectura, referencias);
     const existente = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM tarea WHERE cot = $1`, [lectura.cot.valor]);
+    const tareaId = existente.rows[0]?.id ?? null;
+    if (tareaId) await this.anotarSituacion(tareaId, mensaje, lectura);
     return {
       mensajeId: mensaje.id,
       clasificacion,
       cot: lectura.cot.valor,
-      tareaId: existente.rows[0]?.id ?? null,
+      tareaId,
       creada,
       avisos: 0,
       motivo: null,
@@ -333,11 +339,11 @@ export class TareasService {
         lectura.comercialCargo.valor,
         lectura.comercialCorreo.valor,
         lectura.comercialTelefono.valor,
-        isoDe(lectura.fecha.fragmento),
+        isoDe(lectura.fecha.fragmento, lectura.fecha.valor),
         lectura.hora.valor,
         lectura.direccion.valor,
         lectura.mapa.valor,
-        isoDe(lectura.citaParcialFecha.fragmento),
+        isoDe(lectura.citaParcialFecha.fragmento, lectura.citaParcialFecha.valor),
         lectura.citaParcialHora.valor,
         JSON.stringify(lectura),
         mensajeId,
@@ -352,17 +358,23 @@ export class TareasService {
 
   private async completarTarea(lectura: Extraccion, referencias: string[]): Promise<void> {
     const cantidad = lectura.cantidad.valor ? Number(lectura.cantidad.valor) : null;
-    const previa = await this.conexiones.pg.query<{ referencias: string[] }>(`SELECT referencias FROM tarea WHERE cot = $1`, [lectura.cot.valor]);
+    const previa = await this.conexiones.pg.query<{ referencias: string[]; campos_corregidos: string[] }>(
+      `SELECT referencias, campos_corregidos FROM tarea WHERE cot = $1`,
+      [lectura.cot.valor],
+    );
     const referenciasUnidas = unirReferencias(previa.rows[0]?.referencias ?? [], referencias);
+    const protegidos = previa.rows[0]?.campos_corregidos ?? [];
     await this.conexiones.pg.query(
       `UPDATE tarea SET
          ticket = COALESCE(ticket, $2),
          descripcion = CASE
+           WHEN 'descripcion' = ANY($21::text[]) THEN descripcion
            WHEN $3::text IS NULL THEN descripcion
            WHEN descripcion IS NULL OR descripcion ~* '^(cot\\.?\\s*)?1002\\d{7}$' OR descripcion ~* '^asignar y despachar' THEN $3
            ELSE descripcion
          END,
          lugar = CASE
+           WHEN 'lugar' = ANY($21::text[]) THEN lugar
            WHEN lugar ~* 'alquiler|venta de|servicio de|instalaci' THEN $4
            WHEN lugar ~ '^[0-9]' THEN $4
            WHEN lugar IS NOT NULL AND lugar = $5 THEN $4
@@ -370,6 +382,7 @@ export class TareasService {
            ELSE lugar
          END,
          cliente = CASE
+           WHEN 'cliente' = ANY($21::text[]) THEN cliente
            WHEN cliente IS NULL THEN $5
            WHEN $5::text IS NOT NULL
              AND cliente !~* 's\\.?\\s*a|srl|eirl|b\\.?\\s*v|gobierno|sac|sa\\M'
@@ -380,11 +393,13 @@ export class TareasService {
          cantidad = COALESCE(cantidad, $6),
          temperatura = COALESCE(temperatura, $7),
          producto = CASE
+           WHEN 'producto' = ANY($21::text[]) THEN producto
            WHEN $8::text IS NOT NULL AND producto ~* 'reefer|contenedor' AND $8 !~* 'reefer|contenedor' THEN $8
            ELSE COALESCE(producto, $8)
          END,
          contenedor = COALESCE(contenedor, $9),
          comercial_nombre = CASE
+           WHEN 'comercial_nombre' = ANY($21::text[]) THEN comercial_nombre
            WHEN $10::text IS NOT NULL AND (
              comercial_nombre IS NULL
              OR comercial_nombre ~* 'excelente|https?://|que tenga|saludos|www\.'
@@ -392,14 +407,16 @@ export class TareasService {
            ELSE COALESCE(comercial_nombre, $10)
          END,
          comercial_cargo = CASE
+           WHEN 'comercial_cargo' = ANY($21::text[]) THEN comercial_cargo
            WHEN $11::text IS NOT NULL AND (
              comercial_cargo IS NULL
              OR comercial_cargo ~* 'https?://|www\.'
            ) THEN $11
            ELSE COALESCE(comercial_cargo, $11)
          END,
-         comercial_correo = COALESCE(comercial_correo, $12),
+         comercial_correo = CASE WHEN 'comercial_correo' = ANY($21::text[]) THEN comercial_correo ELSE COALESCE(comercial_correo, $12) END,
          comercial_telefono = CASE
+           WHEN 'comercial_telefono' = ANY($21::text[]) THEN comercial_telefono
            WHEN $13::text IS NOT NULL AND (
              comercial_telefono IS NULL
              OR comercial_telefono ~ '^1002[0-9]{7}$'
@@ -407,9 +424,13 @@ export class TareasService {
            ) THEN $13
            ELSE COALESCE(comercial_telefono, $13)
          END,
-         cita_fecha = COALESCE(cita_fecha, $14),
-         cita_hora = COALESCE(cita_hora, $15),
-         cita_direccion = COALESCE(cita_direccion, $16),
+         cita_fecha = CASE WHEN 'cita_fecha' = ANY($21::text[]) THEN cita_fecha ELSE COALESCE(cita_fecha, $14) END,
+         cita_hora = CASE
+           WHEN 'cita_hora' = ANY($21::text[]) THEN cita_hora
+           WHEN cita_fecha IS NULL AND $14::date IS NOT NULL AND $15::text IS NOT NULL THEN $15
+           ELSE COALESCE(cita_hora, $15)
+         END,
+         cita_direccion = CASE WHEN 'cita_direccion' = ANY($21::text[]) THEN cita_direccion ELSE COALESCE(cita_direccion, $16) END,
          cita_mapa = COALESCE(cita_mapa, $17),
          cita_parcial_fecha = COALESCE(cita_parcial_fecha, $18),
          cita_parcial_hora = COALESCE(cita_parcial_hora, $19),
@@ -429,13 +450,14 @@ export class TareasService {
         lectura.comercialCargo.valor,
         lectura.comercialCorreo.valor,
         lectura.comercialTelefono.valor,
-        isoDe(lectura.fecha.fragmento),
+        isoDe(lectura.fecha.fragmento, lectura.fecha.valor),
         lectura.hora.valor,
         lectura.direccion.valor,
         lectura.mapa.valor,
-        isoDe(lectura.citaParcialFecha.fragmento),
+        isoDe(lectura.citaParcialFecha.fragmento, lectura.citaParcialFecha.valor),
         lectura.citaParcialHora.valor,
         referenciasUnidas,
+        protegidos,
       ],
     );
   }
@@ -467,13 +489,13 @@ export class TareasService {
 
   private async mensaje(id: string): Promise<FilaMensaje | null> {
     const resultado = await this.conexiones.pg.query<FilaMensaje>(
-      `SELECT id, gmail_thread_id, asunto, de, texto FROM mensaje_correo WHERE id = $1`,
+      `SELECT id, gmail_thread_id, asunto, de, texto, fecha FROM mensaje_correo WHERE id = $1`,
       [id],
     );
     return resultado.rows[0] ?? null;
   }
 
-  async decidir(id: string, destino: 'otros' | 'interna' | 'archivado'): Promise<{ destino: 'otros' | 'interna' | 'archivado'; asunto: string }> {
+  async decidir(id: string, destino: 'otros' | 'interna' | 'archivado' | 'evento'): Promise<{ destino: 'otros' | 'interna' | 'archivado' | 'evento'; asunto: string }> {
     const ancla = await this.mensaje(id);
     if (!ancla) throw new NotFoundException('No está ese correo.');
     const estado = await this.estadoHilo(ancla.gmail_thread_id);
@@ -482,6 +504,16 @@ export class TareasService {
       if (estado.pendiente || estado.interna || estado.archivado) {
         throw new BadRequestException('Solo se archiva lo que está en Otros.');
       }
+    } else if (destino === 'evento') {
+      if (estado.tarea || estado.interna || estado.archivado || !estado.pendiente) {
+        throw new BadRequestException('Solo se confirma lo que está pendiente de decisión.');
+      }
+      const cuerpos = await this.conexiones.pg.query<{ asunto: string }>(
+        `SELECT asunto FROM mensaje_correo WHERE gmail_thread_id = $1`,
+        [ancla.gmail_thread_id],
+      );
+      const numeros = cuerpos.rows.flatMap((fila) => cotsDe(fila.asunto));
+      if (numeros.length === 0) throw new BadRequestException('Ese correo no trae cotización.');
     } else if (!estado.pendiente || estado.interna || estado.archivado) {
       throw new BadRequestException('Solo se mueve lo que está pendiente de decisión.');
     }
@@ -494,7 +526,7 @@ export class TareasService {
     );
     await this.conexiones.pg.query(`UPDATE mensaje_correo SET clasificacion = $2 WHERE gmail_thread_id = $1`, [
       ancla.gmail_thread_id,
-      destino === 'interna' ? 'interna' : destino,
+      destino === 'evento' ? 'evento_desarrollo' : destino === 'interna' ? 'interna' : destino,
     ]);
     if (destino === 'interna') {
       await this.conexiones.pg.query(
@@ -504,6 +536,7 @@ export class TareasService {
         [ancla.gmail_thread_id],
       );
     }
+    if (destino === 'evento') await this.procesarHilo(id);
     return { destino, asunto: ancla.asunto };
   }
 
@@ -521,14 +554,138 @@ export class TareasService {
     return { atencion: estado, respuesta: texto };
   }
 
-  private async destinoManual(hilo: string): Promise<'otros' | 'interna' | 'archivado' | null> {
+  private async destinoManual(hilo: string): Promise<'otros' | 'interna' | 'archivado' | 'evento' | null> {
     const resultado = await this.conexiones.pg.query<{ destino: string }>(
       `SELECT destino FROM decision_hilo WHERE gmail_thread_id = $1`,
       [hilo],
     );
     const destino = resultado.rows[0]?.destino;
-    if (destino === 'otros' || destino === 'interna' || destino === 'archivado') return destino;
+    if (destino === 'otros' || destino === 'interna' || destino === 'archivado' || destino === 'evento') return destino;
     return null;
+  }
+
+  async corregir(id: string, campo: string, valor: string): Promise<void> {
+    const columna = columnaDe(campo);
+    const escrito = valorCampo(campo, valor);
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE tarea
+       SET ${columna} = $2,
+           campos_corregidos = CASE
+             WHEN $3 = ANY(campos_corregidos) THEN campos_corregidos
+             ELSE array_append(campos_corregidos, $3)
+           END
+       WHERE id = $1`,
+      [id, escrito, campo],
+    );
+    if (resultado.rowCount === 0) throw new NotFoundException('No está esa tarea.');
+  }
+
+  async releer(id: string, campo: string): Promise<void> {
+    const columna = columnaDe(campo);
+    const mensajes = await this.conexiones.pg.query<{ extraccion: Extraccion | null }>(
+      `SELECT m.extraccion
+       FROM situacion_hilo s
+       JOIN mensaje_correo m ON m.id = s.mensaje_id
+       WHERE s.tarea_id = $1
+       ORDER BY m.fecha DESC NULLS LAST, m.creado_en DESC`,
+      [id],
+    );
+    const hallado = mensajes.rows.map((fila) => valorExtraido(fila.extraccion, campo)).find((valor) => valor !== null && valor !== undefined);
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE tarea SET ${columna} = $2, campos_corregidos = array_remove(campos_corregidos, $3) WHERE id = $1`,
+      [id, hallado ?? null, campo],
+    );
+    if (resultado.rowCount === 0) throw new NotFoundException('No está esa tarea.');
+  }
+
+  private async anexarPorHilo(mensaje: FilaMensaje, lectura: Extraccion): Promise<string | null> {
+    const encontrada = await this.conexiones.pg.query<{ id: string }>(
+      `SELECT id FROM (
+         SELECT t.id, t.creado_en
+         FROM tarea t
+         JOIN mensaje_correo ancla ON ancla.id = t.mensaje_id
+         WHERE ancla.gmail_thread_id = $1
+         UNION
+         SELECT t.id, t.creado_en
+         FROM situacion_hilo s
+         JOIN tarea t ON t.id = s.tarea_id
+         JOIN mensaje_correo m ON m.id = s.mensaje_id
+         WHERE m.gmail_thread_id = $1
+       ) tareas
+       ORDER BY creado_en DESC
+       LIMIT 1`,
+      [mensaje.gmail_thread_id],
+    );
+    const tareaId = encontrada.rows[0]?.id;
+    if (!tareaId) return null;
+    await this.anotarSituacion(tareaId, mensaje, lectura);
+    return tareaId;
+  }
+
+  private async anotarSituacion(tareaId: string, mensaje: FilaMensaje, lectura: Extraccion): Promise<void> {
+    const ya = await this.conexiones.pg.query(`SELECT 1 FROM situacion_hilo WHERE mensaje_id = $1`, [mensaje.id]);
+    if ((ya.rowCount ?? 0) > 0) return;
+    const tarea = await this.conexiones.pg.query<{
+      cita_fecha: Date | string | null;
+      cita_hora: string | null;
+      cita_direccion: string | null;
+      campos_corregidos: string[] | null;
+      previas: string;
+    }>(
+      `SELECT cita_fecha, cita_hora, cita_direccion, campos_corregidos,
+              (SELECT count(*)::text FROM situacion_hilo WHERE tarea_id = tarea.id) AS previas
+       FROM tarea WHERE id = $1`,
+      [tareaId],
+    );
+    const fila = tarea.rows[0];
+    if (!fila) return;
+    const protegidos = new Set(fila.campos_corregidos ?? []);
+    const vigente: Cita = {
+      fecha: fechaIso(fila.cita_fecha),
+      hora: fila.cita_hora,
+      direccion: fila.cita_direccion,
+    };
+    const propuesta: Cita = {
+      fecha: protegidos.has('cita_fecha') ? null : isoDe(lectura.fecha.fragmento, lectura.fecha.valor),
+      hora: protegidos.has('cita_hora') ? null : lectura.hora.valor,
+      direccion: protegidos.has('cita_direccion') ? null : lectura.direccion.valor,
+    };
+    const efecto = evaluarCita(vigente, propuesta);
+    const tipo = Number(fila.previas) === 0 ? 'origen' : efecto.reprograma ? 'reprogramacion' : 'informativa';
+    await this.conexiones.pg.query(
+      `INSERT INTO situacion_hilo (id, tarea_id, mensaje_id, tipo, resumen, cita_anterior)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+       ON CONFLICT (mensaje_id) DO NOTHING`,
+      [
+        randomUUID(),
+        tareaId,
+        mensaje.id,
+        tipo,
+        (mensaje.asunto || '(sin asunto)').slice(0, 240),
+        efecto.anterior ? JSON.stringify(efecto.anterior) : null,
+      ],
+    );
+    if (!efecto.fecha && !efecto.hora && !efecto.direccion) return;
+    await this.conexiones.pg.query(
+      `UPDATE tarea SET
+         cita_fecha = COALESCE($2::date, cita_fecha),
+         cita_hora = COALESCE($3, cita_hora),
+         cita_direccion = COALESCE($4, cita_direccion)
+       WHERE id = $1`,
+      [tareaId, efecto.fecha, efecto.hora, efecto.direccion],
+    );
+  }
+
+  private async situacionesDe(tareaId: string): Promise<SituacionHilo[]> {
+    const resultado = await this.conexiones.pg.query<SituacionHilo>(
+      `SELECT s.tipo, s.resumen, s.cita_anterior, m.de, m.fecha, m.asunto
+       FROM situacion_hilo s
+       JOIN mensaje_correo m ON m.id = s.mensaje_id
+       WHERE s.tarea_id = $1
+       ORDER BY m.fecha ASC NULLS LAST, s.creado_en ASC`,
+      [tareaId],
+    );
+    return resultado.rows;
   }
 
   private async estadoHilo(hilo: string): Promise<{ tarea: boolean; pendiente: boolean; interna: boolean; archivado: boolean }> {
@@ -659,7 +816,85 @@ function unirReferencias(actuales: string[], nuevas: string[]): string[] {
   return todas;
 }
 
-function isoDe(fragmento: string | null): string | null {
-  if (!fragmento) return null;
-  return normalizarFecha(fragmento).iso;
+function anioLima(fecha: Date | string | null | undefined): number | undefined {
+  if (!fecha) return undefined;
+  const valor = fecha instanceof Date ? fecha : new Date(fecha);
+  if (Number.isNaN(valor.getTime())) return undefined;
+  const anio = Number(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima', year: 'numeric' }).format(valor));
+  return anio >= 2000 && anio <= 2099 ? anio : undefined;
 }
+
+function isoDe(fragmento: string | null, valor?: string | null): string | null {
+  if (fragmento) {
+    const directa = normalizarFecha(fragmento).iso;
+    if (directa) return directa;
+  }
+  return valor ? normalizarFecha(valor).iso : null;
+}
+
+function fechaIso(valor: Date | string | null): string | null {
+  if (!valor) return null;
+  if (valor instanceof Date) return valor.toISOString().slice(0, 10);
+  const texto = String(valor);
+  return /^\d{4}-\d{2}-\d{2}/.test(texto) ? texto.slice(0, 10) : null;
+}
+
+const COLUMNAS: Record<string, keyof Extraccion | 'fecha'> = {
+  ticket: 'ticket',
+  descripcion: 'descripcion',
+  lugar: 'lugar',
+  cliente: 'cliente',
+  cantidad: 'cantidad',
+  temperatura: 'temperatura',
+  producto: 'producto',
+  contenedor: 'contenedor',
+  comercial_nombre: 'comercialNombre',
+  comercial_cargo: 'comercialCargo',
+  comercial_correo: 'comercialCorreo',
+  comercial_telefono: 'comercialTelefono',
+  cita_fecha: 'fecha',
+  cita_hora: 'hora',
+  cita_direccion: 'direccion',
+};
+
+function columnaDe(campo: string): string {
+  if (!COLUMNAS[campo]) throw new BadRequestException('Ese campo no se corrige.');
+  return campo;
+}
+
+function valorCampo(campo: string, valor: string): string | number {
+  const limpio = valor.trim();
+  if (!limpio) throw new BadRequestException('Escribe el valor corregido.');
+  if (campo === 'cantidad') {
+    const cantidad = Number(limpio);
+    if (!Number.isInteger(cantidad)) throw new BadRequestException('La cantidad es un número entero.');
+    return cantidad;
+  }
+  if (campo === 'cita_fecha') {
+    const iso = isoDe(limpio) ?? (/^\d{4}-\d{2}-\d{2}$/.test(limpio) ? limpio : null);
+    if (!iso) throw new BadRequestException('La fecha es dd/mm/aaaa.');
+    return iso;
+  }
+  return limpio;
+}
+
+function valorExtraido(extraccion: Extraccion | null, campo: string): string | number | null {
+  if (!extraccion) return null;
+  const clave = COLUMNAS[campo];
+  if (!clave || clave === 'fecha') return isoDe(extraccion.fecha?.fragmento ?? extraccion.fecha?.valor ?? null);
+  const valor = extraccion[clave]?.valor ?? null;
+  if (campo === 'cantidad') {
+    const cantidad = Number(valor);
+    return Number.isInteger(cantidad) ? cantidad : null;
+  }
+  return valor;
+}
+
+type SituacionHilo = {
+  tipo: string;
+  resumen: string;
+  cita_anterior: Cita | null;
+  de: string;
+  fecha: Date | null;
+  asunto: string;
+};

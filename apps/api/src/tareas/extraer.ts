@@ -30,15 +30,17 @@ export type Extraccion = {
 
 const VACIO: Campo = { valor: null, fragmento: null };
 
-export function extraer(asunto: string, cuerpo: string): Extraccion {
+export function extraer(asunto: string, cuerpo: string, anio?: number): Extraccion {
   const asuntoPartido = partirAsunto(asunto);
   const entregas = bloquesEntrega(cuerpo);
   const conDireccion = [...entregas].reverse().find((bloque) => /direcci[oó]n\s*:/i.test(bloque));
   const vigente = conDireccion ?? entregas[0] ?? '';
   const parcial = entregas.find((bloque) => bloque !== vigente) ?? '';
-  const citaSeccion = leerCita(vigente);
-  const cita = citaSeccion.fecha.valor ? citaSeccion : leerCitaSuelta(cuerpo);
-  const citaParcial = leerCita(parcial);
+  const citaSeccion = leerCita(vigente, anio);
+  const suelta = leerCitaSuelta(cuerpo, anio);
+  const cita = citaSeccion.fecha.valor ? citaSeccion : suelta;
+  const parcialSeccion = leerCita(parcial, anio);
+  const citaParcial = parcialSeccion.fecha.valor || citaSeccion.fecha.valor ? parcialSeccion : leerCitaSuelta(cuerpo, anio, 1);
   const firma = leerFirma(cuerpo);
   const ztrack = bloqueEntre(cuerpo, 'ztrack');
   const despacho = bloqueEntre(cuerpo, 'despacho');
@@ -115,12 +117,15 @@ export function leerCantidad(bloque: string): Campo {
   return VACIO;
 }
 
-function leerCita(bloque: string): { fecha: Campo; hora: Campo; direccion: Campo; mapa: Campo } {
-  const fechaLinea = bloque.match(/fecha:\s*[^\n]*/i)?.[0] ?? '';
-  const horaLinea = bloque.match(/hora:\s*[^\n]*/i)?.[0] ?? '';
+const ETIQUETA_FECHA = /fecha(?:\s+y\s+hora|\s+de\s+entrega(?:\s+(?:al|en)\s+el\s+cliente)?|\s+del\s+servicio)?\s*:/i;
+
+function leerCita(bloque: string, anio?: number): { fecha: Campo; hora: Campo; direccion: Campo; mapa: Campo } {
+  const elegida = elegirCita(bloque, anio);
+  const fechaLinea = elegida?.fechaLinea ?? '';
+  const horaLinea = elegida?.horaLinea ?? '';
   const direccionLinea = bloque.match(/direcci[oó]n:\s*[^\n]*/i)?.[0] ?? '';
   const mapa = direccionLinea.match(/https?:\/\/\S+/)?.[0] ?? bloque.match(/https?:\/\/maps\.app\.goo\.gl\/\S+/)?.[0] ?? null;
-  const fecha = normalizarFecha(fechaLinea);
+  const fecha = normalizarFecha(fechaLinea, elegida?.explicita ? undefined : anio);
   const direccion = direccionLinea.replace(/direcci[oó]n:\s*/i, '').replace(/https?:\/\/\S+/, '').trim();
   return {
     fecha: campo(fecha.valor, fecha.valor ? fechaLinea.trim() : null),
@@ -130,12 +135,17 @@ function leerCita(bloque: string): { fecha: Campo; hora: Campo; direccion: Campo
   };
 }
 
-function leerCitaSuelta(cuerpo: string): { fecha: Campo; hora: Campo; direccion: Campo; mapa: Campo } {
-  const fechaLinea = cuerpo.match(/fecha(?:\s+de\s+entrega(?:\s+en\s+el\s+cliente)?)?\s*:\s*[^\n]*/i)?.[0] ?? '';
-  const horaLinea = cuerpo.match(/\bhora(?:\s+de\s+llegada(?:\s+al\s+cliente)?)?\s*:\s*[^\n]*/i)?.[0] ?? '';
+function leerCitaSuelta(cuerpo: string, anio?: number, orden = 0): { fecha: Campo; hora: Campo; direccion: Campo; mapa: Campo } {
+  const elegida = elegirCita(cuerpo, anio, orden);
+  const fechaLinea = elegida?.fechaLinea ?? '';
+  const horaLinea = elegida
+    ? elegida.horaLinea
+    : orden === 0
+      ? (cuerpo.match(/\bhora(?:\s+de\s+llegada(?:\s+al\s+cliente)?)?\s*:\s*[^\n]*/i)?.[0] ?? '')
+      : '';
   const direccionLinea = continuarLinea(cuerpo, /direcci[oó]n\s*:/i);
   const mapa = cuerpo.match(/https?:\/\/maps\.app\.goo\.gl\/\S+/i)?.[0] ?? null;
-  const fecha = normalizarFecha(fechaLinea);
+  const fecha = normalizarFecha(fechaLinea, elegida?.explicita ? undefined : anio);
   const direccion = direccionLinea
     .replace(/^[\*\-•]+\s*/, '')
     .replace(/direcci[oó]n\s*:\s*/i, '')
@@ -147,6 +157,39 @@ function leerCitaSuelta(cuerpo: string): { fecha: Campo; hora: Campo; direccion:
     direccion: campo(direccion || null, direccion ? direccionLinea.trim() : null),
     mapa: campo(mapa, mapa),
   };
+}
+
+function elegirCita(texto: string, anio?: number, orden = 0): { fechaLinea: string; horaLinea: string; explicita: boolean } | null {
+  const lineas = texto.split(/\r?\n/);
+  const halladas: Array<{ indice: number; explicita: boolean }> = [];
+  for (let indice = 0; indice < lineas.length; indice += 1) {
+    if (!ETIQUETA_FECHA.test(lineas[indice])) continue;
+    const explicita = Boolean(normalizarFecha(lineas[indice]).valor);
+    const sirve = explicita || Boolean(anio && normalizarFecha(lineas[indice], anio).valor);
+    if (sirve) halladas.push({ indice, explicita });
+  }
+  const explicitas = halladas.filter((hallada) => hallada.explicita);
+  const lista = explicitas.length > 0 ? explicitas : halladas;
+  const primera = lista[0];
+  const elegida = orden === 0 ? primera : lista.find((hallada, posicion) => posicion > 0 && primera && hallada.indice - primera.indice <= 20);
+  if (elegida) return { fechaLinea: lineas[elegida.indice], horaLinea: horaJuntoA(lineas, elegida.indice), explicita: elegida.explicita };
+  if (orden !== 0) return null;
+  for (let indice = 0; indice < lineas.length; indice += 1) {
+    if (!ETIQUETA_HORA.test(lineas[indice]) || !normalizarFecha(lineas[indice]).valor) continue;
+    return { fechaLinea: lineas[indice], horaLinea: lineas[indice], explicita: true };
+  }
+  return null;
+}
+
+const ETIQUETA_HORA = /\bhora(?:\s+de\s+llegada(?:\s+al\s+cliente)?)?\s*:/i;
+
+function horaJuntoA(lineas: string[], indice: number): string {
+  if (ETIQUETA_HORA.test(lineas[indice]) || normalizarHora(lineas[indice])) return lineas[indice];
+  for (let siguiente = indice + 1; siguiente < Math.min(indice + 4, lineas.length); siguiente += 1) {
+    if (ETIQUETA_FECHA.test(lineas[siguiente])) break;
+    if (ETIQUETA_HORA.test(lineas[siguiente])) return lineas[siguiente];
+  }
+  return '';
 }
 
 function continuarLinea(cuerpo: string, forma: RegExp): string {

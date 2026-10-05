@@ -100,18 +100,28 @@ const MESES_FECHA: Record<string, number> = {
   septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
 };
 
-export function normalizarFecha(fragmento: string): { valor: string | null; iso: string | null } {
-  const numerica = fragmento.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
-  if (numerica) return fechaValida(Number(numerica[1]), Number(numerica[2]), Number(numerica[3]));
-  const escrita = fragmento.match(/\b(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+(?:de\s+)?(\d{4})\b/i);
-  if (!escrita) return { valor: null, iso: null };
-  const mes = MESES_FECHA[plano(escrita[2])];
-  if (!mes) return { valor: null, iso: null };
-  return fechaValida(Number(escrita[1]), mes, Number(escrita[3]));
+export function normalizarFecha(fragmento: string, anioContexto?: number): { valor: string | null; iso: string | null } {
+  const numerica = fragmento.match(/\b(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{2,4})(?!\d)/);
+  if (numerica) return fechaValida(Number(numerica[1]), Number(numerica[2]), anioDe(numerica[3]));
+  const escrita = fragmento.match(/\b(\d{1,2})(?:\s+de)?\s+([a-záéíóúñ]+)(?:\s+de)?\s+(\d{2,4})(?!\d)/i);
+  const mesEscrito = escrita ? MESES_FECHA[plano(escrita[2])] : undefined;
+  if (escrita && mesEscrito) return fechaValida(Number(escrita[1]), mesEscrito, anioDe(escrita[3]));
+  if (!anioContexto || anioContexto < 2000 || anioContexto > 2099) return { valor: null, iso: null };
+  const corta = fragmento.match(/\b(\d{1,2})[./-](\d{1,2})\b(?!\s*[./-]\s*\d)/);
+  if (corta) return fechaValida(Number(corta[1]), Number(corta[2]), anioContexto);
+  const suelta = fragmento.match(/\b(\d{1,2})(?:\s+de)?\s+([a-záéíóúñ]+)\b/i);
+  const mesSuelto = suelta ? MESES_FECHA[plano(suelta[2])] : undefined;
+  if (suelta && mesSuelto) return fechaValida(Number(suelta[1]), mesSuelto, anioContexto);
+  return { valor: null, iso: null };
+}
+
+function anioDe(texto: string): number {
+  const anio = Number(texto);
+  return anio < 100 ? 2000 + anio : anio;
 }
 
 function fechaValida(dia: number, mes: number, anio: number): { valor: string | null; iso: string | null } {
-  if (mes < 1 || mes > 12 || dia < 1 || dia > 31) return { valor: null, iso: null };
+  if (anio < 2000 || anio > 2099 || mes < 1 || mes > 12 || dia < 1 || dia > 31) return { valor: null, iso: null };
   const iso = `${anio}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
   const prueba = new Date(`${iso}T12:00:00-05:00`);
   if (Number.isNaN(prueba.getTime())) return { valor: null, iso: null };

@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { test } from 'node:test';
 import { extraer, leerCantidad, partirAsunto } from '../src/tareas/extraer';
-import { cotsDe, normalizarHora } from '../src/tareas/texto';
+import { cotsDe, normalizarFecha, normalizarHora } from '../src/tareas/texto';
 
 const fixture = leerFixture();
 
@@ -131,6 +131,65 @@ test('el asunto real separa cliente, lugar y servicio', () => {
   assert.equal(dosEmpresas.cliente.valor, 'QALI FRUITS S.A.C.');
   const destino = partirAsunto('ASIGNAR Y DESPACHAR: 10020262042 - ALQUILER DE CONTENEDOR REEFER 40 RH CON DESTINO TOTTUS SAN HILARION (SJL)');
   assert.equal(destino.lugar.valor, 'TOTTUS SAN HILARION (SJL)');
+});
+
+test('la fecha con barras y el año corto es la de arriba, no la entrega citada', () => {
+  assert.equal(normalizarFecha('Fecha: 04/09/26').valor, '04/09/2026');
+  assert.equal(normalizarFecha('Fecha del servicio: 29-09-2026').iso, '2026-09-29');
+  assert.equal(normalizarFecha('Fecha de entrega: 18 julio 2026').valor, '18/07/2026');
+  assert.equal(normalizarFecha('Fecha: 30 mayo', 2026).valor, '30/05/2026');
+  assert.equal(normalizarFecha('Fecha: 15/11/20204').valor, null);
+  assert.equal(normalizarFecha('FECHA: 12 DE AGOSTO 2026_ NESTLE').valor, '12/08/2026');
+  assert.equal(normalizarFecha('Fecha: Martes 19/ 11/ 2024').valor, '19/11/2024');
+  const conHora = extraer('ASIGNAR', 'Fecha y hora: Jueves 02/07/26 - 11:00 am.');
+  assert.equal(conHora.fecha.valor, '02/07/2026');
+  assert.equal(conHora.hora.valor, '11:00');
+  const sinRotulo = extraer('ASIGNAR', '* Miércoles 12/08/2026  Hora: 12:00 pm.');
+  assert.equal(sinRotulo.fecha.valor, '12/08/2026');
+  assert.equal(sinRotulo.hora.valor, '12:00');
+  const lectura = extraer(
+    'ASIGNAR Y DESPACHAR // COT. 10020250153',
+    `* Fecha: 04/09/26
+* Hora: 11 am
+* Fecha: 05/09/26
+* Hora: 09 am
+Fecha: 28/01/2025
+Hora: 08:00 AM
+* FECHA DE ENTREGA: 17/01/25
+* HORA DE LLEGADA: 3:00 PM`,
+    2026,
+  );
+  assert.equal(lectura.fecha.valor, '04/09/2026');
+  assert.equal(lectura.hora.valor, '11:00');
+  assert.equal(lectura.citaParcialFecha.valor, '05/09/2026');
+  assert.equal(lectura.citaParcialHora.valor, '09:00');
+});
+
+test('la entrega del cliente gana a la hora del protocolo', () => {
+  const lectura = extraer(
+    'ASIGNAR Y DESPACHAR // 10020263697 // 10020263977',
+    `* Fecha del servicio: Martes 29 de septiembre
+* Hora: 7:30 pm.
+* Fecha de entrega: 11.09.26
+* Hora: 2:30 pm en el cliente`,
+    2026,
+  );
+  assert.equal(lectura.fecha.valor, '11/09/2026');
+  assert.equal(lectura.hora.valor, '14:30');
+});
+
+test('la fecha con puntos y el año en dos dígitos es 29/09/2026', () => {
+  assert.equal(normalizarFecha('29.09.26').valor, '29/09/2026');
+  assert.equal(normalizarFecha('Fecha del servicio: 29.09.2026').iso, '2026-09-29');
+  const lectura = extraer(
+    'ASIGNAR Y DESPACHAR // #2238 - EXPORTADORA FRUTICOLA DEL SUR SA // CARAZ //10020263966',
+    `Fecha de entrega: Mates 29.09.26
+* Hora: 08:00 am.
+* Condición: Alquiler`,
+  );
+  assert.equal(lectura.fecha.valor, '29/09/2026');
+  assert.equal(lectura.hora.valor, '08:00');
+  assert.equal(normalizarFecha('31.02.26').valor, null);
 });
 
 test('el cliente va entre la cotización y la palabra del servicio', () => {
