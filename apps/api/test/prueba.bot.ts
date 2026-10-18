@@ -41,6 +41,7 @@ after(async () => {
   await pool.query(`DELETE FROM mensaje_whatsapp WHERE telefono LIKE '51900000%'`);
   await pool.query(`DELETE FROM aviso WHERE destino LIKE '51900000%'`);
   await pool.query(`DELETE FROM charla WHERE telefono LIKE '51900000%'`);
+  await pool.query(`DELETE FROM habilitado WHERE clase = 'tarea' AND clave IN (SELECT id::text FROM tarea WHERE cot LIKE '1002999%')`);
   await pool.query(`DELETE FROM tarea WHERE cot LIKE '1002999%'`);
   await pool.query(`DELETE FROM usuario WHERE correo LIKE 'bot-prueba-%@sgit.local'`);
   await pool.query(`UPDATE sesion_bot SET estado = 'desconectado', ultimo_envio_en = NULL WHERE id = 1`);
@@ -242,5 +243,6 @@ async function abrir(cot: string, cliente: string, lugar: string, fecha: string 
      VALUES ($1, $2, 'detectada', $3, $4, $5, $6, $7)`,
     [id, cot, cliente, lugar, fecha, hora, cantidad],
   );
+  await pool.query(`INSERT INTO habilitado (clase, clave) VALUES ('tarea', $1) ON CONFLICT DO NOTHING`, [id]);
   return id;
 }

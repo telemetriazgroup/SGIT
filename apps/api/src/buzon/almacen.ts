@@ -1,4 +1,4 @@
-import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { Conexiones } from '../conexiones';
 
 export class AlmacenCorreo {
@@ -13,6 +13,10 @@ export class AlmacenCorreo {
         ContentType: mime,
       }),
     );
+  }
+
+  async quitar(clave: string): Promise<void> {
+    await this.conexiones.s3.send(new DeleteObjectCommand({ Bucket: this.conexiones.bucket, Key: clave }));
   }
 
   async leer(clave: string): Promise<Buffer> {

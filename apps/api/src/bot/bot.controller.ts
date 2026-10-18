@@ -28,10 +28,32 @@ export class BotController {
     return this.bot.marcarReinicio();
   }
 
+  @Post('bot/olvidar')
+  async olvidar(@Headers('authorization') autorizacion?: string) {
+    await this.exigirSistema(autorizacion);
+    return this.bot.marcarOlvido();
+  }
+
+  @Get('bot/bitacora')
+  async bitacora(@Headers('authorization') autorizacion?: string) {
+    await this.exigirSistema(autorizacion);
+    return this.bot.listarBitacora();
+  }
+
+  @Post('bot/bitacora')
+  @HttpCode(204)
+  async anotarBitacora(
+    @Headers('x-bot-clave') clave: string | undefined,
+    @Body() cuerpo: { nivel?: string; texto?: string },
+  ) {
+    this.exigirBot(clave);
+    await this.bot.anotarBitacora('whatsapp', cuerpo?.nivel ?? '', cuerpo?.texto ?? '');
+  }
+
   @Get('bot/reinicio')
   async reinicio(@Headers('x-bot-clave') clave: string | undefined) {
     this.exigirBot(clave);
-    return { reiniciar: await this.bot.tomarReinicio() };
+    return this.bot.tomarPedido();
   }
 
   @Get('bot/qr')
@@ -46,6 +68,19 @@ export class BotController {
     await this.exigirSistema(autorizacion);
     await this.bot.probar(cuerpo?.telefono ?? '', cuerpo?.texto ?? '');
     return this.bot.estado();
+  }
+
+  @Post('bot/comprobar')
+  async comprobar(@Headers('authorization') autorizacion: string | undefined) {
+    await this.exigirSistema(autorizacion);
+    return this.bot.comprobarLinea();
+  }
+
+  @Post('bot/fallo')
+  @HttpCode(204)
+  async fallo(@Headers('x-bot-clave') clave: string | undefined, @Body() cuerpo: { texto?: string }) {
+    this.exigirBot(clave);
+    await this.bot.anotarFallo(cuerpo?.texto ?? '');
   }
 
   @Get('bot/mensajes')

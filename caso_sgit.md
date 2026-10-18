@@ -200,3 +200,18 @@ Luego por wattsapp o por la aplicacion el moembro dle area de desarrollo puede p
     
 
 
+    Cuenta	Correo	Contraseña	Qué puede hacer
+Superusuario
+superusuario@sgit.local
+superusuario-prueba
+Buzón, bot y la pantalla Cuentas, donde crea administradores y técnicos
+Administrador
+admin@sgit.local
+admin-prueba
+Ve las tareas y corrige sus datos. También toma, anula y pide el recordatorio
+Técnico
+tecnico@sgit.local
+tecnico-prueba
+Ve las tareas, anota seguimiento e incidente, y guarda su número en Mi WhatsApp
+
+

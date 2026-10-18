@@ -1,18 +1,18 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import type { Conexiones } from '../conexiones';
 import { dictaminar, referenciasCitadas, type Clase } from './clasificar';
 import { extraer, type Extraccion } from './extraer';
 import { AREAS, armarSeguimiento, resumenHilo, type ResumenHilo, type Seguimiento } from './seguimiento';
 import { AlmacenCorreo } from '../buzon/almacen';
-import { barridoCorre, claveHora, entraHoraria } from './barrido';
+import { barridoCorre, entraHoraria } from './barrido';
 import { evaluarCita, type Cita } from './cita';
 import { cotsDe, normalizarFecha, plano } from './texto';
 import { BotService } from '../bot/bot.service';
 
 export type ResultadoProceso = {
   mensajeId: string;
-  clasificacion: Clase | 'archivado';
+  clasificacion: Clase | 'archivado' | 'resuelto';
   cot: string | null;
   tareaId: string | null;
   creada: boolean;
@@ -59,6 +59,50 @@ export class TareasService {
     return { resultados, tareas: tareas.size };
   }
 
+  async procesarPendientes(): Promise<{ mensajes: number; nuevas: number }> {
+    const filas = await this.conexiones.pg.query<FilaMensaje>(
+      `SELECT id, gmail_thread_id, asunto, de, texto, fecha
+       FROM mensaje_correo
+       WHERE clasificacion IS NULL AND replica = 'completo'
+       ORDER BY fecha ASC NULLS LAST, creado_en ASC`,
+    );
+    if (filas.rows.length === 0) return { mensajes: 0, nuevas: 0 };
+    const terminos = await this.terminosActivos();
+    let nuevas = 0;
+    for (const fila of filas.rows) {
+      const resultado = await this.aplicar(fila, terminos);
+      if (resultado.creada) nuevas += 1;
+    }
+    return { mensajes: filas.rows.length, nuevas };
+  }
+
+  private async resueltaQueCita(cot: string | null): Promise<string | null> {
+    const numeros = (cot ?? '').split('+').filter((numero) => /^1002\d{7}$/.test(numero));
+    if (numeros.length === 0) return null;
+    const exacta = await this.conexiones.pg.query<{ id: string; estado: string }>(
+      `SELECT id, estado FROM tarea WHERE cot = $1`,
+      [cot],
+    );
+    if (exacta.rows[0]?.estado === 'resuelta') return exacta.rows[0].id;
+    if (exacta.rows[0]) return null;
+    const cubiertas = await this.conexiones.pg.query<{ id: string; cot: string; cots: string[] | null }>(
+      `SELECT id, cot, cots FROM tarea
+       WHERE estado = 'resuelta'
+         AND (cot = ANY($1::text[]) OR cots && $1::text[])
+       ORDER BY creado_en DESC`,
+      [numeros],
+    );
+    const vistos = new Set<string>();
+    for (const fila of cubiertas.rows) {
+      if (numeros.includes(fila.cot)) vistos.add(fila.cot);
+      for (const numero of fila.cots ?? []) {
+        if (numeros.includes(numero)) vistos.add(numero);
+      }
+    }
+    if (vistos.size === numeros.length && cubiertas.rows[0]) return cubiertas.rows[0].id;
+    return null;
+  }
+
   async procesarDesde(desde: Date): Promise<{
     mensajes: number;
     nuevas: number;
@@ -87,9 +131,10 @@ export class TareasService {
     return cuenta;
   }
 
-  async listar(pagina: number, busqueda = ''): Promise<PaginaTareas> {
-    const cuentas = await this.cuentas();
+  async listar(pagina: number, busqueda = '', resueltas = false, verOcultas = true): Promise<PaginaTareas> {
+    const cuentas = await this.cuentas(verOcultas);
     const filtro = patronTexto(busqueda);
+    const estado = resueltas ? `tarea.estado = 'resuelta'` : `tarea.estado <> 'resuelta'`;
     const donde = `WHERE ($1::text IS NULL
          OR cot ILIKE $1 ESCAPE '\\'
          OR coalesce(cliente, '') ILIKE $1 ESCAPE '\\'
@@ -99,14 +144,17 @@ export class TareasService {
          OR coalesce(comercial_nombre, '') ILIKE $1 ESCAPE '\\'
          OR array_to_string(cots, ' ') ILIKE $1 ESCAPE '\\'
          OR array_to_string(referencias, ' ') ILIKE $1 ESCAPE '\\')
-       AND tarea.cot <> '10000000000'`;
-    const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM tarea ${donde}`, [filtro]);
+       AND tarea.cot <> '10000000000'
+       AND ${estado}`;
+    const publicada = `AND ($2::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))`;
+    const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM tarea ${donde} ${publicada}`, [filtro, verOcultas]);
     const total = Number(conteo.rows[0]?.total ?? 0);
     const paginas = Math.max(1, Math.ceil(total / TAMANO));
     const actual = Math.min(Math.max(1, pagina), paginas);
     const resultado = await this.conexiones.pg.query<FilaTarea>(
       `SELECT tarea.id, tarea.cot, tarea.cots, tarea.referencias, tarea.estado, tarea.ticket, tarea.lugar, tarea.cliente, tarea.descripcion, tarea.cita_fecha, tarea.cita_hora,
-              tarea.comercial_nombre, ult.fecha
+              tarea.comercial_nombre, ult.fecha,
+              EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text) AS habilitada
        FROM tarea
        LEFT JOIN LATERAL (
          SELECT max(c.fecha) AS fecha
@@ -115,9 +163,10 @@ export class TareasService {
          WHERE origen.id = tarea.mensaje_id
        ) ult ON true
        ${donde}
+       AND ($4::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))
        ORDER BY ult.fecha DESC NULLS LAST, tarea.creado_en DESC
        LIMIT $2 OFFSET $3`,
-      [filtro, TAMANO, (actual - 1) * TAMANO],
+      [filtro, TAMANO, (actual - 1) * TAMANO, verOcultas],
     );
     return { tareas: resultado.rows, total, pagina: actual, paginas, cuentas };
   }
@@ -127,17 +176,22 @@ export class TareasService {
     pagina: number,
     area: string | null,
     busqueda = '',
-    atencion: 'por_atender' | 'atendido' | null = null,
+    atencion: 'por_atender' | 'atendido' | 'resuelto' | null = null,
+    verOcultas = true,
   ): Promise<PaginaSector> {
-    const cuentas = await this.cuentas();
+    const cuentas = await this.cuentas(verOcultas);
     const patron = patronArea(area);
     const texto = patronTexto(busqueda);
     const filtro =
       nombre === 'pendiente'
-        ? 'h.pendiente AND NOT h.tarea AND NOT h.interna AND NOT h.archivado'
+        ? 'h.pendiente AND NOT h.tarea AND NOT h.interna AND NOT h.archivado AND NOT h.resuelto'
         : nombre === 'internos'
-          ? 'h.interna AND NOT h.tarea AND NOT h.archivado'
-          : 'NOT h.tarea AND NOT h.pendiente AND NOT h.interna AND NOT h.archivado';
+          ? 'h.interna AND NOT h.tarea AND NOT h.archivado AND NOT h.resuelto'
+          : 'NOT h.tarea AND NOT h.pendiente AND NOT h.interna AND NOT h.archivado AND NOT h.resuelto';
+    const publicada =
+      verOcultas || nombre === 'otros'
+        ? ''
+        : `AND EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = '${nombre === 'internos' ? 'interno' : 'decision'}' AND pub.clave = h.gmail_thread_id)`;
     const porArea = `AND ($1::text IS NULL OR EXISTS (
       SELECT 1 FROM mensaje_correo c
       WHERE c.gmail_thread_id = h.gmail_thread_id
@@ -157,15 +211,19 @@ export class TareasService {
                 bool_or(clasificacion = 'evento_desarrollo') AS tarea,
                 bool_or(clasificacion = 'pendiente') AS pendiente,
                 bool_or(clasificacion = 'interna') AS interna,
-                bool_or(clasificacion = 'archivado') AS archivado
+                bool_or(clasificacion = 'archivado') AS archivado,
+                bool_or(clasificacion = 'resuelto') AS resuelto
          FROM mensaje_correo
          GROUP BY gmail_thread_id
        )
        SELECT count(*)::text AS total
        FROM hilos h
        LEFT JOIN asunto_interno a ON a.gmail_thread_id = h.gmail_thread_id
-       WHERE ${filtro} ${porArea} ${porTexto}
-         AND ($3::text IS NULL OR coalesce(a.estado, 'por_atender') = $3)`,
+       WHERE ${filtro} ${porArea} ${porTexto} ${publicada}
+         AND (
+           ($3::text IS NULL AND coalesce(a.estado, 'por_atender') <> 'resuelto')
+           OR coalesce(a.estado, 'por_atender') = $3
+         )`,
       [patron, texto, atencion],
     );
     const total = Number(conteo.rows[0]?.total ?? 0);
@@ -177,12 +235,14 @@ export class TareasService {
                 bool_or(clasificacion = 'evento_desarrollo') AS tarea,
                 bool_or(clasificacion = 'pendiente') AS pendiente,
                 bool_or(clasificacion = 'interna') AS interna,
-                bool_or(clasificacion = 'archivado') AS archivado
+                bool_or(clasificacion = 'archivado') AS archivado,
+                bool_or(clasificacion = 'resuelto') AS resuelto
          FROM mensaje_correo
          GROUP BY gmail_thread_id
        )
        SELECT m.id, m.gmail_thread_id, m.asunto, m.de, m.fecha, m.correos,
-              coalesce(a.estado, 'por_atender') AS atencion
+              coalesce(a.estado, 'por_atender') AS atencion,
+              EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = '${nombre === 'internos' ? 'interno' : nombre === 'pendiente' ? 'decision' : 'tarea'}' AND pub.clave = h.gmail_thread_id) AS habilitada
        FROM hilos h
        LEFT JOIN asunto_interno a ON a.gmail_thread_id = h.gmail_thread_id
        JOIN LATERAL (
@@ -193,8 +253,11 @@ export class TareasService {
          ORDER BY fecha DESC NULLS LAST, creado_en DESC
          LIMIT 1
        ) m ON true
-       WHERE ${filtro} ${porArea} ${porTexto}
-         AND ($3::text IS NULL OR coalesce(a.estado, 'por_atender') = $3)
+       WHERE ${filtro} ${porArea} ${porTexto} ${publicada}
+         AND (
+           ($3::text IS NULL AND coalesce(a.estado, 'por_atender') <> 'resuelto')
+           OR coalesce(a.estado, 'por_atender') = $3
+         )
        ORDER BY m.fecha DESC NULLS LAST, m.creado_en DESC
        LIMIT $4 OFFSET $5`,
       [patron, texto, atencion, TAMANO, (actual - 1) * TAMANO],
@@ -205,7 +268,18 @@ export class TareasService {
 
   async resumenDeMensaje(
     id: string,
-  ): Promise<ResumenHilo & { id: string; asunto: string; de: string; fecha: Date | null; atencion: 'por_atender' | 'atendido'; respuesta: string }> {
+  ): Promise<
+    ResumenHilo & {
+      id: string;
+      asunto: string;
+      de: string;
+      fecha: Date | null;
+      atencion: 'por_atender' | 'atendido' | 'resuelto';
+      respuesta: string;
+      cierreArchivo: boolean;
+      notas: NotaBitacora[];
+    }
+  > {
     const ancla = await this.mensaje(id);
     if (!ancla) throw new NotFoundException('No está ese correo.');
     const filas = await this.conexiones.pg.query<{ de: string; fecha: Date | null; asunto: string; texto: string }>(
@@ -220,7 +294,12 @@ export class TareasService {
     const resumen = resumenHilo(filas.rows, terminos);
     const ultimo = filas.rows.at(-1);
     const atencion = await this.leerAtencion(ancla.gmail_thread_id);
-    return { id, asunto: ultimo?.asunto ?? ancla.asunto, de: ultimo?.de ?? '', fecha: ultimo?.fecha ?? null, ...resumen, ...atencion };
+    const notas = await this.conexiones.pg.query<NotaBitacora>(
+      `SELECT id, tarea_id, tipo, canal, texto, autor_nombre, autor_correo, archivo_nombre, archivo_mime, anula_id, creado_en
+       FROM nota_bitacora WHERE gmail_thread_id = $1 ORDER BY creado_en`,
+      [ancla.gmail_thread_id],
+    );
+    return { id, asunto: ultimo?.asunto ?? ancla.asunto, de: ultimo?.de ?? '', fecha: ultimo?.fecha ?? null, ...resumen, ...atencion, notas: notas.rows };
   }
 
   async ficha(id: string): Promise<(FilaTarea & { seguimiento: Seguimiento }) | null> {
@@ -235,6 +314,8 @@ export class TareasService {
         seguimiento: { momento: null, areas: [], linea: [] },
         situaciones: await this.situacionesDe(tarea.id),
         ...(await this.capaBitacora(tarea)),
+        borrador: await this.borradorDe(tarea.id),
+        asignacion: await this.asignacionConfirmada(tarea.id),
       };
     }
     const donde = numeros
@@ -250,7 +331,14 @@ export class TareasService {
     );
     const terminos = await this.terminosActivos();
     const situaciones = await this.situacionesDe(tarea.id);
-    return { ...tarea, seguimiento: armarSeguimiento(mensajes.rows, terminos), situaciones, ...(await this.capaBitacora(tarea)) };
+    return {
+      ...tarea,
+      seguimiento: armarSeguimiento(mensajes.rows, terminos),
+      situaciones,
+      ...(await this.capaBitacora(tarea)),
+      borrador: await this.borradorDe(tarea.id),
+      asignacion: await this.asignacionConfirmada(tarea.id),
+    };
   }
 
   async diccionario(): Promise<Array<{ id: string; termino: string; activo: boolean }>> {
@@ -290,7 +378,7 @@ export class TareasService {
     const activos = terminos ?? (await this.terminosActivos());
     const dictamen = dictaminar(mensaje.asunto, mensaje.texto, activos, mensaje.de ?? '');
     const manual = await this.destinoManual(mensaje.gmail_thread_id);
-    const clasificacion = manual === 'evento' ? 'evento_desarrollo' : (manual ?? dictamen.clase);
+    const clasificacion = manual === 'evento' ? 'evento_desarrollo' : manual === 'resuelto' ? 'resuelto' : (manual ?? dictamen.clase);
     const lectura = extraer(mensaje.asunto, mensaje.texto, anioLima(mensaje.fecha));
     const numeros = cotsDe(mensaje.asunto);
     if (clasificacion === 'evento_desarrollo' && numeros.length > 0) {
@@ -306,11 +394,22 @@ export class TareasService {
       const anexa = await this.anexarPorHilo(mensaje, lectura);
       return { mensajeId: mensaje.id, clasificacion, cot: lectura.cot.valor, tareaId: anexa, creada: false, avisos: 0, motivo: dictamen.motivo };
     }
+    const yaResuelta = await this.resueltaQueCita(lectura.cot.valor);
+    if (yaResuelta) {
+      await this.anotarSituacion(yaResuelta, mensaje, lectura);
+      return { mensajeId: mensaje.id, clasificacion, cot: lectura.cot.valor, tareaId: yaResuelta, creada: false, avisos: 0, motivo: null };
+    }
     const creada = await this.abrirTarea(mensaje.id, lectura, referencias);
     const existente = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM tarea WHERE cot = $1`, [lectura.cot.valor]);
     const tareaId = existente.rows[0]?.id ?? null;
     if (tareaId) await this.anotarSituacion(tareaId, mensaje, lectura);
-    if (creada && tareaId) await new BotService(this.conexiones).alNacer(tareaId);
+    if (creada && tareaId) {
+      await this.conexiones.pg.query(
+        `INSERT INTO habilitado (clase, clave) VALUES ('tarea', $1) ON CONFLICT (clase, clave) DO NOTHING`,
+        [tareaId],
+      );
+      await new BotService(this.conexiones).alNacer(tareaId);
+    }
     return {
       mensajeId: mensaje.id,
       clasificacion,
@@ -568,13 +667,13 @@ export class TareasService {
     return { atencion: estado, respuesta: texto };
   }
 
-  private async destinoManual(hilo: string): Promise<'otros' | 'interna' | 'archivado' | 'evento' | null> {
+  private async destinoManual(hilo: string): Promise<'otros' | 'interna' | 'archivado' | 'evento' | 'resuelto' | null> {
     const resultado = await this.conexiones.pg.query<{ destino: string }>(
       `SELECT destino FROM decision_hilo WHERE gmail_thread_id = $1`,
       [hilo],
     );
     const destino = resultado.rows[0]?.destino;
-    if (destino === 'otros' || destino === 'interna' || destino === 'archivado' || destino === 'evento') return destino;
+    if (destino === 'otros' || destino === 'interna' || destino === 'archivado' || destino === 'evento' || destino === 'resuelto') return destino;
     return null;
   }
 
@@ -613,6 +712,8 @@ export class TareasService {
   }
 
   async tomar(id: string, autor: Autor): Promise<void> {
+    await this.niegaDespacho(autor.correo);
+    await this.exigeVisible(autor.correo, 'tarea', id);
     const tarea = await this.filaTarea(id);
     if (tarea.responsable_correo && tarea.responsable_correo !== autor.correo) {
       throw new BadRequestException(`La tarea ya la tomó ${tarea.responsable_nombre}.`);
@@ -623,29 +724,133 @@ export class TareasService {
     );
   }
 
-  async anotar(id: string, autor: Autor, tipo: string, texto: string, archivo: ArchivoNota | null, canal: 'web' | 'whatsapp' = 'web'): Promise<void> {
+  async anotar(id: string, autor: Autor, tipo: string, texto: string, archivo: ArchivoNota | null, canal: 'web' | 'whatsapp' = 'web', extras: ArchivoNota[] = []): Promise<void> {
+    await this.niegaDespacho(autor.correo);
     if (tipo !== 'seguimiento' && tipo !== 'incidente') throw new BadRequestException('La nota es un seguimiento o un incidente.');
+    await this.exigeVisible(autor.correo, 'tarea', id);
     const limpio = texto.trim();
     if (!limpio) throw new BadRequestException('Escribe la nota.');
     await this.filaTarea(id);
     const imagen = await this.prepararImagen(archivo);
     const notaId = randomUUID();
-    if (imagen) await new AlmacenCorreo(this.conexiones).guardar(imagen.clave(notaId), imagen.contenido, imagen.mime);
+    const almacen = new AlmacenCorreo(this.conexiones);
+    if (imagen) await almacen.guardar(imagen.clave(notaId), imagen.contenido, imagen.mime);
     await this.conexiones.pg.query(
       `INSERT INTO nota_bitacora (
          id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [notaId, id, tipo, canal, limpio, autor.correo, autor.nombre, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
     );
+    await this.guardarFotos(notaId, imagen, extras, almacen);
     if (tipo === 'seguimiento') {
       await this.conexiones.pg.query(
-        `UPDATE tarea SET estado = CASE WHEN estado = 'en_validacion' THEN estado ELSE 'en_seguimiento' END WHERE id = $1`,
+        `UPDATE tarea SET estado = CASE WHEN estado = 'en_validacion' THEN estado ELSE 'en_seguimiento' END WHERE id = $1 AND estado <> 'resuelta'`,
         [id],
       );
     }
   }
 
-  async validar(id: string, horas: number, ahora = new Date()): Promise<Date> {
+  async cerrarTarea(id: string, autor: Autor, texto: string, archivo: ArchivoNota | null, canal: 'web' | 'whatsapp' = 'web'): Promise<void> {
+    await this.niegaDespacho(autor.correo);
+    const limpio = texto.trim();
+    if (!limpio) throw new BadRequestException('Escribe por qué se cierra.');
+    await this.exigeVisible(autor.correo, 'tarea', id);
+    const tarea = await this.conexiones.pg.query<{ estado: string }>(`SELECT estado FROM tarea WHERE id = $1`, [id]);
+    if (!tarea.rows[0]) throw new NotFoundException('No está esa tarea.');
+    if (tarea.rows[0].estado === 'resuelta') throw new BadRequestException('Esta tarea ya está resuelta.');
+    await this.insertarNota(id, null, 'cierre', canal, limpio, autor, archivo);
+    await this.conexiones.pg.query(
+      `UPDATE recordatorio SET estado = 'cancelado' WHERE tarea_id = $1 AND estado = 'pendiente'`,
+      [id],
+    );
+    await this.conexiones.pg.query(`UPDATE tarea SET estado = 'resuelta', recordar_en = NULL WHERE id = $1`, [id]);
+  }
+
+  async anotarEnHilo(
+    mensajeId: string,
+    autor: Autor,
+    tipo: string,
+    texto: string,
+    archivo: ArchivoNota | null,
+    canal: 'web' | 'whatsapp' = 'web',
+    extras: ArchivoNota[] = [],
+  ): Promise<void> {
+    if (tipo !== 'seguimiento' && tipo !== 'incidente') throw new BadRequestException('La nota es un seguimiento o un incidente.');
+    const limpio = texto.trim();
+    if (!limpio) throw new BadRequestException('Escribe la nota.');
+    const hilo = await this.hiloAbierto(mensajeId, 'interna');
+    await this.exigeVisible(autor.correo, 'interno', hilo);
+    const tareaId = await this.tareaInterna();
+    if (!tareaId) throw new BadRequestException('El asunto interno todavía no tiene ficha.');
+    await this.insertarNota(tareaId, hilo, tipo, canal, limpio, autor, archivo, extras);
+  }
+
+  async cerrarHilo(mensajeId: string, autor: Autor, texto: string, archivo: ArchivoNota | null, canal: 'web' | 'whatsapp' = 'web'): Promise<void> {
+    const limpio = texto.trim();
+    if (!limpio) throw new BadRequestException('Escribe por qué se cierra.');
+    const ancla = await this.mensaje(mensajeId);
+    if (!ancla) throw new NotFoundException('No está ese correo.');
+    const estado = await this.estadoHilo(ancla.gmail_thread_id);
+    if (estado.resuelto) throw new BadRequestException('Eso ya está resuelto.');
+    if (estado.interna && !estado.tarea && !estado.archivado) await this.exigeVisible(autor.correo, 'interno', ancla.gmail_thread_id);
+    else if (estado.pendiente && !estado.tarea && !estado.interna && !estado.archivado) await this.exigeVisible(autor.correo, 'decision', ancla.gmail_thread_id);
+    const imagen = await this.prepararImagen(archivo);
+    const notaId = randomUUID();
+    if (imagen) await new AlmacenCorreo(this.conexiones).guardar(imagen.clave(notaId), imagen.contenido, imagen.mime);
+    if (estado.interna && !estado.tarea && !estado.archivado) {
+      await this.conexiones.pg.query(
+        `INSERT INTO asunto_interno (gmail_thread_id, estado, respuesta, archivo_clave, archivo_nombre, archivo_mime)
+         VALUES ($1, 'resuelto', $2, $3, $4, $5)
+         ON CONFLICT (gmail_thread_id) DO UPDATE
+           SET estado = 'resuelto', respuesta = EXCLUDED.respuesta,
+               archivo_clave = EXCLUDED.archivo_clave, archivo_nombre = EXCLUDED.archivo_nombre,
+               archivo_mime = EXCLUDED.archivo_mime, actualizado_en = now()`,
+        [ancla.gmail_thread_id, limpio, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
+      );
+      const tareaId = await this.tareaInterna();
+      if (tareaId) {
+        await this.conexiones.pg.query(
+          `INSERT INTO nota_bitacora (
+             id, tarea_id, gmail_thread_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime
+           ) VALUES ($1,$2,$3,'cierre',$4,$5,$6,$7,$8,$9,$10)`,
+          [notaId, tareaId, ancla.gmail_thread_id, canal, limpio, autor.correo, autor.nombre, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
+        );
+      }
+      return;
+    }
+    if (estado.pendiente && !estado.tarea && !estado.interna && !estado.archivado) {
+      await this.conexiones.pg.query(
+        `INSERT INTO decision_hilo (gmail_thread_id, destino, motivo, archivo_clave, archivo_nombre, archivo_mime)
+         VALUES ($1, 'resuelto', $2, $3, $4, $5)
+         ON CONFLICT (gmail_thread_id) DO UPDATE
+           SET destino = 'resuelto', motivo = EXCLUDED.motivo,
+               archivo_clave = EXCLUDED.archivo_clave, archivo_nombre = EXCLUDED.archivo_nombre,
+               archivo_mime = EXCLUDED.archivo_mime, actualizado_en = now()`,
+        [ancla.gmail_thread_id, limpio, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
+      );
+      await this.conexiones.pg.query(`UPDATE mensaje_correo SET clasificacion = 'resuelto' WHERE gmail_thread_id = $1`, [ancla.gmail_thread_id]);
+      return;
+    }
+    throw new BadRequestException('Solo se cierra una tarea, un asunto interno o una decisión pendiente.');
+  }
+
+  async leerCierre(mensajeId: string): Promise<{ nombre: string; mime: string; bytes: Buffer }> {
+    const ancla = await this.mensaje(mensajeId);
+    if (!ancla) throw new NotFoundException('No está ese correo.');
+    const archivo = await this.conexiones.pg.query<{ archivo_clave: string | null; archivo_nombre: string | null; archivo_mime: string | null }>(
+      `SELECT archivo_clave, archivo_nombre, archivo_mime FROM asunto_interno WHERE gmail_thread_id = $1
+       UNION ALL
+       SELECT archivo_clave, archivo_nombre, archivo_mime FROM decision_hilo WHERE gmail_thread_id = $1
+       LIMIT 1`,
+      [ancla.gmail_thread_id],
+    );
+    const fila = archivo.rows.find((candidato) => candidato.archivo_clave);
+    if (!fila?.archivo_clave) throw new NotFoundException('Ese cierre no tiene archivo.');
+    const bytes = await new AlmacenCorreo(this.conexiones).leer(fila.archivo_clave);
+    return { nombre: fila.archivo_nombre ?? 'foto', mime: fila.archivo_mime ?? 'application/octet-stream', bytes };
+  }
+
+  async validar(id: string, horas: number, ahora = new Date(), autorCorreo: string | null = null): Promise<Date> {
     if (!Number.isInteger(horas) || horas < 1 || horas > 48) throw new BadRequestException('Las horas van de 1 a 48.');
     await this.filaTarea(id);
     const recordar = new Date(ahora.getTime() + horas * 60 * 60 * 1000);
@@ -654,15 +859,38 @@ export class TareasService {
       [id],
     );
     await this.conexiones.pg.query(
-      `INSERT INTO recordatorio (id, tarea_id, tipo, recordar_en, estado, hora_bucket)
-       VALUES ($1,$2,'snooze',$3,'pendiente',$4)`,
-      [randomUUID(), id, recordar.toISOString(), recordar.toISOString()],
+      `INSERT INTO recordatorio (id, tarea_id, tipo, recordar_en, estado, hora_bucket, autor_correo)
+       VALUES ($1,$2,'snooze',$3,'pendiente',$4,$5)`,
+      [randomUUID(), id, recordar.toISOString(), recordar.toISOString(), autorCorreo],
     );
     await this.conexiones.pg.query(`UPDATE tarea SET estado = 'en_validacion', recordar_en = $2 WHERE id = $1`, [id, recordar.toISOString()]);
     return recordar;
   }
 
+  async confirmarBorrador(id: string, autor: Autor): Promise<void> {
+    await this.niegaDespacho(autor.correo);
+    await this.exigeVisible(autor.correo, 'tarea', id);
+    const pendiente = await this.borradorDe(id);
+    if (!pendiente) throw new NotFoundException('No hay un borrador pendiente.');
+    await this.conexiones.pg.query(
+      `UPDATE tarea SET codigo_equipo = $2, maquina_equipo = $3 WHERE id = $1`,
+      [id, pendiente.codigo, pendiente.maquina],
+    );
+    await this.conexiones.pg.query(`UPDATE borrador_equipo SET estado = 'confirmado' WHERE tarea_id = $1 AND estado = 'pendiente'`, [id]);
+  }
+
+  async descartarBorrador(id: string, autor: Autor): Promise<void> {
+    await this.niegaDespacho(autor.correo);
+    await this.exigeVisible(autor.correo, 'tarea', id);
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE borrador_equipo SET estado = 'descartado' WHERE tarea_id = $1 AND estado = 'pendiente'`,
+      [id],
+    );
+    if ((resultado.rowCount ?? 0) === 0) throw new NotFoundException('No hay un borrador pendiente.');
+  }
+
   async anular(id: string, notaId: string, autor: Autor, texto: string): Promise<void> {
+    await this.exigeVisible(autor.correo, 'tarea', id);
     const limpio = texto.trim();
     if (!limpio) throw new BadRequestException('Escribe por qué se anula.');
     const nota = await this.conexiones.pg.query<{ id: string }>(
@@ -680,34 +908,13 @@ export class TareasService {
   async barrido(ahora = new Date()): Promise<{ corre: boolean; horarias: string[]; vencidos: string[] }> {
     const feriados = await this.feriados();
     const corre = barridoCorre(ahora, feriados);
-    const horarias: string[] = [];
-    if (corre) {
-      const tareas = await this.conexiones.pg.query<{ id: string; estado: string; recordar_en: Date | null; seguimiento: boolean }>(
-        `SELECT t.id, t.estado, t.recordar_en,
-                EXISTS (SELECT 1 FROM nota_bitacora n WHERE n.tarea_id = t.id AND n.tipo = 'seguimiento') AS seguimiento
-         FROM tarea t
-         WHERE t.cot <> '10000000000' AND t.estado = 'detectada'`,
-      );
-      const bucket = claveHora(ahora);
-      for (const tarea of tareas.rows) {
-        if (!entraHoraria({ estado: tarea.estado, seguimiento: tarea.seguimiento, recordarEn: tarea.recordar_en }, ahora, feriados)) continue;
-        const alta = await this.conexiones.pg.query(
-          `INSERT INTO recordatorio (id, tarea_id, tipo, recordar_en, estado, hora_bucket)
-           VALUES ($1,$2,'horario',$3,'pendiente',$4)
-           ON CONFLICT (tarea_id, hora_bucket) WHERE tipo = 'horario' DO NOTHING
-           RETURNING id`,
-          [randomUUID(), tarea.id, ahora.toISOString(), bucket],
-        );
-        if ((alta.rowCount ?? 0) > 0) horarias.push(tarea.id);
-      }
-    }
     const vencidos = await this.conexiones.pg.query<{ tarea_id: string }>(
       `UPDATE recordatorio SET estado = 'enviado'
        WHERE tipo = 'snooze' AND estado = 'pendiente' AND recordar_en <= $1
        RETURNING tarea_id`,
       [ahora.toISOString()],
     );
-    return { corre, horarias, vencidos: vencidos.rows.map((fila) => fila.tarea_id) };
+    return { corre, horarias: [], vencidos: vencidos.rows.map((fila) => fila.tarea_id) };
   }
 
   async leerArchivo(tareaId: string, notaId: string): Promise<{ nombre: string; mime: string; bytes: Buffer }> {
@@ -719,6 +926,20 @@ export class TareasService {
     if (!fila?.archivo_clave) throw new NotFoundException('Esa nota no tiene archivo.');
     const bytes = await new AlmacenCorreo(this.conexiones).leer(fila.archivo_clave);
     return { nombre: fila.archivo_nombre ?? 'foto', mime: fila.archivo_mime ?? 'application/octet-stream', bytes };
+  }
+
+  async leerArchivoNota(tareaId: string, notaId: string, archivoId: string): Promise<{ nombre: string; mime: string; bytes: Buffer }> {
+    const nota = await this.conexiones.pg.query<{ clave: string; nombre: string; mime: string }>(
+      `SELECT f.clave, f.nombre, f.mime
+       FROM nota_archivo f
+       JOIN nota_bitacora n ON n.id = f.nota_id
+       WHERE f.id = $1 AND n.id = $2 AND n.tarea_id = $3`,
+      [archivoId, notaId, tareaId],
+    );
+    const fila = nota.rows[0];
+    if (!fila) throw new NotFoundException('Esa nota no tiene esa imagen.');
+    const bytes = await new AlmacenCorreo(this.conexiones).leer(fila.clave);
+    return { nombre: fila.nombre, mime: fila.mime, bytes };
   }
 
   private async capaBitacora(tarea: FilaTarea): Promise<{ notas: NotaBitacora[]; en_barrido: boolean }> {
@@ -741,8 +962,13 @@ export class TareasService {
 
   private async notasDe(tareaId: string): Promise<NotaBitacora[]> {
     const resultado = await this.conexiones.pg.query<NotaBitacora>(
-      `SELECT id, tipo, canal, texto, autor_nombre, autor_correo, archivo_nombre, archivo_mime, anula_id, creado_en
-       FROM nota_bitacora WHERE tarea_id = $1 ORDER BY creado_en`,
+      `SELECT n.id, n.tipo, n.canal, n.texto, n.autor_nombre, n.autor_correo, n.archivo_nombre, n.archivo_mime, n.anula_id, n.creado_en,
+              COALESCE(
+                (SELECT json_agg(json_build_object('id', f.id, 'nombre', f.nombre) ORDER BY f.orden)
+                 FROM nota_archivo f WHERE f.nota_id = n.id),
+                '[]'::json
+              ) AS imagenes
+       FROM nota_bitacora n WHERE n.tarea_id = $1 ORDER BY n.creado_en`,
       [tareaId],
     );
     return resultado.rows;
@@ -761,6 +987,29 @@ export class TareasService {
     const fila = resultado.rows[0];
     if (!fila) throw new NotFoundException('No está esa tarea.');
     return fila;
+  }
+
+  private async guardarFotos(
+    notaId: string,
+    imagen: { nombre: string; mime: string; contenido: Buffer; clave: (id: string) => string } | null,
+    extras: ArchivoNota[],
+    almacen: AlmacenCorreo,
+  ): Promise<void> {
+    const fotos = [];
+    if (imagen) fotos.push(imagen);
+    for (const extra of extras) {
+      const lista = await this.prepararImagen(extra);
+      if (lista) fotos.push(lista);
+    }
+    for (const [orden, foto] of fotos.entries()) {
+      const archivoId = randomUUID();
+      const clave = orden === 0 && imagen ? imagen.clave(notaId) : `nota/${notaId}/${archivoId}`;
+      if (!(orden === 0 && imagen)) await almacen.guardar(clave, foto.contenido, foto.mime);
+      await this.conexiones.pg.query(
+        `INSERT INTO nota_archivo (id, nota_id, clave, mime, nombre, orden) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [archivoId, notaId, clave, foto.mime, foto.nombre, orden],
+      );
+    }
   }
 
   private async prepararImagen(archivo: ArchivoNota | null): Promise<{ nombre: string; mime: string; contenido: Buffer; clave: (id: string) => string } | null> {
@@ -809,8 +1058,9 @@ export class TareasService {
       cita_direccion: string | null;
       campos_corregidos: string[] | null;
       previas: string;
+      estado: string;
     }>(
-      `SELECT cita_fecha, cita_hora, cita_direccion, campos_corregidos,
+      `SELECT cita_fecha, cita_hora, cita_direccion, campos_corregidos, estado,
               (SELECT count(*)::text FROM situacion_hilo WHERE tarea_id = tarea.id) AS previas
        FROM tarea WHERE id = $1`,
       [tareaId],
@@ -829,7 +1079,8 @@ export class TareasService {
       direccion: protegidos.has('cita_direccion') ? null : lectura.direccion.valor,
     };
     const efecto = evaluarCita(vigente, propuesta);
-    const tipo = Number(fila.previas) === 0 ? 'origen' : efecto.reprograma ? 'reprogramacion' : 'informativa';
+    const cerrada = fila.estado === 'resuelta';
+    const tipo = cerrada ? 'informativa' : Number(fila.previas) === 0 ? 'origen' : efecto.reprograma ? 'reprogramacion' : 'informativa';
     const alta = await this.conexiones.pg.query(
       `INSERT INTO situacion_hilo (id, tarea_id, mensaje_id, tipo, resumen, cita_anterior)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
@@ -844,7 +1095,7 @@ export class TareasService {
         efecto.anterior ? JSON.stringify(efecto.anterior) : null,
       ],
     );
-    if (!efecto.fecha && !efecto.hora && !efecto.direccion) return;
+    if (cerrada || (!efecto.fecha && !efecto.hora && !efecto.direccion)) return;
     await this.conexiones.pg.query(
       `UPDATE tarea SET
          cita_fecha = COALESCE($2::date, cita_fecha),
@@ -870,12 +1121,19 @@ export class TareasService {
     return resultado.rows;
   }
 
-  private async estadoHilo(hilo: string): Promise<{ tarea: boolean; pendiente: boolean; interna: boolean; archivado: boolean }> {
-    const resultado = await this.conexiones.pg.query<{ tarea: boolean | null; pendiente: boolean | null; interna: boolean | null; archivado: boolean | null }>(
+  private async estadoHilo(hilo: string): Promise<{ tarea: boolean; pendiente: boolean; interna: boolean; archivado: boolean; resuelto: boolean }> {
+    const resultado = await this.conexiones.pg.query<{
+      tarea: boolean | null;
+      pendiente: boolean | null;
+      interna: boolean | null;
+      archivado: boolean | null;
+      resuelto: boolean | null;
+    }>(
       `SELECT bool_or(clasificacion = 'evento_desarrollo') AS tarea,
               bool_or(clasificacion = 'pendiente') AS pendiente,
               bool_or(clasificacion = 'interna') AS interna,
-              bool_or(clasificacion = 'archivado') AS archivado
+              bool_or(clasificacion = 'archivado') AS archivado,
+              bool_or(clasificacion = 'resuelto') AS resuelto
        FROM mensaje_correo
        WHERE gmail_thread_id = $1`,
       [hilo],
@@ -886,16 +1144,68 @@ export class TareasService {
       pendiente: Boolean(fila?.pendiente),
       interna: Boolean(fila?.interna),
       archivado: Boolean(fila?.archivado),
+      resuelto: Boolean(fila?.resuelto),
     };
   }
 
-  private async leerAtencion(hilo: string): Promise<{ atencion: 'por_atender' | 'atendido'; respuesta: string }> {
-    const resultado = await this.conexiones.pg.query<{ estado: string; respuesta: string }>(
-      `SELECT estado, respuesta FROM asunto_interno WHERE gmail_thread_id = $1`,
+  private async tareaInterna(): Promise<string | null> {
+    const existente = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM tarea WHERE cot = '10000000000'`);
+    if (existente.rows[0]) return existente.rows[0].id;
+    const creada = await this.conexiones.pg.query<{ id: string }>(
+      `INSERT INTO tarea (id, cot, estado, cliente, descripcion)
+       VALUES ($1, '10000000000', 'detectada', 'ZGROUP', 'Asuntos internos')
+       ON CONFLICT (cot) DO NOTHING
+       RETURNING id`,
+      [randomUUID()],
+    );
+    if (creada.rows[0]) return creada.rows[0].id;
+    const otra = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM tarea WHERE cot = '10000000000'`);
+    return otra.rows[0]?.id ?? null;
+  }
+
+  private async hiloAbierto(mensajeId: string, clase: 'interna'): Promise<string> {
+    const ancla = await this.mensaje(mensajeId);
+    if (!ancla) throw new NotFoundException('No está ese correo.');
+    const estado = await this.estadoHilo(ancla.gmail_thread_id);
+    if (estado.resuelto || !estado[clase] || estado.tarea || estado.archivado) {
+      throw new BadRequestException('Ese asunto interno ya no está abierto.');
+    }
+    const atencion = await this.leerAtencion(ancla.gmail_thread_id);
+    if (atencion.atencion === 'resuelto') throw new BadRequestException('Ese asunto interno ya está resuelto.');
+    return ancla.gmail_thread_id;
+  }
+
+  private async insertarNota(
+    tareaId: string,
+    hilo: string | null,
+    tipo: 'seguimiento' | 'incidente' | 'cierre',
+    canal: 'web' | 'whatsapp',
+    texto: string,
+    autor: Autor,
+    archivo: ArchivoNota | null,
+    extras: ArchivoNota[] = [],
+  ): Promise<void> {
+    const imagen = await this.prepararImagen(archivo);
+    const notaId = randomUUID();
+    const almacen = new AlmacenCorreo(this.conexiones);
+    if (imagen) await almacen.guardar(imagen.clave(notaId), imagen.contenido, imagen.mime);
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (
+         id, tarea_id, gmail_thread_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [notaId, tareaId, hilo, tipo, canal, texto, autor.correo, autor.nombre, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
+    );
+    await this.guardarFotos(notaId, imagen, extras, almacen);
+  }
+
+  private async leerAtencion(hilo: string): Promise<{ atencion: 'por_atender' | 'atendido' | 'resuelto'; respuesta: string; cierreArchivo: boolean }> {
+    const resultado = await this.conexiones.pg.query<{ estado: string; respuesta: string; archivo_clave: string | null }>(
+      `SELECT estado, respuesta, archivo_clave FROM asunto_interno WHERE gmail_thread_id = $1`,
       [hilo],
     );
     const fila = resultado.rows[0];
-    return { atencion: fila?.estado === 'atendido' ? 'atendido' : 'por_atender', respuesta: fila?.respuesta ?? '' };
+    const atencion = fila?.estado === 'atendido' ? 'atendido' : fila?.estado === 'resuelto' ? 'resuelto' : 'por_atender';
+    return { atencion, respuesta: fila?.respuesta ?? '', cierreArchivo: Boolean(fila?.archivo_clave) };
   }
 
   private async conResumen(filas: FilaSector[]): Promise<FilaSector[]> {
@@ -921,21 +1231,147 @@ export class TareasService {
     });
   }
 
-  private async cuentas(): Promise<Cuentas> {
+  async fijarVisible(clase: 'tarea' | 'interno' | 'decision', id: string, visible: boolean): Promise<boolean> {
+    const clave = clase === 'tarea' ? id : await this.claveDeHilo(id, clase);
+    if (visible) {
+      await this.conexiones.pg.query(
+        `INSERT INTO habilitado (clase, clave) VALUES ($1, $2) ON CONFLICT (clase, clave) DO NOTHING`,
+        [clase, clave],
+      );
+    } else {
+      await this.conexiones.pg.query(`DELETE FROM habilitado WHERE clase = $1 AND clave = $2`, [clase, clave]);
+    }
+    return visible;
+  }
+
+  async exigeVisible(correo: string, clase: 'tarea' | 'interno' | 'decision', clave: string): Promise<void> {
+    if (await this.esSuper(correo)) return;
+    if (!(await this.estaHabilitada(clase, clave))) throw new NotFoundException('El superusuario todavía no habilitó esto.');
+  }
+
+  async exigeHilo(correo: string, mensajeId: string): Promise<void> {
+    if (await this.esSuper(correo)) return;
+    const ancla = await this.mensaje(mensajeId);
+    if (!ancla) throw new NotFoundException('No está ese correo.');
+    const estado = await this.estadoHilo(ancla.gmail_thread_id);
+    const clase = estado.interna && !estado.tarea && !estado.archivado
+      ? 'interno'
+      : estado.pendiente && !estado.tarea && !estado.interna && !estado.archivado
+        ? 'decision'
+        : null;
+    if (!clase) return;
+    if (!(await this.estaHabilitada(clase, ancla.gmail_thread_id))) throw new NotFoundException('El superusuario todavía no habilitó esto.');
+  }
+
+  async estaHabilitada(clase: 'tarea' | 'interno' | 'decision', clave: string): Promise<boolean> {
+    const fila = await this.conexiones.pg.query(`SELECT 1 FROM habilitado WHERE clase = $1 AND clave = $2`, [clase, clave]);
+    return Boolean(fila.rows[0]);
+  }
+
+  private async esSuper(correo: string): Promise<boolean> {
+    const fila = await this.conexiones.pg.query<{ rol: string }>(`SELECT rol FROM usuario WHERE correo = $1`, [correo]);
+    return fila.rows[0]?.rol === 'superusuario';
+  }
+
+  private async niegaDespacho(correo: string): Promise<void> {
+    const fila = await this.conexiones.pg.query<{ rol: string }>(`SELECT rol FROM usuario WHERE correo = $1`, [correo]);
+    if (fila.rows[0]?.rol === 'despacho') throw new ForbiddenException('Despacho solo consulta las tareas habilitadas.');
+  }
+
+  private async borradorDe(tareaId: string): Promise<{ codigo: string; maquina: string; autor_nombre: string } | null> {
+    const fila = await this.conexiones.pg.query<{ codigo: string; maquina: string; autor_nombre: string }>(
+      `SELECT codigo, maquina, autor_nombre FROM borrador_equipo WHERE tarea_id = $1 AND estado = 'pendiente'`,
+      [tareaId],
+    );
+    return fila.rows[0] ?? null;
+  }
+
+  private async asignacionConfirmada(tareaId: string): Promise<{
+    autor_nombre: string;
+    texto: string;
+    confirmada_en: Date | null;
+    imagenes: Array<{ id: string; nombre: string }>;
+    consulta: string | null;
+  } | null> {
+    const fila = await this.conexiones.pg.query<{ id: string; autor_nombre: string; texto: string; confirmada_en: Date | null }>(
+      `SELECT id, autor_nombre, texto, confirmada_en
+       FROM asignacion_despacho
+       WHERE tarea_id = $1 AND estado = 'confirmada'
+       ORDER BY confirmada_en DESC NULLS LAST, creado_en DESC
+       LIMIT 1`,
+      [tareaId],
+    );
+    const asignacion = fila.rows[0];
+    if (!asignacion) return null;
+    const imagenes = await this.conexiones.pg.query<{ id: string; nombre: string }>(
+      `SELECT id, nombre FROM asignacion_archivo WHERE asignacion_id = $1 ORDER BY creado_en`,
+      [asignacion.id],
+    );
+    const consulta = await this.conexiones.pg.query<{ pregunta: string | null }>(
+      `SELECT pregunta FROM turno_despacho WHERE tarea_id = $1 AND estado = 'reconsulta' ORDER BY abierto_en DESC LIMIT 1`,
+      [tareaId],
+    );
+    return {
+      autor_nombre: asignacion.autor_nombre,
+      texto: asignacion.texto,
+      confirmada_en: asignacion.confirmada_en,
+      imagenes: imagenes.rows,
+      consulta: consulta.rows[0]?.pregunta ?? null,
+    };
+  }
+
+  async leerAsignacion(tareaId: string, archivoId: string): Promise<{ nombre: string; mime: string; bytes: Buffer }> {
+    const fila = await this.conexiones.pg.query<{ clave: string; mime: string; nombre: string }>(
+      `SELECT f.clave, f.mime, f.nombre
+       FROM asignacion_archivo f
+       JOIN asignacion_despacho a ON a.id = f.asignacion_id
+       WHERE f.id = $1 AND a.tarea_id = $2 AND a.estado = 'confirmada'`,
+      [archivoId, tareaId],
+    );
+    const archivo = fila.rows[0];
+    if (!archivo) throw new NotFoundException('Esa imagen no está en la asignación.');
+    const bytes = await new AlmacenCorreo(this.conexiones).leer(archivo.clave);
+    return { nombre: archivo.nombre, mime: archivo.mime, bytes };
+  }
+
+  private async claveDeHilo(mensajeId: string, clase: 'interno' | 'decision'): Promise<string> {
+    const ancla = await this.mensaje(mensajeId);
+    if (!ancla) throw new NotFoundException('No está ese correo.');
+    const estado = await this.estadoHilo(ancla.gmail_thread_id);
+    const interno = estado.interna && !estado.tarea && !estado.archivado;
+    const decision = estado.pendiente && !estado.tarea && !estado.interna && !estado.archivado;
+    if (clase === 'interno' && !interno) throw new BadRequestException('Eso no es un asunto interno.');
+    if (clase === 'decision' && !decision) throw new BadRequestException('Eso no es una decisión pendiente.');
+    return ancla.gmail_thread_id;
+  }
+
+  private async cuentas(verOcultas = true): Promise<Cuentas> {
     const resultado = await this.conexiones.pg.query<{ tareas: string; pendientes: string; otros: string; internos: string }>(
       `WITH hilos AS (
-         SELECT bool_or(clasificacion = 'evento_desarrollo') AS tarea,
+         SELECT gmail_thread_id,
+                bool_or(clasificacion = 'evento_desarrollo') AS tarea,
                 bool_or(clasificacion = 'pendiente') AS pendiente,
                 bool_or(clasificacion = 'interna') AS interna,
-                bool_or(clasificacion = 'archivado') AS archivado
+                bool_or(clasificacion = 'archivado') AS archivado,
+                bool_or(clasificacion = 'resuelto') AS resuelto
          FROM mensaje_correo
          GROUP BY gmail_thread_id
        )
-       SELECT (SELECT count(*) FROM tarea WHERE cot <> '10000000000')::text AS tareas,
-              count(*) FILTER (WHERE pendiente AND NOT tarea AND NOT interna AND NOT archivado)::text AS pendientes,
-              count(*) FILTER (WHERE NOT tarea AND NOT pendiente AND NOT interna AND NOT archivado)::text AS otros,
-              count(*) FILTER (WHERE interna AND NOT tarea AND NOT archivado)::text AS internos
+       SELECT (SELECT count(*) FROM tarea
+                 WHERE cot <> '10000000000' AND estado <> 'resuelta'
+                   AND ($1::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))
+              )::text AS tareas,
+              count(*) FILTER (WHERE pendiente AND NOT tarea AND NOT interna AND NOT archivado AND NOT resuelto
+                AND ($1::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'decision' AND pub.clave = hilos.gmail_thread_id))
+              )::text AS pendientes,
+              count(*) FILTER (WHERE NOT tarea AND NOT pendiente AND NOT interna AND NOT archivado AND NOT resuelto)::text AS otros,
+              count(*) FILTER (
+                WHERE interna AND NOT tarea AND NOT archivado AND NOT resuelto
+                  AND coalesce((SELECT a.estado FROM asunto_interno a WHERE a.gmail_thread_id = hilos.gmail_thread_id), 'por_atender') <> 'resuelto'
+                  AND ($1::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'interno' AND pub.clave = hilos.gmail_thread_id))
+              )::text AS internos
        FROM hilos`,
+      [verOcultas],
     );
     const fila = resultado.rows[0];
     return {
@@ -999,6 +1435,7 @@ type NotaBitacora = {
   archivo_mime: string | null;
   anula_id: string | null;
   creado_en: Date;
+  imagenes: Array<{ id: string; nombre: string }>;
 };
 
 function unirReferencias(actuales: string[], nuevas: string[]): string[] {

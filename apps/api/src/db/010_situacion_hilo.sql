@@ -16,4 +16,4 @@ ALTER TABLE tarea ADD COLUMN IF NOT EXISTS campos_corregidos text[] NOT NULL DEF
 
 ALTER TABLE decision_hilo DROP CONSTRAINT IF EXISTS decision_hilo_destino;
 ALTER TABLE decision_hilo ADD CONSTRAINT decision_hilo_destino
-  CHECK (destino IN ('otros', 'interna', 'archivado', 'evento'));
+  CHECK (destino IN ('otros', 'interna', 'archivado', 'evento', 'resuelto'));

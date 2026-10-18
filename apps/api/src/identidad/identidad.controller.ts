@@ -67,12 +67,20 @@ export class IdentidadController {
   @Post('usuarios/datos')
   async datos(
     @Headers('authorization') autorizacion: string | undefined,
-    @Body() cuerpo: { correo?: string; nombre?: string; rol?: string; activo?: boolean; telefono?: string },
+    @Body() cuerpo: { correo?: string; nombre?: string; rol?: string; activo?: boolean; telefono?: string; consultaDespacho?: boolean },
   ) {
     const actor = await this.exigirSuperusuario(autorizacion);
     if (!cuerpo?.correo?.trim()) throw new BadRequestException('Indica la cuenta.');
     if (typeof cuerpo.activo !== 'boolean') throw new BadRequestException('Indica si la cuenta queda activa.');
-    return this.identidad.actualizar(actor.correo, cuerpo.correo, cuerpo.nombre ?? '', cuerpo.rol ?? '', cuerpo.activo, cuerpo.telefono ?? '');
+    return this.identidad.actualizar(
+      actor.correo,
+      cuerpo.correo,
+      cuerpo.nombre ?? '',
+      cuerpo.rol ?? '',
+      cuerpo.activo,
+      cuerpo.telefono ?? '',
+      cuerpo.consultaDespacho === true,
+    );
   }
 
   @Post('usuarios/contrasena')
@@ -95,10 +103,16 @@ export class IdentidadController {
   @Post('usuarios')
   async crear(
     @Headers('authorization') autorizacion: string | undefined,
-    @Body() cuerpo: { nombre?: string; correo?: string; contrasena?: string; rol?: string },
+    @Body() cuerpo: { nombre?: string; correo?: string; contrasena?: string; rol?: string; consultaDespacho?: boolean },
   ) {
     await this.exigirSuperusuario(autorizacion);
-    await this.identidad.crear(cuerpo?.nombre ?? '', cuerpo?.correo ?? '', cuerpo?.contrasena ?? '', cuerpo?.rol ?? '');
+    await this.identidad.crear(
+      cuerpo?.nombre ?? '',
+      cuerpo?.correo ?? '',
+      cuerpo?.contrasena ?? '',
+      cuerpo?.rol ?? '',
+      cuerpo?.consultaDespacho === true,
+    );
     return this.identidad.listar();
   }
 

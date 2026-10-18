@@ -1,5 +1,6 @@
 import { config } from 'dotenv';
-import { readFile, writeFile } from 'fs/promises';
+import { execFile } from 'child_process';
+import { readFile, rm, writeFile } from 'fs/promises';
 import path from 'path';
 import qrcodeTerminal from 'qrcode-terminal';
 import { Client, LocalAuth, MessageMedia } from 'whatsapp-web.js';
@@ -19,42 +20,67 @@ if (!clave) {
 
 const api = crearClienteBot(base, clave);
 const yo = `sgit-bot-${process.pid}`;
-const cliente = new Client({
-  authStrategy: new LocalAuth({ clientId: 'sgit-lab', dataPath: rutaDeSesion() }),
-  puppeteer: {
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-  },
-});
 const archivos = crearSumideroArchivo(directorioDeEstado());
 let pulso: NodeJS.Timeout | null = null;
 let salida: NodeJS.Timeout | null = null;
 const ESPERA_MS = 2000;
 const turno = new Map<string, number>();
+let cliente = crearCliente();
+let reiniciando = false;
+let ultimoReinicio = 0;
+let ultimoAviso = '';
+let ultimoAvisoEn = 0;
 
-enlazarEstado(cliente, {
-  async actualizar(estado, qr) {
-    try {
-      await archivos.actualizar(estado, qr);
-      await api.publicar(estado);
-    } catch (error) {
-      console.error(`SGIT bot: no pude publicar el estado. ${detalle(error)}`);
-    }
-    if (estado === 'esperando_qr' && qr) {
-      console.log('SGIT bot: esperando QR. Imagen en sessions/qr.png');
-      qrcodeTerminal.generate(qr, { small: true });
-    }
-    if (estado === 'listo') console.log('SGIT bot: listo');
-    if (estado === 'desconectado') console.log('SGIT bot: desconectado');
-  },
-});
-
-cliente.on('message', (mensaje) => {
-  void atender(mensaje).catch((error: unknown) => {
-    console.error(`SGIT bot: no pude atender el mensaje. ${detalle(error)}`);
+function crearCliente(): Client {
+  const nuevo = new Client({
+    authStrategy: new LocalAuth({ clientId: 'sgit-lab', dataPath: rutaDeSesion() }),
+    puppeteer: {
+      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    },
   });
-});
+  enganchar(nuevo);
+  return nuevo;
+}
+
+function enganchar(actual: Client): void {
+  enlazarEstado(actual, {
+    async actualizar(estado, qr) {
+      try {
+        await archivos.actualizar(estado, qr);
+        await api.publicar(estado);
+      } catch (error) {
+        console.error(`SGIT bot: no pude publicar el estado. ${detalle(error)}`);
+      }
+      if (estado === 'esperando_qr' && qr) {
+        console.log('SGIT bot: esperando QR. Imagen en sessions/qr.png');
+        qrcodeTerminal.generate(qr, { small: true });
+        void anotar('info', 'WhatsApp muestra un código nuevo. Hay que escanearlo en el teléfono de laboratorio.');
+      }
+      if (estado === 'listo') {
+        console.log('SGIT bot: listo');
+        void anotar('info', 'Sesión lista. La sincronización de WhatsApp está activa.');
+      }
+      if (estado === 'desconectado' && !reiniciando) {
+        console.log('SGIT bot: desconectado');
+        void anotar('fallo', 'WhatsApp quedó desconectado.');
+      }
+    },
+  });
+  actual.on('message', (mensaje) => {
+    void atender(mensaje).catch((error: unknown) => {
+      console.error(`SGIT bot: no pude atender el mensaje. ${detalle(error)}`);
+    });
+  });
+  actual.on('disconnected', (razon: string) => {
+    if (reiniciando) return;
+    void anotar('fallo', `WhatsApp cortó la sesión${razon ? `: ${razon}` : ''}.`);
+  });
+  actual.on('auth_failure', (mensaje: string) => {
+    void anotar('fallo', `La sesión guardada no fue aceptada. ${mensaje || 'Hay que cerrarla y escanear otro código.'}`);
+  });
+}
 
 void arrancar();
 
@@ -64,58 +90,180 @@ async function arrancar(): Promise<void> {
     console.error('SGIT bot: ya hay un líder. Este proceso no arranca.');
     process.exit(1);
   }
-  await api.pedirReinicio().catch(() => undefined);
+  const pedido = await api.pedirReinicio().catch(() => ({ reiniciar: false, olvidar: false }));
+  if (pedido.olvidar) await borrarCarpetaSesion();
   pulso = setInterval(() => {
     void api.reclamar(yo).catch((error: unknown) => {
       console.error(`SGIT bot: no pude renovar el liderazgo. ${detalle(error)}`);
+      void anotar('fallo', `No pude renovar el liderazgo. ${detalle(error)}`);
     });
   }, 10_000);
   salida = setInterval(() => {
     void enviarPendiente();
     void vigilarReinicio();
   }, 2000);
-  void cliente.initialize();
+  await anotar('info', 'Proceso en marcha. Abro la sesión guardada en este equipo.');
+  await abrir('al arrancar');
 }
-
-let reiniciando = false;
 
 async function vigilarReinicio(): Promise<void> {
   if (reiniciando) return;
-  let pedido = false;
+  let pedido = { reiniciar: false, olvidar: false };
   try {
     pedido = await api.pedirReinicio();
   } catch (error) {
     console.error(`SGIT bot: no pude leer el reinicio. ${detalle(error)}`);
+    void anotar('fallo', `No pude leer el pedido de reinicio. ${detalle(error)}`);
     return;
   }
-  if (!pedido) return;
+  if (pedido.olvidar) {
+    await olvidar();
+    return;
+  }
+  if (pedido.reiniciar) await recuperar('reinicio pedido', true);
+}
+
+async function recuperar(motivo: string, forzar = false): Promise<void> {
+  if (reiniciando) return;
+  if (!forzar && Date.now() - ultimoReinicio < 60_000) return;
   reiniciando = true;
-  console.log('SGIT bot: reinicio de WhatsApp');
+  ultimoReinicio = Date.now();
+  console.log(`SGIT bot: reinicio de WhatsApp (${motivo})`);
+  await anotar('info', `Reinicio de la misma sesión: ${motivo}.`);
   try {
     await api.publicar('desconectado');
     await cliente.destroy();
   } catch (error) {
-    console.error(`SGIT bot: no pude cerrar WhatsApp. ${detalle(error)}`);
+    const texto = detalle(error);
+    console.error(`SGIT bot: no pude cerrar WhatsApp. ${texto}`);
+    await anotar('fallo', `No pude cerrar la ventana de WhatsApp. ${texto}`);
   }
   try {
-    await cliente.initialize();
-  } catch (error) {
-    console.error(`SGIT bot: no pude abrir WhatsApp otra vez. ${detalle(error)}`);
+    await abrir('sesión anterior');
   } finally {
     reiniciando = false;
   }
 }
 
+async function olvidar(): Promise<void> {
+  if (reiniciando) return;
+  reiniciando = true;
+  ultimoReinicio = Date.now();
+  console.log('SGIT bot: cierro la sesión guardada y pido otro código');
+  await anotar('info', 'Cierro la sesión guardada en este equipo.');
+  try {
+    await api.publicar('desconectado');
+    await cliente.destroy();
+  } catch (error) {
+    await anotar('fallo', `No pude cerrar la ventana antes de borrar la sesión. ${detalle(error)}`);
+  }
+  await cerrarNavegadorDeSesion();
+  await borrarCarpetaSesion();
+  cliente = crearCliente();
+  try {
+    await abrir('sesión nueva');
+    await anotar('info', 'La sesión anterior quedó borrada. Escanea el código nuevo en el teléfono de laboratorio.');
+  } finally {
+    reiniciando = false;
+  }
+}
+
+async function abrir(origen: string): Promise<void> {
+  try {
+    await cliente.initialize();
+    return;
+  } catch (error) {
+    const texto = detalle(error);
+    console.error(`SGIT bot: no pude abrir WhatsApp (${origen}). ${texto}`);
+    if (!/already running/i.test(texto)) {
+      await anotar('fallo', `No pude abrir WhatsApp (${origen}). ${texto} Si la misma sesión no vuelve, ciérrala y pide otro código.`);
+      return;
+    }
+  }
+  const cerrados = await cerrarNavegadorDeSesion();
+  await anotar('info', `El navegador de esta sesión seguía abierto (${cerrados}). Lo cerré y vuelvo a abrir la misma sesión.`);
+  await esperar(1000);
+  try {
+    await cliente.initialize();
+  } catch (error) {
+    const texto = detalle(error);
+    console.error(`SGIT bot: no pude abrir WhatsApp después de cerrar el navegador. ${texto}`);
+    await anotar('fallo', `La misma sesión no volvió a abrir. ${texto} Ciérrala y pide otro código.`);
+  }
+}
+
+async function borrarCarpetaSesion(): Promise<void> {
+  const carpeta = path.join(rutaDeSesion(), 'session-sgit-lab');
+  await rm(carpeta, { recursive: true, force: true });
+  await anotar('info', 'Borré la carpeta de la sesión de este equipo.');
+}
+
+function cerrarNavegadorDeSesion(): Promise<number> {
+  return new Promise((resolver) => {
+    execFile('ps', ['-eo', 'pid,args'], { maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      if (error || !stdout) {
+        resolver(0);
+        return;
+      }
+      let cerrados = 0;
+      for (const linea of stdout.split('\n')) {
+        if (!linea.includes('session-sgit-lab') || linea.includes('session-zgroup-bot')) continue;
+        if (!/chrome|chromium/i.test(linea)) continue;
+        const pid = Number(linea.trim().split(/\s+/)[0]);
+        if (!pid || pid === process.pid) continue;
+        try {
+          process.kill(pid, 'SIGTERM');
+          cerrados += 1;
+        } catch {
+          // El navegador ya no está.
+        }
+      }
+      resolver(cerrados);
+    });
+  });
+}
+
+async function anotar(nivel: 'info' | 'fallo', texto: string): Promise<void> {
+  const ahora = Date.now();
+  if (texto === ultimoAviso && ahora - ultimoAvisoEn < 60_000) return;
+  ultimoAviso = texto;
+  ultimoAvisoEn = ahora;
+  if (nivel === 'fallo') console.error(`SGIT bot: ${texto}`);
+  else console.log(`SGIT bot: ${texto}`);
+  await api.bitacora(nivel, texto).catch(() => undefined);
+}
+
 async function enviarPendiente(): Promise<void> {
+  if (reiniciando) return;
   try {
     const aviso = await api.tomar();
     if (!aviso) return;
     const destino = aviso.destino.includes('@') ? aviso.destino : `${aviso.destino}@c.us`;
-    await cliente.sendMessage(destino, aviso.cuerpo);
+    const imagenes = aviso.imagenes ?? [];
+    if (imagenes.length === 0) {
+      await cliente.sendMessage(destino, aviso.cuerpo);
+    } else {
+      for (const [indice, imagen] of imagenes.entries()) {
+        const media = new MessageMedia(imagen.mime, imagen.contenido, imagen.nombre);
+        await cliente.sendMessage(destino, media, { caption: indice === 0 ? aviso.cuerpo : '', sendSeen: false });
+      }
+    }
     await api.confirmar(aviso.id);
   } catch (error) {
-    console.error(`SGIT bot: el aviso sigue en la cola. ${detalle(error)}`);
+    const texto = detalle(error);
+    console.error(`SGIT bot: el aviso sigue en la cola. ${texto}`);
+    if (!sesionMuerta(texto)) {
+      void anotar('fallo', `Un aviso no salió. ${texto}`);
+      return;
+    }
+    await api.fallo('La página de WhatsApp se cerró. Hay que reiniciar la sesión.').catch(() => undefined);
+    await anotar('fallo', `La página de WhatsApp se cerró. ${texto}`);
+    await recuperar('la página de WhatsApp se cerró');
   }
+}
+
+function sesionMuerta(texto: string): boolean {
+  return /detached Frame|Session closed|Target closed|Execution context was destroyed|Protocol error|page has been closed|Navigating frame was detached/i.test(texto);
 }
 
 type MensajeEntrante = {
@@ -441,7 +589,9 @@ function detalle(error: unknown): string {
 function cerrar(): void {
   if (pulso) clearInterval(pulso);
   if (salida) clearInterval(salida);
-  void api.soltar(yo).finally(() => process.exit(0));
+  void cliente.destroy().catch(() => undefined).finally(() => {
+    void api.soltar(yo).finally(() => process.exit(0));
+  });
 }
 
 process.on('SIGINT', cerrar);

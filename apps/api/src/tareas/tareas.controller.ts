@@ -35,8 +35,39 @@ export class TareasController {
 
   @Get('hilos/:id/resumen')
   async resumen(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
-    await this.exigirSistema(autorizacion);
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeHilo(usuario.correo, id);
     return this.tareas.resumenDeMensaje(id);
+  }
+
+  @Post('hilos/:id/notas')
+  async notaHilo(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { tipo?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string } },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.anotarEnHilo(id, usuario, cuerpo?.tipo ?? '', cuerpo?.texto ?? '', archivoDe(cuerpo?.archivo));
+    return this.tareas.resumenDeMensaje(id);
+  }
+
+  @Post('hilos/:id/cerrar')
+  async cerrarHilo(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string } },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.cerrarHilo(id, usuario, cuerpo?.texto ?? '', archivoDe(cuerpo?.archivo));
+    return { resuelto: true };
+  }
+
+  @Get('hilos/:id/cierre')
+  async cierre(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeHilo(usuario.correo, id);
+    const archivo = await this.tareas.leerCierre(id);
+    return new StreamableFile(archivo.bytes, { type: archivo.mime, disposition: `inline; filename="${archivo.nombre.replace(/"/g, '')}"` });
   }
 
   @Get('sectores')
@@ -48,12 +79,12 @@ export class TareasController {
     @Query('q') busqueda?: string,
     @Query('atencion') atencion?: string,
   ) {
-    await this.exigirSistema(autorizacion);
+    const usuario = await this.exigirEdicion(autorizacion);
     if (sector !== 'pendiente' && sector !== 'otros' && sector !== 'internos') {
       throw new BadRequestException('El sector es pendiente, otros o internos.');
     }
-    const cola = atencion === 'por_atender' || atencion === 'atendido' ? atencion : null;
-    return this.tareas.sector(sector, numero(pagina), area?.trim() || null, busqueda ?? '', sector === 'internos' ? cola : null);
+    const cola = atencion === 'por_atender' || atencion === 'atendido' || atencion === 'resuelto' ? atencion : null;
+    return this.tareas.sector(sector, numero(pagina), area?.trim() || null, busqueda ?? '', sector === 'internos' ? cola : null, usuario.rol === 'superusuario');
   }
 
   @Post('hilos/:id/destino')
@@ -87,14 +118,42 @@ export class TareasController {
     @Headers('authorization') autorizacion: string | undefined,
     @Query('pagina') pagina?: string,
     @Query('q') busqueda?: string,
+    @Query('vista') vista?: string,
   ) {
-    await this.exigir(autorizacion);
-    return this.tareas.listar(numero(pagina), busqueda ?? '');
+    const usuario = await this.exigir(autorizacion);
+    return this.tareas.listar(numero(pagina), busqueda ?? '', vista === 'resueltas', usuario.rol === 'superusuario');
+  }
+
+  @Post('habilitados')
+  async habilitar(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Body() cuerpo: { clase?: string; id?: string; visible?: boolean },
+  ) {
+    const usuario = await this.exigir(autorizacion);
+    if (usuario.rol !== 'superusuario') throw new ForbiddenException('Solo el superusuario habilita lo que ve el equipo.');
+    if (cuerpo?.clase !== 'tarea' && cuerpo?.clase !== 'interno' && cuerpo?.clase !== 'decision') {
+      throw new BadRequestException('La clase es tarea, interno o decisión.');
+    }
+    if (!cuerpo.id?.trim() || typeof cuerpo.visible !== 'boolean') throw new BadRequestException('Indica el elemento y si queda visible.');
+    const visible = await this.tareas.fijarVisible(cuerpo.clase, cuerpo.id, cuerpo.visible);
+    return { visible };
+  }
+
+  @Post('tareas/:id/cerrar')
+  async cerrar(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string } },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.cerrarTarea(id, usuario, cuerpo?.texto ?? '', archivoDe(cuerpo?.archivo));
+    return this.fichaDe(id);
   }
 
   @Get('tareas/:id')
   async ficha(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
-    await this.exigir(autorizacion);
+    const usuario = await this.exigir(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     const tarea = await this.tareas.ficha(id);
     if (!tarea) throw new NotFoundException('No está esa tarea.');
     return tarea;
@@ -111,10 +170,11 @@ export class TareasController {
   async nota(
     @Headers('authorization') autorizacion: string | undefined,
     @Param('id') id: string,
-    @Body() cuerpo: { tipo?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string } },
+    @Body() cuerpo: { tipo?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string }; archivos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
   ) {
     const usuario = await this.exigir(autorizacion);
-    await this.tareas.anotar(id, usuario, cuerpo?.tipo ?? '', cuerpo?.texto ?? '', archivoDe(cuerpo?.archivo));
+    const lista = listaDe(cuerpo?.archivos, cuerpo?.archivo);
+    await this.tareas.anotar(id, usuario, cuerpo?.tipo ?? '', cuerpo?.texto ?? '', lista[0] ?? null, 'web', lista.slice(1));
     return this.fichaDe(id);
   }
 
@@ -124,8 +184,23 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { horas?: number },
   ) {
-    await this.exigirEdicion(autorizacion);
-    await this.tareas.validar(id, Number(cuerpo?.horas));
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.validar(id, Number(cuerpo?.horas), new Date(), usuario.correo);
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/borrador/confirmar')
+  async confirmarBorrador(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.confirmarBorrador(id, usuario);
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/borrador/descartar')
+  async descartarBorrador(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.descartarBorrador(id, usuario);
     return this.fichaDe(id);
   }
 
@@ -141,13 +216,39 @@ export class TareasController {
     return this.fichaDe(id);
   }
 
+  @Get('tareas/:id/asignacion/:archivoId')
+  async asignacion(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('archivoId') archivoId: string,
+  ) {
+    const usuario = await this.exigir(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    const archivo = await this.tareas.leerAsignacion(id, archivoId);
+    return new StreamableFile(archivo.bytes, { type: archivo.mime, disposition: `inline; filename="${archivo.nombre.replace(/"/g, '')}"` });
+  }
+
+  @Get('tareas/:id/notas/:notaId/archivos/:archivoId')
+  async archivoNota(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('notaId') notaId: string,
+    @Param('archivoId') archivoId: string,
+  ): Promise<StreamableFile> {
+    const usuario = await this.exigir(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    const archivo = await this.tareas.leerArchivoNota(id, notaId, archivoId);
+    return new StreamableFile(archivo.bytes, { type: archivo.mime, disposition: `inline; filename="${archivo.nombre.replace(/"/g, '')}"` });
+  }
+
   @Get('tareas/:id/notas/:notaId/archivo')
   async archivo(
     @Headers('authorization') autorizacion: string | undefined,
     @Param('id') id: string,
     @Param('notaId') notaId: string,
   ) {
-    await this.exigir(autorizacion);
+    const usuario = await this.exigir(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     const archivo = await this.tareas.leerArchivo(id, notaId);
     return new StreamableFile(archivo.bytes, { type: archivo.mime, disposition: `inline; filename="${archivo.nombre.replace(/"/g, '')}"` });
   }
@@ -158,7 +259,8 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { campo?: string; valor?: string },
   ) {
-    await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     await this.tareas.corregir(id, cuerpo?.campo ?? '', cuerpo?.valor ?? '');
     return this.fichaDe(id);
   }
@@ -169,7 +271,8 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { campo?: string },
   ) {
-    await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     await this.tareas.releer(id, cuerpo?.campo ?? '');
     return this.fichaDe(id);
   }
@@ -236,6 +339,16 @@ function archivoDe(archivo?: { nombre?: string; mime?: string; contenido?: strin
     mime: archivo.mime ?? '',
     contenido: Buffer.from(archivo.contenido, 'base64'),
   };
+}
+
+function listaDe(
+  archivos?: Array<{ nombre?: string; mime?: string; contenido?: string }>,
+  archivo?: { nombre?: string; mime?: string; contenido?: string },
+): Array<{ nombre: string; mime: string; contenido: Buffer }> {
+  const lista = (archivos ?? []).map((item) => archivoDe(item)).filter((item) => item !== null);
+  if (lista.length > 0) return lista;
+  const uno = archivoDe(archivo);
+  return uno ? [uno] : [];
 }
 
 function numero(valor?: string): number {

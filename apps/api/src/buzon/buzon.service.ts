@@ -4,10 +4,12 @@ import type { Configuracion } from '../configuracion';
 import { Conexiones } from '../conexiones';
 import { AlmacenCorreo } from './almacen';
 import { cifrar, descifrar, firmarEstado } from './cifrado';
-import { ALCANCE_GMAIL, INTERVALO_SYNC_MS, consultaRecibidos, esEnviado, type ClienteGmail, type MensajeDescargado } from './cliente-gmail';
+import { ALCANCE_GMAIL, INTERVALO_SYNC_MS, LOTE_SYNC, consultaRecibidos, esEnviado, type ClienteGmail, type MensajeDescargado } from './cliente-gmail';
 import { canjearCodigo } from './cliente-gmail-google';
 import { htmlSeguro } from './html-correo';
 import { fusionar, huecos, type Intervalo } from './rangos';
+import { anotarConexion } from '../conexion/bitacora';
+import { TareasService } from '../tareas/tareas.service';
 
 export type AvanceBuzon = {
   fase: 'ocioso' | 'listando' | 'importando' | 'listo' | 'error';
@@ -40,9 +42,11 @@ const AVANCE_QUIETO: AvanceBuzon = {
 
 export class BuzonService {
   private temporizador: NodeJS.Timeout | null = null;
+  private enCurso = false;
   private readonly almacen: AlmacenCorreo;
   private importando = false;
   private ultimoError: string | null = null;
+  private falloAnotado = false;
   private avance: AvanceBuzon = { ...AVANCE_QUIETO };
 
   constructor(
@@ -74,7 +78,12 @@ export class BuzonService {
     await this.asegurarFila();
     await this.conexiones.pg.query(`UPDATE buzon SET sync_automatica = true`);
     this.ultimoError = null;
+    if (this.enCurso) {
+      await anotarConexion(this.conexiones.pg, 'gmail', 'info', 'Ya hay una sincronización en curso. Sigue de 5 en 5, sin abrir otra.');
+      return this.resumen();
+    }
     this.detenerSync();
+    void anotarConexion(this.conexiones.pg, 'gmail', 'info', 'Reinicio pedido desde la web. La sincronización sigue de 5 en 5.');
     this.arrancarSync();
     return this.resumen();
   }
@@ -161,25 +170,32 @@ export class BuzonService {
   }
 
   async sincronizarReciente(): Promise<void> {
-    await this.reintentarIncompletos();
-    const historyId = await this.leerHistory();
-    if (!historyId) {
-      await this.reponerDesdeUltimo();
-      return;
-    }
     try {
-      const cambios = await this.cliente.historial(historyId);
-      for (const id of cambios.ids) {
-        if (await this.esCompleto(id)) continue;
-        const mensaje = await this.leerSiExiste(id);
-        if (!mensaje || esEnviado(mensaje.etiquetas)) continue;
-        await this.guardar(mensaje);
+      await this.reintentarIncompletos();
+      const historyId = await this.leerHistory();
+      if (!historyId) {
+        await this.reponerDesdeUltimo();
+        return;
       }
-      await this.guardarHistory(cambios.historyId);
-      await this.marcarSyncOk();
-    } catch (error) {
-      if (!historyRechazado(error)) throw error;
-      await this.reponerDesdeUltimo();
+      try {
+        const cambios = await this.cliente.historial(historyId);
+        const faltantes = [];
+        for (const id of cambios.ids) {
+          if (!(await this.esCompleto(id))) faltantes.push(id);
+        }
+        await this.enTandas(faltantes, async (id) => {
+          const mensaje = await this.leerSiExiste(id);
+          if (!mensaje || esEnviado(mensaje.etiquetas)) return;
+          await this.guardar(mensaje);
+        });
+        await this.guardarHistory(cambios.historyId);
+        await this.marcarSyncOk();
+      } catch (error) {
+        if (!historyRechazado(error)) throw error;
+        await this.reponerDesdeUltimo();
+      }
+    } finally {
+      await this.procesarLoNuevo();
     }
   }
 
@@ -332,20 +348,20 @@ export class BuzonService {
 
     let nuevos = 0;
     let hechos = 0;
-    for (const id of pendientes) {
+    await this.enTandas(pendientes, async (id) => {
       const mensaje = await this.cliente.obtener(id);
-      hechos += 1;
       if (!esEnviado(mensaje.etiquetas)) {
         await this.guardar(mensaje);
         nuevos += 1;
       }
+      hechos += 1;
       this.avance = {
         ...this.avance,
         hechos,
         nuevos,
         detalle: `${hechos} de ${pendientes.length} por guardar. ${this.avance.yaTenidos} ya estaban y no se modifican.`,
       };
-    }
+    });
 
     const ahora = new Date();
     const hastaCubierto = pedido.hasta.getTime() > ahora.getTime() ? ahora : pedido.hasta;
@@ -366,14 +382,31 @@ export class BuzonService {
     const marca = (await this.cliente.perfil()).historyId;
     const ids = await this.listarHuecos([{ desde, hasta }]);
     const conocidos = await this.idsCompletos(ids);
-    for (const id of ids) {
-      if (conocidos.has(id)) continue;
-      const mensaje = await this.leerSiExiste(id);
-      if (!mensaje || esEnviado(mensaje.etiquetas)) continue;
-      await this.guardar(mensaje);
-    }
+    await this.enTandas(
+      ids.filter((id) => !conocidos.has(id)),
+      async (id) => {
+        const mensaje = await this.leerSiExiste(id);
+        if (!mensaje || esEnviado(mensaje.etiquetas)) return;
+        await this.guardar(mensaje);
+      },
+    );
     await this.guardarHistory(marca);
     await this.marcarSyncOk();
+  }
+
+  private async procesarLoNuevo(): Promise<void> {
+    try {
+      const cuenta = await new TareasService(this.conexiones).procesarPendientes();
+      if (cuenta.mensajes === 0) return;
+      const marca =
+        cuenta.nuevas === 1
+          ? '1 cotización nueva quedó marcada para seguimiento.'
+          : `${cuenta.nuevas} cotizaciones nuevas quedaron marcadas para seguimiento.`;
+      await anotarConexion(this.conexiones.pg, 'gmail', 'info', `Procesé ${cuenta.mensajes} correos pendientes. ${marca}`);
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'falló el proceso';
+      await anotarConexion(this.conexiones.pg, 'gmail', 'fallo', `No pude procesar los correos nuevos. ${mensaje}`);
+    }
   }
 
   private async ultimaFecha(): Promise<Date | null> {
@@ -501,10 +534,13 @@ export class BuzonService {
        WHERE replica = 'incompleto' AND fecha >= $1 AND fecha <= $2`,
       [desde, hasta],
     );
-    for (const fila of pendientes.rows) {
-      const mensaje = await this.leerSiExiste(fila.gmail_message_id);
-      if (mensaje) await this.guardar(mensaje);
-    }
+    await this.enTandas(
+      pendientes.rows.map((fila) => fila.gmail_message_id),
+      async (id) => {
+        const mensaje = await this.leerSiExiste(id);
+        if (mensaje) await this.guardar(mensaje);
+      },
+    );
     return pendientes.rows.length;
   }
 
@@ -597,6 +633,12 @@ export class BuzonService {
     );
   }
 
+  private async enTandas(ids: string[], trabajo: (id: string) => Promise<void>): Promise<void> {
+    for (let inicio = 0; inicio < ids.length; inicio += LOTE_SYNC) {
+      await Promise.all(ids.slice(inicio, inicio + LOTE_SYNC).map((id) => trabajo(id)));
+    }
+  }
+
   private async leerSiExiste(id: string): Promise<MensajeDescargado | null> {
     try {
       return await this.cliente.obtener(id);
@@ -611,28 +653,45 @@ export class BuzonService {
     const pendientes = await this.conexiones.pg.query<{ gmail_message_id: string }>(
       `SELECT gmail_message_id FROM mensaje_correo WHERE replica = 'incompleto'`,
     );
-    for (const fila of pendientes.rows) {
-      const mensaje = await this.leerSiExiste(fila.gmail_message_id);
-      if (!mensaje) {
-        await this.conexiones.pg.query(`UPDATE mensaje_correo SET replica = 'ausente' WHERE gmail_message_id = $1 AND replica = 'incompleto'`, [fila.gmail_message_id]);
-        continue;
-      }
-      await this.guardar(mensaje);
-    }
+    await this.enTandas(
+      pendientes.rows.map((fila) => fila.gmail_message_id),
+      async (id) => {
+        const mensaje = await this.leerSiExiste(id);
+        if (!mensaje) {
+          await this.conexiones.pg.query(`UPDATE mensaje_correo SET replica = 'ausente' WHERE gmail_message_id = $1 AND replica = 'incompleto'`, [id]);
+          return;
+        }
+        await this.guardar(mensaje);
+      },
+    );
   }
 
   private arrancarSync(): void {
     if (this.temporizador || !this.config.iniciarSync) return;
     const correr = () => {
-      void this.sincronizarReciente().catch((error: unknown) => {
-        const mensaje = error instanceof Error ? error.message : 'falló la sync';
-        this.ultimoError = mensaje.slice(0, 180);
-        console.error(`Sync reciente: ${mensaje}`);
-      });
+      if (this.enCurso) return;
+      this.enCurso = true;
+      void this.sincronizarReciente()
+        .then(() => {
+          if (!this.falloAnotado) return;
+          this.falloAnotado = false;
+          void anotarConexion(this.conexiones.pg, 'gmail', 'info', 'Sincronización al día.');
+        })
+        .catch((error: unknown) => {
+          const mensaje = error instanceof Error ? error.message : 'falló la sync';
+          this.ultimoError = mensaje.slice(0, 180);
+          this.falloAnotado = true;
+          void anotarConexion(this.conexiones.pg, 'gmail', 'fallo', `La sincronización falló. ${mensaje}`);
+          console.error(`Sync reciente: ${mensaje}`);
+        })
+        .finally(() => {
+          this.enCurso = false;
+        });
     };
     correr();
     this.temporizador = setInterval(correr, INTERVALO_SYNC_MS);
     this.temporizador.unref?.();
+    void anotarConexion(this.conexiones.pg, 'gmail', 'info', 'Sincronización automática en marcha, de 5 en 5, cada 3 minutos.');
   }
 
   private detenerSync(): void {

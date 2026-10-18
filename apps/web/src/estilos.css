@@ -150,6 +150,34 @@ button:disabled {
   padding: 0;
 }
 
+.fila-marca {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.fila-marca .fila {
+  flex: 1;
+  min-width: 0;
+}
+
+.marca-habil {
+  flex: 0 0 auto;
+  margin-top: 18px;
+}
+
+.marca-habil input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  accent-color: #1f4d3a;
+}
+
+.solo-super .fila {
+  background: #f4efe6;
+}
+
 .fila {
   width: 100%;
   height: auto;
@@ -1072,6 +1100,58 @@ button:disabled {
   gap: 10px;
   margin-top: 28px;
   color: #3b4a54;
+}
+
+.sesion-nota {
+  margin-top: 18px;
+}
+
+.acciones-sesion {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.bitacora-conexion {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid #e4ddd2;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.bitacora-conexion li {
+  display: grid;
+  grid-template-columns: 148px 92px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 8px 12px;
+  border-bottom: 1px solid #efeae2;
+  font-size: 0.92rem;
+}
+
+.bitacora-conexion li:last-child {
+  border-bottom: 0;
+}
+
+.bitacora-conexion time,
+.bitacora-conexion strong {
+  color: #5c6b66;
+}
+
+.bitacora-conexion .fallo span {
+  color: #8a2e2e;
+}
+
+@media (max-width: 720px) {
+  .bitacora-conexion li {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
 }
 
 .sesion-fija input {

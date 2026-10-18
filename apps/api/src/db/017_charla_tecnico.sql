@@ -19,6 +19,9 @@ WHERE paso IN ('elige_tarea', 'elige_accion', 'nota_seguimiento', 'nota_incident
 ALTER TABLE charla ADD CONSTRAINT charla_paso_check CHECK (
   paso IN (
     'menu', 'recientes', 'busca', 'confirma', 'resultados', 'cot',
-    'pregunta_imagen', 'espera_imagen', 'nota', 'pregunta_resumen', 'resumen', 'detalle'
+    'pregunta_imagen', 'espera_imagen', 'nota', 'pregunta_resumen', 'resumen', 'detalle',
+    'internos', 'decisiones', 'asunto', 'decision',
+    'despacho_oferta', 'despacho_detalle', 'despacho_menu', 'despacho_recogiendo', 'despacho_validar',
+    'respuesta_despacho', 'consulta_despacho'
   )
 );

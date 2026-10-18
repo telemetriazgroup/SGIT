@@ -31,7 +31,10 @@ const lunes13 = new Date('2026-10-05T13:00:00-05:00');
 const feriado = new Set(['2026-10-07']);
 
 after(async () => {
-  if (tareas.length > 0) await pool.query(`DELETE FROM tarea WHERE id = ANY($1::uuid[])`, [tareas]);
+  if (tareas.length > 0) {
+    await pool.query(`DELETE FROM habilitado WHERE clase = 'tarea' AND clave = ANY($1::text[])`, [tareas]);
+    await pool.query(`DELETE FROM tarea WHERE id = ANY($1::uuid[])`, [tareas]);
+  }
   await pool.query(`DELETE FROM recordatorio WHERE tipo = 'horario' AND hora_bucket LIKE '2026-10-0%'`);
   await pool.query(`DELETE FROM feriado WHERE fecha = '2026-10-07'`);
   await pool.end();
@@ -85,18 +88,18 @@ test('el seguimiento con foto pasa la tarea a en seguimiento y la anulación no 
   assert.equal(luego?.en_barrido, false);
 });
 
-test('dos evaluaciones en la misma hora dejan un solo recordatorio y el snooze vence a las 13:00', async () => {
+test('el snooze vence a las 13:00 y el barrido ya no abre una consulta horaria', async () => {
   const id = await abrir();
   const primera = await servicio.barrido(lunes9);
   const segunda = await servicio.barrido(new Date('2026-10-05T09:40:00-05:00'));
   assert.equal(primera.corre, true);
-  assert.equal(primera.horarias.filter((tarea) => tarea === id).length, 1);
-  assert.equal(segunda.horarias.filter((tarea) => tarea === id).length, 0);
+  assert.deepEqual(primera.horarias, []);
+  assert.deepEqual(segunda.horarias, []);
   const guardados = await pool.query<{ total: string }>(
     `SELECT count(*)::text AS total FROM recordatorio WHERE tarea_id = $1 AND tipo = 'horario'`,
     [id],
   );
-  assert.equal(guardados.rows[0]?.total, '1');
+  assert.equal(guardados.rows[0]?.total, '0');
   await servicio.anotar(id, autor, 'seguimiento', 'Ya hay avance', null);
   await servicio.validar(id, 4, lunes9);
   const aLas10 = await servicio.barrido(lunes10);
@@ -120,5 +123,6 @@ async function abrir(): Promise<string> {
   const id = randomUUID();
   tareas.push(id);
   await pool.query(`INSERT INTO tarea (id, cot, estado) VALUES ($1, $2, 'detectada')`, [id, `b4-${id.slice(0, 8)}`]);
+  await pool.query(`INSERT INTO habilitado (clase, clave) VALUES ('tarea', $1) ON CONFLICT DO NOTHING`, [id]);
   return id;
 }

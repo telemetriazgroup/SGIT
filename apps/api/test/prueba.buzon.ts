@@ -125,8 +125,8 @@ after(async () => {
   usarClienteGmailDePrueba(null);
 });
 
-test('el ciclo reciente es de 5 minutos', () => {
-  assert.equal(INTERVALO_SYNC_MS, 5 * 60 * 1000);
+test('el ciclo reciente es de 3 minutos', () => {
+  assert.equal(INTERVALO_SYNC_MS, 3 * 60 * 1000);
 });
 
 test('un rango de varias páginas entra una sola vez', async () => {

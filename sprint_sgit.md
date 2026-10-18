@@ -327,6 +327,8 @@ Con el número de laboratorio, no con el número operativo:
 
 ## Sprint 6 — Recordatorios y despacho
 
+**Inicio — 6 de octubre de 2026.** Johan entra como usuario despacho (`johan@sgit.local`). Solo ve las tareas que el superusuario habilitó. Entre 08:00 y 18:00 el bot le pregunta código y máquina si tiene WhatsApp; la respuesta queda en borrador hasta que un miembro la confirma. El sprint no se cierra todavía.
+
 **Entregable.** Entre 08:00 y 18:00 el bot pregunta a despacho por código y máquina solo mientras la tarea no tiene avance. Si Johan contesta en el chat, el código queda en borrador hasta que un miembro lo confirma. El snooze avisa a la hora pedida. Con esto se puede abrir el piloto del buzón real, acotado por fechas.
 
 **Historias.** H-22, H-23, H-24, H-26. Cierra la fase 2.

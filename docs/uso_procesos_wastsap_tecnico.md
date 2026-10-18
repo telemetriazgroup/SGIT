@@ -237,3 +237,17 @@ Cuando la descarga funcione, el mismo paso 4 del registro guarda la imagen junto
 7. Escribe qué pasó.
 8. Lee la confirmación y sigue en esa COT, o vuelve al menú general para abrir otra.
 9. En cualquier momento, dentro de la COT, pide el último seguimiento, el último incidente o el resumen, y de ahí el detalle con su imagen.
+
+## 9. Administrador y superusuario
+
+Si la cuenta de WhatsApp es administrador o superusuario, el menú general lista, como máximo, los 10 más recientes de cada grupo que tenga abiertos:
+
+```text
+1. Tareas recientes
+2. Asuntos internos
+3. Pendientes de decisión
+4. Buscar cotización
+5. Salir
+```
+
+En una tarea o en un asunto interno puede registrar seguimiento o incidente. También puede cerrar por regularización: el bot pide si habrá imagen y después un comentario de por qué se cierra. Eso queda como seguimiento de cierre. La tarea pasa a resuelta y deja de listarse. El asunto interno o la decisión pendiente pasan a resueltos y dejan de listarse. La web tiene las mismas acciones: Abiertas / Resueltas en Tareas, Resueltos en asuntos internos, y Cerrar por regularización con comentario y foto opcional.

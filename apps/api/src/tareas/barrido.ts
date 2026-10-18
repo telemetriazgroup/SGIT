@@ -19,6 +19,14 @@ export function claveHora(instante: Date): string {
   return `${partes.fecha}T${String(partes.hora).padStart(2, '0')}`;
 }
 
+export function turnoCorre(instante: Date, feriados: ReadonlySet<string>): boolean {
+  const partes = partesLima(instante);
+  if (partes.semana === 0 || partes.semana === 6) return false;
+  if (feriados.has(partes.fecha)) return false;
+  const minutos = partes.hora * 60 + partes.minuto;
+  return minutos >= 8 * 60 + 30 && minutos < 18 * 60;
+}
+
 export function entraHoraria(tarea: TareaBarrido, instante: Date, feriados: ReadonlySet<string>): boolean {
   if (!barridoCorre(instante, feriados)) return false;
   if (tarea.estado !== 'detectada' || tarea.seguimiento) return false;

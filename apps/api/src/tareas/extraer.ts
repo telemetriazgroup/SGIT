@@ -44,7 +44,13 @@ export function extraer(asunto: string, cuerpo: string, anio?: number): Extracci
   const firma = leerFirma(cuerpo);
   const ztrack = bloqueEntre(cuerpo, 'ztrack');
   const despacho = bloqueEntre(cuerpo, 'despacho');
-  const contenedor = buscar(/\d+\s+contenedor\s+reefer[^\n]*/i, despacho, (m) => m.trim());
+  const contenedor =
+    leerContenedor(despacho, true) ??
+    leerContenedor(cuerpo, true) ??
+    leerContenedor(asuntoPartido.descripcion.valor ?? '') ??
+    leerContenedor(despacho) ??
+    leerContenedor(cuerpo);
+  const llegada = horaDeLlegada(cuerpo);
   const cliente = asuntoPartido.cliente.valor ? asuntoPartido.cliente : razonSocialDelCliente(cuerpo);
   const lugar = asuntoPartido.lugar.valor ? asuntoPartido.lugar : destinoFinal(cuerpo);
   return {
@@ -56,13 +62,13 @@ export function extraer(asunto: string, cuerpo: string, anio?: number): Extracci
     lugar,
     cliente,
     fecha: cita.fecha,
-    hora: cita.hora,
+    hora: llegada.valor ? llegada : cita.hora,
     direccion: cita.direccion,
     mapa: cita.mapa,
     temperatura: leerTemperatura(cuerpo),
     producto: leerProducto(cuerpo),
     cantidad: leerCantidad(ztrack),
-    contenedor: contenedor.valor ? contenedor : buscar(/\d+\s+contenedor\s+reefer[^\n]*/i, cuerpo, (m) => m.trim()),
+    contenedor: contenedor ?? VACIO,
     comercialNombre: firma.nombre,
     comercialCargo: firma.cargo,
     comercialCorreo: firma.correo,
@@ -212,6 +218,24 @@ function leerTemperatura(cuerpo: string): Campo {
   return campo(`${numero}°C`, coincidencia[0].trim());
 }
 
+function leerContenedor(texto: string, soloCantidad = false): Campo | null {
+  const conCantidad = texto.match(/\d+\s+contenedor\s+reefer[^\n]*/i);
+  if (conCantidad) return campo(conCantidad[0].trim(), conCantidad[0].trim());
+  if (soloCantidad) return null;
+  const suelto = texto.match(/contenedor\s+reefer(?:\s+de)?\s+\d+\s*(?:pies|rh|ft)?/i);
+  if (!suelto) return null;
+  return campo(suelto[0].trim(), suelto[0].trim());
+}
+
+function horaDeLlegada(cuerpo: string): Campo {
+  const fresco = cuerpo.split(/\n\s*De:\s+/i)[0] ?? cuerpo;
+  const coincidencia = fresco.match(/\bllegando\s+(\d{1,2}(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?)?)/i);
+  if (!coincidencia) return VACIO;
+  const valor = normalizarHora(coincidencia[1]);
+  if (!valor) return VACIO;
+  return campo(valor, coincidencia[0].trim());
+}
+
 function leerProducto(cuerpo: string): Campo {
   const hallados = [...cuerpo.matchAll(/producto(?:\s+almacenar)?\s*:\s*([^\n*]{2,80})/gi)];
   const limpios = hallados
@@ -356,17 +380,18 @@ function interpretarSegmento(segmento: string): { descripcion: string | null; lu
     .split(/\s+[\u2010\u2011\u2012\u2013\u2014\u2015-]\s+/)
     .map((parte) => parte.trim())
     .filter(Boolean);
+  const ruc = /^\d{11}$/.test(partes.at(-1) ?? '') ? (partes.at(-1) ?? null) : null;
   while (partes.length > 0 && /^\d{8,}$/.test(partes.at(-1) ?? '')) partes.pop();
   const utiles = partes.filter((parte) => !esMarca(parte));
   if (utiles.length >= 3 && pareceServicio(utiles[0]) && esEmpresa(utiles.at(-1) ?? '')) {
     return {
       descripcion: utiles.slice(0, -2).join(' - '),
       lugar: utiles.at(-2) ?? null,
-      cliente: limpiarCliente(utiles.at(-1) ?? ''),
+      cliente: clienteConRuc(utiles.at(-1) ?? '', ruc),
     };
   }
   if (utiles.length >= 2 && pareceServicio(utiles[0]) && esEmpresa(utiles.at(-1) ?? '')) {
-    return { descripcion: utiles.slice(0, -1).join(' - '), lugar: null, cliente: limpiarCliente(utiles.at(-1) ?? '') };
+    return { descripcion: utiles.slice(0, -1).join(' - '), lugar: null, cliente: clienteConRuc(utiles.at(-1) ?? '', ruc) };
   }
   if (utiles.length >= 2 && pareceServicio(utiles[0])) {
     const candidato = utiles.at(-1) ?? '';
@@ -383,8 +408,8 @@ function interpretarSegmento(segmento: string): { descripcion: string | null; lu
   if (utiles.length === 2 && /^zgroup\b/i.test(utiles[0]) && !pareceServicio(utiles[1])) {
     return { descripcion: null, lugar: null, cliente: utiles[1] };
   }
-  if (utiles.length === 1 && esEmpresa(utiles[0]) && !pareceServicio(utiles[0])) {
-    return { descripcion: null, lugar: null, cliente: limpiarCliente(utiles[0]) };
+  if (utiles.length === 1 && esEmpresa(utiles[0]) && !empiezaComoServicio(utiles[0])) {
+    return { descripcion: null, lugar: null, cliente: clienteConRuc(utiles[0], ruc) };
   }
   if (utiles.length === 1 && pareceServicio(utiles[0])) {
     const parentesis = utiles[0].match(/\(([^)]{3,80})\)\s*$/);
@@ -412,6 +437,16 @@ function pareceServicio(texto: string): boolean {
 
 function esEmpresa(texto: string): boolean {
   return /\b(?:s\.?\s*a\.?\s*c\.?|s\.?\s*r\.?\s*l\.?|e\.?\s*i\.?\s*r\.?\s*l\.?|s\.?\s*a\.?\s*a\.?|s\.?\s*a\.?|b\.?\s*v\.?|sac|srl|eirl|saa|sa|bv)\b/i.test(texto);
+}
+
+function empiezaComoServicio(texto: string): boolean {
+  return /^(?:alquiler|venta|servicio|instalaci|asistencia|protocolo|cold treatment)\b/i.test(texto.trim());
+}
+
+function clienteConRuc(nombre: string, ruc: string | null): string {
+  const limpio = limpiarCliente(nombre);
+  if (!ruc || limpio.includes(ruc)) return limpio;
+  return `${limpio} – ${ruc}`;
 }
 
 function palabras(texto: string): number {

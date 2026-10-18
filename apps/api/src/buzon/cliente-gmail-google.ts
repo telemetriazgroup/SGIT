@@ -1,5 +1,5 @@
 import type { Configuracion } from '../configuracion';
-import { ALCANCE_GMAIL, type ClienteGmail, type MensajeDescargado, type PaginaIds, type ParteAdjunto } from './cliente-gmail';
+import { LOTE_SYNC, type ClienteGmail, type MensajeDescargado, type PaginaIds, type ParteAdjunto } from './cliente-gmail';
 
 type Encabezado = { name?: string; value?: string };
 type Parte = {
@@ -10,9 +10,14 @@ type Parte = {
   parts?: Parte[];
 };
 
+const TOPE_POR_MINUTO = 4800;
+
 export class ClienteGmailGoogle implements ClienteGmail {
   private accessToken: string | null = null;
   private vence = 0;
+  private enVuelo = 0;
+  private espera: Array<() => void> = [];
+  private gastos: Array<{ en: number; unidades: number }> = [];
 
   constructor(
     private readonly config: Configuracion,
@@ -83,14 +88,55 @@ export class ClienteGmailGoogle implements ClienteGmail {
     }
   }
 
-  private async pedirJson(url: URL): Promise<Record<string, any>> {
+  private pedirJson(url: URL): Promise<Record<string, any>> {
+    return this.enFila(() => this.traer(url, 0));
+  }
+
+  private enFila<T>(trabajo: () => Promise<T>): Promise<T> {
+    return new Promise((resolver, rechazar) => {
+      const correr = () => {
+        this.enVuelo += 1;
+        trabajo()
+          .then(resolver, rechazar)
+          .finally(() => {
+            this.enVuelo -= 1;
+            const siguiente = this.espera.shift();
+            if (siguiente) siguiente();
+          });
+      };
+      if (this.enVuelo < LOTE_SYNC) correr();
+      else this.espera.push(correr);
+    });
+  }
+
+  private async traer(url: URL, intento: number): Promise<Record<string, any>> {
+    const unidades = costoDe(url.pathname);
+    await this.esperarCupo(unidades);
+    this.gastos.push({ en: Date.now(), unidades });
     const token = await this.token();
     const respuesta = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
     if (!respuesta.ok) {
       const texto = await respuesta.text();
+      if (respuesta.status === 403 && texto.includes('Quota exceeded') && intento < 4) {
+        console.error('Gmail llenó el cupo de este minuto. Sigo con la siguiente tanda cuando se libere.');
+        await esperar(65_000);
+        return this.traer(url, intento + 1);
+      }
       throw new Error(`Gmail ${respuesta.status} ${url.pathname}: ${texto.slice(0, 240)}`);
     }
     return (await respuesta.json()) as Record<string, any>;
+  }
+
+  private async esperarCupo(unidades: number): Promise<void> {
+    for (;;) {
+      const ahora = Date.now();
+      this.gastos = this.gastos.filter((gasto) => ahora - gasto.en < 60_000);
+      const usado = this.gastos.reduce((suma, gasto) => suma + gasto.unidades, 0);
+      if (usado + unidades <= TOPE_POR_MINUTO) return;
+      const primero = this.gastos[0];
+      const falta = primero ? 60_000 - (ahora - primero.en) + 250 : 1000;
+      await esperar(Math.max(250, Math.min(falta, 65_000)));
+    }
   }
 
   private async token(): Promise<string> {
@@ -139,6 +185,19 @@ async function canjear(config: Configuracion, extra: Record<string, string>): Pr
     throw new Error(`Google no aceptó el permiso: ${String(json.error ?? respuesta.status)}`);
   }
   return json;
+}
+
+function costoDe(ruta: string): number {
+  if (ruta.includes('/attachments/')) return 20;
+  if (ruta.endsWith('/history')) return 2;
+  if (ruta.endsWith('/messages')) return 5;
+  if (ruta.includes('/messages/')) return 20;
+  if (ruta.endsWith('/profile')) return 1;
+  return 20;
+}
+
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolver) => setTimeout(resolver, ms));
 }
 
 function interpretarMensaje(json: { id: string; threadId: string; labelIds?: string[]; payload?: Parte }): MensajeDescargado {

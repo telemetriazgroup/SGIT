@@ -11,6 +11,7 @@ export type Cuenta = {
   rol: Rol;
   activo: boolean;
   telefono: string | null;
+  consulta_despacho: boolean;
 };
 import { emitirToken, leerToken } from './token';
 
@@ -70,8 +71,8 @@ export class IdentidadService {
   }
 
   async listar(): Promise<Cuenta[]> {
-    const filas = await this.conexiones.pg.query<{ nombre: string; correo: string; rol: string; activo: boolean; telefono: string | null }>(
-      `SELECT nombre, correo, rol, activo, telefono FROM usuario ORDER BY nombre`,
+    const filas = await this.conexiones.pg.query<{ nombre: string; correo: string; rol: string; activo: boolean; telefono: string | null; consulta_despacho: boolean }>(
+      `SELECT nombre, correo, rol, activo, telefono, consulta_despacho FROM usuario ORDER BY nombre`,
     );
     return filas.rows.filter((fila): fila is Cuenta => esRol(fila.rol));
   }
@@ -113,7 +114,15 @@ export class IdentidadService {
     await this.conexiones.pg.query(`UPDATE usuario SET contrasena_hash = $2 WHERE correo = $1`, [correo, await bcrypt.hash(nueva, 10)]);
   }
 
-  async actualizar(actor: string, correo: string, nombre: string, rol: string, activo: boolean, telefono: string): Promise<Cuenta> {
+  async actualizar(
+    actor: string,
+    correo: string,
+    nombre: string,
+    rol: string,
+    activo: boolean,
+    telefono: string,
+    consultaDespacho: boolean,
+  ): Promise<Cuenta> {
     const destino = correo.trim().toLowerCase();
     const cuenta = await this.cuenta(destino);
     if (!cuenta) throw new BadRequestException('No está esa cuenta.');
@@ -122,15 +131,16 @@ export class IdentidadService {
     if (cuenta.rol === 'superusuario') {
       if (rol !== 'superusuario') throw new BadRequestException('El superusuario no cambia de tipo.');
       if (!activo) throw new BadRequestException('La cuenta de superusuario se mantiene activa.');
-    } else if (rol !== 'administrador' && rol !== 'tecnico' && rol !== 'operador') {
-      throw new BadRequestException('El tipo es administrador, técnico u operador.');
+    } else if (rol !== 'administrador' && rol !== 'tecnico' && rol !== 'operador' && rol !== 'despacho') {
+      throw new BadRequestException('El tipo es administrador, técnico, operador o despacho.');
     }
     if (actor === destino && !activo) throw new BadRequestException('No puedes desactivar tu propia cuenta.');
     const numero = telefonoLimpio(telefono);
+    const pregunta = cuenta.rol === 'superusuario' ? false : rol === 'despacho' && consultaDespacho;
     try {
       await this.conexiones.pg.query(
-        `UPDATE usuario SET nombre = $2, rol = $3, activo = $4, telefono = $5 WHERE correo = $1`,
-        [destino, limpio, cuenta.rol === 'superusuario' ? 'superusuario' : rol, cuenta.rol === 'superusuario' ? true : activo, numero],
+        `UPDATE usuario SET nombre = $2, rol = $3, activo = $4, telefono = $5, consulta_despacho = $6 WHERE correo = $1`,
+        [destino, limpio, cuenta.rol === 'superusuario' ? 'superusuario' : rol, cuenta.rol === 'superusuario' ? true : activo, numero, pregunta],
       );
     } catch (error) {
       if (tieneCodigo(error, '23505')) throw new ConflictException('Ese número ya está en otra cuenta.');
@@ -152,27 +162,41 @@ export class IdentidadService {
   }
 
   private async cuenta(correo: string): Promise<Cuenta | null> {
-    const filas = await this.conexiones.pg.query<{ nombre: string; correo: string; rol: string; activo: boolean; telefono: string | null }>(
-      `SELECT nombre, correo, rol, activo, telefono FROM usuario WHERE correo = $1`,
+    const filas = await this.conexiones.pg.query<{
+      nombre: string;
+      correo: string;
+      rol: string;
+      activo: boolean;
+      telefono: string | null;
+      consulta_despacho: boolean;
+    }>(
+      `SELECT nombre, correo, rol, activo, telefono, consulta_despacho FROM usuario WHERE correo = $1`,
       [correo],
     );
     const fila = filas.rows[0];
     if (!fila || !esRol(fila.rol)) return null;
-    return { nombre: fila.nombre, correo: fila.correo, rol: fila.rol, activo: fila.activo, telefono: fila.telefono };
+    return {
+      nombre: fila.nombre,
+      correo: fila.correo,
+      rol: fila.rol,
+      activo: fila.activo,
+      telefono: fila.telefono,
+      consulta_despacho: fila.consulta_despacho,
+    };
   }
 
-  async crear(nombre: string, correo: string, contrasena: string, rol: string): Promise<void> {
+  async crear(nombre: string, correo: string, contrasena: string, rol: string, consultaDespacho = false): Promise<void> {
     const limpio = nombre.trim();
     const destino = correo.trim().toLowerCase();
     if (!limpio) throw new BadRequestException('Indica el nombre.');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(destino)) throw new BadRequestException('El correo no es válido.');
     if (contrasena.length < 8) throw new BadRequestException('La contraseña tiene al menos 8 caracteres.');
-    if (rol !== 'administrador' && rol !== 'tecnico') throw new BadRequestException('El rol es administrador o técnico.');
+    if (rol !== 'administrador' && rol !== 'tecnico' && rol !== 'despacho') throw new BadRequestException('El rol es administrador, técnico o despacho.');
     const hash = await bcrypt.hash(contrasena, 10);
     try {
       await this.conexiones.pg.query(
-        `INSERT INTO usuario (id, nombre, correo, contrasena_hash, rol) VALUES ($1, $2, $3, $4, $5)`,
-        [randomUUID(), limpio, destino, hash, rol],
+        `INSERT INTO usuario (id, nombre, correo, contrasena_hash, rol, consulta_despacho) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [randomUUID(), limpio, destino, hash, rol, rol === 'despacho' && consultaDespacho],
       );
     } catch (error) {
       if (tieneCodigo(error, '23505')) throw new ConflictException('Ese correo ya está registrado.');

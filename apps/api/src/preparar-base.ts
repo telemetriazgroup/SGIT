@@ -44,6 +44,7 @@ export class PrepararBase {
       ['Superusuario', 'superusuario@sgit.local', 'superusuario-prueba', 'superusuario'],
       ['Administrador', 'admin@sgit.local', 'admin-prueba', 'administrador'],
       ['Técnico de prueba', 'tecnico@sgit.local', 'tecnico-prueba', 'tecnico'],
+      ['Johan', 'johan@sgit.local', 'despacho-prueba', 'despacho'],
     ] as const;
     for (const [nombre, correo, password, rol] of cuentas) {
       const hash = await bcrypt.hash(password, 10);

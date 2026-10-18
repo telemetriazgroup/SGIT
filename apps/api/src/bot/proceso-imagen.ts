@@ -1,0 +1,77 @@
+export type ClaseCodigo = 'contenedor' | 'serie' | 'otro';
+
+export type PropuestaImagen = {
+  imagenId: string;
+  codigo: string | null;
+  tipo: string;
+  confianza: number;
+};
+
+export function claseDe(tipo: string, codigo: string): ClaseCodigo {
+  const clase = tipo.trim().toUpperCase();
+  const limpio = codigo.replace(/[\s\-_]+/g, '').toUpperCase();
+  if (clase === 'ZGRU' || limpio.startsWith('ZGRU')) return 'contenedor';
+  if (clase === 'SERIAL' || /^(E0|CIM|MMAU|MNBU|SC)/.test(limpio)) return 'serie';
+  return 'otro';
+}
+
+export function codigoContado(ocr: string | null, aprendido: string | null): { codigo: string | null; corregido: boolean } {
+  const leido = ocr?.trim() || null;
+  const firme = aprendido?.trim() || null;
+  if (!firme || !leido || firme.toUpperCase() === leido.toUpperCase()) return { codigo: leido, corregido: false };
+  return { codigo: firme, corregido: true };
+}
+
+export function lineaLectura(orden: number, clase: ClaseCodigo, codigo: string | null, crudo: string | null, corregido: boolean): string {
+  const nombre = clase === 'contenedor' ? 'Contenedor' : clase === 'serie' ? 'Serie de máquina' : 'Código';
+  if (!codigo) return `${orden}. Sin código legible.`;
+  if (corregido && crudo && crudo.toUpperCase() !== codigo.toUpperCase()) {
+    return `${orden}. ${nombre} ${codigo}. El lector dijo ${crudo} y ya se había corregido.`;
+  }
+  return `${orden}. ${nombre} ${codigo}.`;
+}
+
+export async function proponerImagen(archivo: { nombre: string; mime: string; contenido: Buffer }): Promise<PropuestaImagen | null> {
+  const base = (process.env.PROCESO_IMAGEN_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+  const cuerpo = new FormData();
+  cuerpo.append('file', new Blob([new Uint8Array(archivo.contenido)], { type: archivo.mime }), archivo.nombre || 'foto.jpg');
+  const control = new AbortController();
+  const reloj = setTimeout(() => control.abort(), 25_000);
+  try {
+    const respuesta = await fetch(`${base}/api/imagenes`, { method: 'POST', body: cuerpo, signal: control.signal });
+    if (!respuesta.ok) return null;
+    const dato = (await respuesta.json()) as {
+      imagen_id?: string;
+      codigo_propuesto?: string | null;
+      tipo?: string;
+      confianza?: number;
+      sin_deteccion?: boolean;
+    };
+    if (!dato.imagen_id) return null;
+    const codigo = dato.sin_deteccion ? null : dato.codigo_propuesto?.trim() || null;
+    return { imagenId: dato.imagen_id, codigo, tipo: dato.tipo || 'MANUAL', confianza: Number(dato.confianza ?? 0) };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(reloj);
+  }
+}
+
+export async function confirmarImagen(imagenId: string, codigo: string, tipo: string): Promise<boolean> {
+  const base = (process.env.PROCESO_IMAGEN_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+  const control = new AbortController();
+  const reloj = setTimeout(() => control.abort(), 15_000);
+  try {
+    const respuesta = await fetch(`${base}/api/registros`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ imagen_id: imagenId, codigo, tipo }),
+      signal: control.signal,
+    });
+    return respuesta.ok || respuesta.status === 409;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(reloj);
+  }
+}

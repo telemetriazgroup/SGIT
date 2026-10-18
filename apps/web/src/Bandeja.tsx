@@ -96,6 +96,7 @@ function etiquetaRol(rol: string): string {
   if (rol === 'superusuario') return 'Superusuario';
   if (rol === 'administrador') return 'Administrador';
   if (rol === 'tecnico') return 'Técnico';
+  if (rol === 'despacho') return 'Despacho';
   return 'Operador';
 }
 
@@ -521,7 +522,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             </section>
           ) : null}
           {vista === 'tareas' ? (
-            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} sistema={sistema} />
+            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} />
           ) : vista === 'equipo' ? (
             <PanelEquipo apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'cuenta' ? (

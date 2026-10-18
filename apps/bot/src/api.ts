@@ -1,4 +1,9 @@
-export type AvisoSalida = { id: string; destino: string; cuerpo: string };
+export type AvisoSalida = {
+  id: string;
+  destino: string;
+  cuerpo: string;
+  imagenes?: Array<{ nombre: string; mime: string; contenido: string }>;
+};
 
 export function crearClienteBot(base: string, clave: string) {
   const cabeza = { 'content-type': 'application/json', 'x-bot-clave': clave };
@@ -14,11 +19,14 @@ export function crearClienteBot(base: string, clave: string) {
     async publicar(estado: string): Promise<void> {
       await fetch(`${base}/bot/sesion`, { method: 'POST', headers: cabeza, body: JSON.stringify({ estado }) });
     },
-    async pedirReinicio(): Promise<boolean> {
+    async pedirReinicio(): Promise<{ reiniciar: boolean; olvidar: boolean }> {
       const respuesta = await fetch(`${base}/bot/reinicio`, { headers: { 'x-bot-clave': clave } });
-      if (!respuesta.ok) return false;
-      const cuerpo = (await respuesta.json()) as { reiniciar?: boolean };
-      return Boolean(cuerpo.reiniciar);
+      if (!respuesta.ok) return { reiniciar: false, olvidar: false };
+      const cuerpo = (await respuesta.json()) as { reiniciar?: boolean; olvidar?: boolean };
+      return { reiniciar: Boolean(cuerpo.reiniciar), olvidar: Boolean(cuerpo.olvidar) };
+    },
+    async bitacora(nivel: 'info' | 'fallo', texto: string): Promise<void> {
+      await fetch(`${base}/bot/bitacora`, { method: 'POST', headers: cabeza, body: JSON.stringify({ nivel, texto }) });
     },
     async tomar(): Promise<AvisoSalida | null> {
       const respuesta = await fetch(`${base}/bot/salida`, { headers: { 'x-bot-clave': clave } });
@@ -29,6 +37,9 @@ export function crearClienteBot(base: string, clave: string) {
     async confirmar(id: string): Promise<void> {
       const respuesta = await fetch(`${base}/bot/salida/${id}/enviado`, { method: 'POST', headers: { 'x-bot-clave': clave } });
       if (!respuesta.ok) throw new Error(`confirmar ${respuesta.status}`);
+    },
+    async fallo(texto: string): Promise<void> {
+      await fetch(`${base}/bot/fallo`, { method: 'POST', headers: cabeza, body: JSON.stringify({ texto }) });
     },
     async entrar(
       telefono: string,

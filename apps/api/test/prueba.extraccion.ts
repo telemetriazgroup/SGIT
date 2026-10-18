@@ -116,8 +116,16 @@ test('el asunto real separa cliente, lugar y servicio', () => {
     'ASIGNAR Y DESPACHAR // COT 10020263358 // TICKET DE VENTAS #2080 // ALQUILER DE CONTENEDOR REEFER 20 RH - MAKRO CHORRILLOS - MAKRO SUPERMAYORISTA S.A. ‒ 20492092313',
   );
   assert.equal(conRuc.lugar.valor, 'MAKRO CHORRILLOS');
-  assert.equal(conRuc.cliente.valor, 'MAKRO SUPERMAYORISTA S.A.');
+  assert.equal(conRuc.cliente.valor, 'MAKRO SUPERMAYORISTA S.A. – 20492092313');
   assert.equal(conRuc.ticket.valor, '2080');
+
+  const samir = partirAsunto(
+    'ASIGNAR Y DESPACHAR // 10020264047 - ALQUILER DE CONTENEDOR REEFER DE 40 PIES // TRANSPORTES Y LOGISTICA SAMIR S.A.C. ‒ 20547919093',
+  );
+  assert.equal(samir.cot.valor, '10020264047');
+  assert.equal(samir.descripcion.valor, 'ALQUILER DE CONTENEDOR REEFER DE 40 PIES');
+  assert.equal(samir.cliente.valor, 'TRANSPORTES Y LOGISTICA SAMIR S.A.C. – 20547919093');
+  assert.equal(samir.lugar.valor, null);
 
   const banco = partirAsunto(
     'ASIGNAR Y DESPACHAR // COTIZACIÓN N°: 10020261161 - VENTA DE 10 GENERADORES // CITITRANS S.A.C. - BANCO BBVA PERÚ',
@@ -131,6 +139,21 @@ test('el asunto real separa cliente, lugar y servicio', () => {
   assert.equal(dosEmpresas.cliente.valor, 'QALI FRUITS S.A.C.');
   const destino = partirAsunto('ASIGNAR Y DESPACHAR: 10020262042 - ALQUILER DE CONTENEDOR REEFER 40 RH CON DESTINO TOTTUS SAN HILARION (SJL)');
   assert.equal(destino.lugar.valor, 'TOTTUS SAN HILARION (SJL)');
+});
+
+test('una llegada escrita en la respuesta corrige la hora citada del hilo', () => {
+  const lectura = extraer(
+    'RE: ASIGNAR Y DESPACHAR // 10020264047 - ALQUILER DE CONTENEDOR REEFER DE 40 PIES // TRANSPORTES Y LOGISTICA SAMIR S.A.C. ‒ 20547919093',
+    `Cotización confirmada, el cliente estará llegando 6:00 PM.
+
+Saludos Cordiales.
+
+De: operaciones@zgroup.com.pe
+Hora: 3:00 pm`,
+  );
+  assert.equal(lectura.hora.valor, '18:00');
+  assert.equal(lectura.cliente.valor, 'TRANSPORTES Y LOGISTICA SAMIR S.A.C. – 20547919093');
+  assert.match(lectura.contenedor.valor ?? '', /CONTENEDOR REEFER DE 40 PIES/i);
 });
 
 test('la fecha con barras y el año corto es la de arriba, no la entrega citada', () => {

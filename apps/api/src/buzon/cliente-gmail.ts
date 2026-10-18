@@ -1,4 +1,5 @@
-export const INTERVALO_SYNC_MS = 5 * 60 * 1000;
+export const INTERVALO_SYNC_MS = 3 * 60 * 1000;
+export const LOTE_SYNC = 5;
 export const ALCANCE_GMAIL = 'https://www.googleapis.com/auth/gmail.readonly';
 
 export type ParteAdjunto = {

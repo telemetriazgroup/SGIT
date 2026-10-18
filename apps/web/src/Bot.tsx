@@ -5,6 +5,8 @@ type EstadoBot = {
   actualizadoEn: string | null;
   ultimoEnvioEn: string | null;
   qr: boolean;
+  enLinea?: boolean;
+  detalle?: string;
 };
 
 type Miembro = {
@@ -19,6 +21,14 @@ type MensajeWhatsapp = {
   id: string;
   direccion: string;
   telefono: string;
+  texto: string;
+  creadoEn: string;
+};
+
+type LineaConexion = {
+  id: string;
+  servicio: string;
+  nivel: string;
   texto: string;
   creadoEn: string;
 };
@@ -50,21 +60,26 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
   const [destino, setDestino] = useState('');
   const [mensaje, setMensaje] = useState('Prueba de SGIT. Si lees esto, el bot de laboratorio está conectado.');
   const [enviando, setEnviando] = useState(false);
+  const [comprobando, setComprobando] = useState(false);
   const [mensajes, setMensajes] = useState<MensajeWhatsapp[]>([]);
   const [reportes, setReportes] = useState<ReporteImagen[]>([]);
+  const [bitacora, setBitacora] = useState<LineaConexion[]>([]);
+  const [pidiendo, setPidiendo] = useState<'reinicio' | 'olvido' | null>(null);
   const [numeroActivo, setNumeroActivo] = useState<string | null>(null);
   const hiloRef = useRef<HTMLDivElement>(null);
 
   async function cargar() {
-    const [sesion, lista, historial, lecturas] = await Promise.all([
+    const [sesion, lista, historial, lecturas, conexion] = await Promise.all([
       pedir<EstadoBot>(apiUrl, token, '/bot'),
       pedir<Miembro[]>(apiUrl, token, '/bot/miembros'),
       pedir<MensajeWhatsapp[]>(apiUrl, token, '/bot/mensajes'),
       pedir<ReporteImagen[]>(apiUrl, token, '/bot/reporte-imagen'),
+      pedir<LineaConexion[]>(apiUrl, token, '/bot/bitacora'),
     ]);
     setEstado(sesion);
     setMensajes(historial);
     setReportes(lecturas);
+    setBitacora(conexion);
     setMiembros(lista.filter((miembro) => miembro.activo));
     setTelefonos(Object.fromEntries(lista.map((miembro) => [miembro.correo, miembro.telefono ?? ''])));
   }
@@ -119,7 +134,7 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
         body: JSON.stringify({ telefono: destino, texto: mensaje }),
       });
       setEstado(sesion);
-      setAviso(sesion.estado === 'listo' ? 'Quedó en la cola. Sale en unos segundos.' : 'Quedó en la cola. Sale cuando el bot esté listo.');
+      setAviso(sesion.enLinea ? 'Quedó en la cola. Sale en unos segundos.' : 'Quedó en la cola. WhatsApp no está en línea: el mensaje espera a que la sesión vuelva.');
     } catch (error: unknown) {
       setAviso(texto(error));
     } finally {
@@ -127,7 +142,53 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
     }
   }
 
-  const listo = estado?.estado === 'listo';
+  async function reiniciarMisma() {
+    if (!window.confirm('¿Reiniciar WhatsApp? Se vuelve a abrir la misma sesión.')) return;
+    setPidiendo('reinicio');
+    setAviso(null);
+    try {
+      const sesion = await pedir<EstadoBot>(apiUrl, token, '/bot/reiniciar', { method: 'POST' });
+      setEstado(sesion);
+      setAviso(sesion.detalle ?? 'Reinicio pedido.');
+      await cargar();
+    } catch (error: unknown) {
+      setAviso(texto(error));
+    } finally {
+      setPidiendo(null);
+    }
+  }
+
+  async function cerrarSesion() {
+    if (!window.confirm('Esto cierra la sesión de este equipo. El teléfono de laboratorio tiene que escanear un código nuevo. ¿Seguro?')) return;
+    setPidiendo('olvido');
+    setAviso(null);
+    try {
+      const sesion = await pedir<EstadoBot>(apiUrl, token, '/bot/olvidar', { method: 'POST' });
+      setEstado(sesion);
+      setAviso(sesion.detalle ?? 'Sesión cerrada. En un momento aparece el código.');
+      await cargar();
+    } catch (error: unknown) {
+      setAviso(texto(error));
+    } finally {
+      setPidiendo(null);
+    }
+  }
+
+  async function comprobar() {
+    setComprobando(true);
+    setAviso(null);
+    try {
+      const resultado = await pedir<{ enLinea: boolean; enviado: boolean; detalle: string }>(apiUrl, token, '/bot/comprobar', { method: 'POST' });
+      setAviso(resultado.detalle);
+      await cargar();
+    } catch (error: unknown) {
+      setAviso(texto(error));
+    } finally {
+      setComprobando(false);
+    }
+  }
+
+  const listo = Boolean(estado?.enLinea);
   const chats = useMemo(() => agrupar(mensajes, miembros), [mensajes, miembros]);
   const activo = chats.find((chat) => chat.telefono === numeroActivo) ?? chats[0] ?? null;
 
@@ -146,10 +207,10 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
       <div className="vinculo">
         <article className="vinculo-tarjeta">
           <div>
-            <h2>{listo ? 'Sesión iniciada' : 'Escanea para iniciar sesión'}</h2>
+            <h2>{listo ? 'Sesión iniciada' : estado?.estado === 'esperando_qr' ? 'Escanea para iniciar sesión' : 'WhatsApp no está en línea'}</h2>
             {listo ? (
               <p className="vinculo-detalle">El WhatsApp de laboratorio está vinculado. {estado?.ultimoEnvioEn ? `Último aviso: ${cuando(estado.ultimoEnvioEn)}.` : 'Todavía no se ha enviado un aviso.'}</p>
-            ) : (
+            ) : estado?.estado === 'esperando_qr' ? (
               <ol className="pasos-vinculo">
                 <li>
                   <span>1</span>
@@ -164,11 +225,20 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
                   <p>Apunta la cámara de WhatsApp a este código.</p>
                 </li>
               </ol>
+            ) : (
+              <p className="vinculo-detalle">{estado?.detalle ?? 'WhatsApp no responde. Reinícialo desde la barra.'}</p>
             )}
-            <label className="sesion-fija">
-              <input type="checkbox" checked disabled />
-              Mantener la sesión iniciada en este equipo
-            </label>
+            <p className="meta sesion-nota">La sesión queda guardada en este equipo. Reiniciar vuelve a abrir esa sesión. Si no vuelve, ciérrala y escanea otro código. El registro de abajo dice qué pasó.</p>
+            {!listo ? (
+              <div className="acciones-sesion">
+                <button type="button" onClick={() => void reiniciarMisma()} disabled={pidiendo !== null}>
+                  {pidiendo === 'reinicio' ? 'Reiniciando…' : 'Reiniciar la misma sesión'}
+                </button>
+                <button type="button" onClick={() => void cerrarSesion()} disabled={pidiendo !== null}>
+                  {pidiendo === 'olvido' ? 'Cerrando…' : 'Cerrar sesión y pedir otro QR'}
+                </button>
+              </div>
+            ) : null}
           </div>
           <div className="qr-marco">
             {qrUrl && !listo ? (
@@ -185,11 +255,30 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
         <input id="prueba-telefono" inputMode="tel" value={destino} placeholder="51900000000" onChange={(evento) => setDestino(evento.target.value)} required />
         <label htmlFor="prueba-texto">Mensaje</label>
         <textarea id="prueba-texto" value={mensaje} rows={3} onChange={(evento) => setMensaje(evento.target.value)} required />
-        <button type="submit" className="primario" disabled={enviando}>
+        <button type="submit" className="primario" disabled={enviando || comprobando}>
           {enviando ? 'Enviando…' : 'Enviar prueba'}
         </button>
       </form>
-      {aviso ? <p className={aviso.startsWith('Quedó') ? 'meta' : 'error'}>{aviso}</p> : null}
+      <button type="button" onClick={() => void comprobar()} disabled={comprobando || enviando}>
+        {comprobando ? 'Comprobando…' : 'Comprobar línea'}
+      </button>
+      <p className="meta">Comprobar línea manda un mensaje a 51929467505 y espera a que salga. Si no sale, reinicia la misma sesión.</p>
+      {aviso ? <p className={aviso.startsWith('Quedó') || aviso.includes('salió') || aviso.includes('pedido') || aviso.includes('código') ? 'meta' : 'error'}>{aviso}</p> : null}
+      <h3>Registro de conexión</h3>
+      <p>Gmail y WhatsApp dejan aquí cada arranque, reinicio y fallo. Sirve para ver por qué una sesión no volvió.</p>
+      {bitacora.length === 0 ? (
+        <p>Todavía no hay movimientos de conexión.</p>
+      ) : (
+        <ol className="bitacora-conexion">
+          {bitacora.map((linea) => (
+            <li key={linea.id} className={linea.nivel}>
+              <time>{cuando(linea.creadoEn)}</time>
+              <strong>{linea.servicio === 'gmail' ? 'Gmail' : 'WhatsApp'}</strong>
+              <span>{linea.texto}</span>
+            </li>
+          ))}
+        </ol>
+      )}
       <h3>Números habilitados</h3>
       <p>El número queda atado a la cuenta. Solo ese WhatsApp puede anotar. Si la cuenta es de técnico, además recibe las tareas nuevas.</p>
       <ul className="habilitados">
@@ -211,7 +300,7 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
                   placeholder="51900000000"
                   onChange={(evento) => setTelefonos((actual) => ({ ...actual, [miembro.correo]: evento.target.value }))}
                 />
-                <em>{habilitado ? (miembro.rol === 'tecnico' ? 'Habilitado · recibe tareas' : 'Habilitado') : 'Sin número'}</em>
+                <em>{habilitado ? (miembro.rol === 'tecnico' ? 'Habilitado · recibe tareas' : miembro.rol === 'despacho' ? 'Habilitado · consulta de despacho' : 'Habilitado') : 'Sin número'}</em>
                 <button type="submit">Guardar</button>
               </form>
             </li>
@@ -313,6 +402,7 @@ function etiquetaRol(rol: string): string {
   if (rol === 'superusuario') return 'Superusuario';
   if (rol === 'administrador') return 'Administrador';
   if (rol === 'tecnico') return 'Técnico';
+  if (rol === 'despacho') return 'Despacho';
   return 'Operador';
 }
 

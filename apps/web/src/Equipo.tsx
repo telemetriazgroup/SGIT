@@ -6,6 +6,7 @@ type Cuenta = {
   rol: string;
   activo: boolean;
   telefono: string | null;
+  consulta_despacho: boolean;
 };
 
 export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }) {
@@ -14,7 +15,8 @@ export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }
   const [nombre, setNombre] = useState('');
   const [correo, setCorreo] = useState('');
   const [contrasena, setContrasena] = useState('');
-  const [rol, setRol] = useState<'administrador' | 'tecnico'>('tecnico');
+  const [rol, setRol] = useState<'administrador' | 'tecnico' | 'despacho'>('tecnico');
+  const [consultaDespacho, setConsultaDespacho] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
   const cuenta = cuentas.find((item) => item.correo === elegida) ?? null;
@@ -36,7 +38,7 @@ export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }
     try {
       const lista = await pedir<Cuenta[]>(apiUrl, token, '/usuarios', {
         method: 'POST',
-        body: JSON.stringify({ nombre, correo, contrasena, rol }),
+        body: JSON.stringify({ nombre, correo, contrasena, rol, consultaDespacho: rol === 'despacho' && consultaDespacho }),
       });
       setCuentas(lista);
       setElegida(correo.trim().toLowerCase());
@@ -54,7 +56,7 @@ export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }
   return (
     <section className="ficha cuentas">
       <h2>Cuentas</h2>
-      <p>El administrador ve y corrige las tareas. El técnico las recibe en WhatsApp y solo anota seguimientos e incidentes.</p>
+        <p>El administrador ve y corrige las tareas. El técnico las recibe en WhatsApp y solo anota seguimientos e incidentes. Despacho solo ve lo que el superusuario habilitó y responde código y máquina.</p>
       <form className="cuenta-alta" onSubmit={(evento) => void crear(evento)}>
         <label htmlFor="cuenta-nombre">
           Nombre
@@ -70,11 +72,18 @@ export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }
         </label>
         <label htmlFor="cuenta-rol">
           Tipo
-          <select id="cuenta-rol" value={rol} onChange={(evento) => setRol(evento.target.value === 'administrador' ? 'administrador' : 'tecnico')}>
+          <select id="cuenta-rol" value={rol} onChange={(evento) => setRol(evento.target.value === 'administrador' ? 'administrador' : evento.target.value === 'despacho' ? 'despacho' : 'tecnico')}>
             <option value="tecnico">Técnico</option>
             <option value="administrador">Administrador</option>
+            <option value="despacho">Despacho</option>
           </select>
         </label>
+        {rol === 'despacho' ? (
+          <label className="cuenta-activa" htmlFor="cuenta-pregunta">
+            <input id="cuenta-pregunta" type="checkbox" checked={consultaDespacho} onChange={(evento) => setConsultaDespacho(evento.target.checked)} />
+            Preguntar pendientes de despacho
+          </label>
+        ) : null}
         <button type="submit" className="primario" disabled={guardando}>
           {guardando ? 'Creando…' : 'Crear cuenta'}
         </button>
@@ -92,7 +101,7 @@ export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }
                   <strong>{item.nombre}</strong>
                   <small>{item.correo}</small>
                 </span>
-                <em>{etiquetaRol(item.rol)}</em>
+                <em>{etiquetaRol(item.rol)}{item.consulta_despacho ? ' · pregunta' : ''}</em>
               </button>
             </li>
           ))}
@@ -131,6 +140,7 @@ function Editor({
   const [rol, setRol] = useState(cuenta.rol);
   const [activo, setActivo] = useState(cuenta.activo);
   const [telefono, setTelefono] = useState(cuenta.telefono ?? '');
+  const [consultaDespacho, setConsultaDespacho] = useState(cuenta.consulta_despacho);
   const [clave, setClave] = useState('');
   const [guardando, setGuardando] = useState(false);
   const superusuario = cuenta.rol === 'superusuario';
@@ -140,6 +150,7 @@ function Editor({
     setRol(cuenta.rol);
     setActivo(cuenta.activo);
     setTelefono(cuenta.telefono ?? '');
+    setConsultaDespacho(cuenta.consulta_despacho);
     setClave('');
   }, [cuenta]);
 
@@ -149,7 +160,7 @@ function Editor({
     try {
       await pedir<Cuenta>(apiUrl, token, '/usuarios/datos', {
         method: 'POST',
-        body: JSON.stringify({ correo: cuenta.correo, nombre, rol, activo, telefono }),
+        body: JSON.stringify({ correo: cuenta.correo, nombre, rol, activo, telefono, consultaDespacho: rol === 'despacho' && consultaDespacho }),
       });
       alGuardar(await pedir<Cuenta[]>(apiUrl, token, '/usuarios'), 'Los datos quedaron guardados.');
     } catch (error: unknown) {
@@ -202,6 +213,7 @@ function Editor({
             <option value="tecnico">Técnico</option>
             <option value="administrador">Administrador</option>
             <option value="operador">Operador</option>
+            <option value="despacho">Despacho</option>
             {superusuario ? <option value="superusuario">Superusuario</option> : null}
           </select>
         </label>
@@ -209,6 +221,12 @@ function Editor({
           WhatsApp
           <input id="editar-telefono" inputMode="tel" value={telefono} placeholder="51900000000" onChange={(evento) => setTelefono(evento.target.value)} />
         </label>
+        {rol === 'despacho' ? (
+          <label className="cuenta-activa" htmlFor="editar-pregunta">
+            <input id="editar-pregunta" type="checkbox" checked={consultaDespacho} onChange={(evento) => setConsultaDespacho(evento.target.checked)} />
+            Preguntar pendientes de despacho
+          </label>
+        ) : null}
         <label className="cuenta-activa" htmlFor="editar-activo">
           <input id="editar-activo" type="checkbox" checked={activo} disabled={superusuario} onChange={(evento) => setActivo(evento.target.checked)} />
           Cuenta activa
@@ -369,6 +387,7 @@ function etiquetaRol(rol: string): string {
   if (rol === 'superusuario') return 'Superusuario';
   if (rol === 'administrador') return 'Administrador';
   if (rol === 'tecnico') return 'Técnico';
+  if (rol === 'despacho') return 'Despacho';
   return 'Operador';
 }
 

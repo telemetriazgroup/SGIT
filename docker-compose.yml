@@ -52,6 +52,10 @@ services:
       - "18003:18003"
     volumes:
       - .:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PROCESO_IMAGEN_URL: http://host.docker.internal:8000
     depends_on:
       postgres:
         condition: service_healthy
