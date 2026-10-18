@@ -13,7 +13,7 @@ import {
   textoReconsultaDespacho,
   type DatosAviso,
 } from './avisos';
-import { claseDe, codigoContado, confirmarImagen, lineaLectura, proponerImagen } from './proceso-imagen';
+import { asumirZgru, claseDe, confirmarImagen, presentarLectura, proponerImagen } from './proceso-imagen';
 
 const SILENCIO_MS = 30 * 60 * 1000;
 
@@ -83,6 +83,7 @@ export class TurnoDespacho {
     );
     const previo = vigente.rows[0];
     const junto = previo?.texto ? `${previo.texto}\n${texto}` : texto;
+    const asignacionId = previo?.id ?? randomUUID();
     if (previo) {
       await this.pg.query(
         `UPDATE asignacion_despacho
@@ -94,10 +95,11 @@ export class TurnoDespacho {
       await this.pg.query(
         `INSERT INTO asignacion_despacho (id, tarea_id, autor_correo, autor_nombre, texto, estado)
          VALUES ($1, $2, $3, $4, $5, 'recogiendo')`,
-        [randomUUID(), tareaId, autor.correo, autor.nombre, junto],
+        [asignacionId, tareaId, autor.correo, autor.nombre, junto],
       );
     }
     await this.tocar(tareaId);
+    await this.movimiento(tareaId, asignacionId, 'texto', autor.nombre, texto);
     return junto;
   }
 
@@ -124,15 +126,15 @@ export class TurnoDespacho {
     await this.tocar(tareaId);
   }
 
-  async confirmar(tareaId: string): Promise<string | null> {
-    const fila = await this.pg.query<{ id: string }>(
-      `UPDATE asignacion_despacho SET estado = 'confirmada', confirmada_en = now()
+  async confirmar(tareaId: string, motivo: 'ok' | 'silencio' = 'ok'): Promise<string | null> {
+    const fila = await this.pg.query<{ id: string; autor_nombre: string }>(
+      `UPDATE asignacion_despacho SET estado = 'confirmada', confirmada_en = now(), validacion = 'pendiente'
        WHERE id = (
          SELECT id FROM asignacion_despacho
          WHERE tarea_id = $1 AND estado IN ('recogiendo', 'por_validar')
          ORDER BY creado_en DESC LIMIT 1
        )
-       RETURNING id`,
+       RETURNING id, autor_nombre`,
       [tareaId],
     );
     await this.pg.query(
@@ -140,10 +142,17 @@ export class TurnoDespacho {
       [tareaId],
     );
     const id = fila.rows[0]?.id ?? null;
-    if (id) void this.avisar(id).catch((error: unknown) => {
-      const mensaje = error instanceof Error ? error.message : 'no pude avisar la asignación';
-      console.error(`Despacho: ${mensaje}`);
-    });
+    if (id) {
+      const actor = motivo === 'silencio' ? 'sistema' : fila.rows[0].autor_nombre;
+      const detalle = motivo === 'silencio'
+        ? 'Pasó 1 minuto sin ok. Quedó guardado el texto y las imágenes, todavía sin validar por el técnico.'
+        : 'Confirmó con ok. Las imágenes ya estaban guardadas. La lectura sigue en interno y el técnico la verá cuando termine.';
+      await this.movimiento(tareaId, id, 'guardado', actor, detalle);
+      void this.avisar(id).catch((error: unknown) => {
+        const mensaje = error instanceof Error ? error.message : 'no pude avisar la asignación';
+        console.error(`Despacho: ${mensaje}`);
+      });
+    }
     return id;
   }
 
@@ -330,6 +339,7 @@ export class TurnoDespacho {
       [archivoId, asignacionId, clave, mime, archivo.nombre.trim().slice(0, 180) || 'foto'],
     );
     await this.tocar(tareaId);
+    await this.movimiento(tareaId, asignacionId, 'imagen', autor.nombre, `Guardó la imagen ${archivo.nombre.trim().slice(0, 80) || 'foto'} antes de procesarla.`);
     return null;
   }
 
@@ -342,9 +352,10 @@ export class TurnoDespacho {
     imagenes: Array<{ id: string; nombre: string }>;
     lecturas: string[];
     consulta: string | null;
+    validacion: string | null;
   } | null> {
-    const fila = await this.pg.query<{ id: string; cot: string; cliente: string | null; autor_nombre: string; texto: string }>(
-      `SELECT a.id, t.cot, t.cliente, a.autor_nombre, a.texto
+    const fila = await this.pg.query<{ id: string; cot: string; cliente: string | null; autor_nombre: string; texto: string; validacion: string | null }>(
+      `SELECT a.id, t.cot, t.cliente, a.autor_nombre, a.texto, a.validacion
        FROM asignacion_despacho a
        JOIN tarea t ON t.id = a.tarea_id
        WHERE a.tarea_id = $1 AND a.estado = 'confirmada'
@@ -362,11 +373,7 @@ export class TurnoDespacho {
       `SELECT pregunta FROM turno_despacho WHERE tarea_id = $1 AND estado = 'reconsulta' ORDER BY abierto_en DESC LIMIT 1`,
       [tareaId],
     );
-    const lecturas = imagenes.rows.map((imagen, indice) => {
-      const crudo = imagen.codigo_ocr;
-      const firme = imagen.codigo_firme || crudo;
-      return lineaLectura(indice + 1, claseDe(imagen.tipo_ocr ?? '', firme ?? ''), firme, crudo, Boolean(imagen.codigo_firme && crudo && imagen.codigo_firme.toUpperCase() !== crudo.toUpperCase()));
-    });
+    const lecturas = imagenes.rows.map((imagen, indice) => presentarLectura(indice + 1, imagen.tipo_ocr ?? '', imagen.codigo_ocr, imagen.codigo_firme));
     return {
       id: asignacion.id,
       cot: asignacion.cot,
@@ -376,10 +383,55 @@ export class TurnoDespacho {
       imagenes: imagenes.rows,
       lecturas,
       consulta: consulta.rows[0]?.pregunta ?? null,
+      validacion: asignacion.validacion,
     };
   }
 
-  async corregir(tareaId: string, indice: number, codigo: string): Promise<string> {
+  async aceptarLecturas(tareaId: string, actor: string): Promise<string> {
+    const paquete = await this.paquete(tareaId);
+    if (!paquete) return 'Despacho todavía no respondió esta cotización.';
+    const imagenes = await this.pg.query<{ id: string; codigo_ocr: string | null; codigo_firme: string | null; tipo_ocr: string | null }>(
+      `SELECT id, codigo_ocr, codigo_firme, tipo_ocr FROM asignacion_archivo WHERE asignacion_id = $1 ORDER BY creado_en`,
+      [paquete.id],
+    );
+    for (const imagen of imagenes.rows) {
+      const pelado = (imagen.codigo_firme || imagen.codigo_ocr || '').replace(/[\s\-_]+/g, '').toUpperCase();
+      if (!pelado) continue;
+      const clase = claseDe(imagen.tipo_ocr ?? '', pelado);
+      const firme = asumirZgru(pelado, clase).codigo ?? pelado;
+      if (firme !== imagen.codigo_firme) {
+        await this.pg.query(`UPDATE asignacion_archivo SET codigo_firme = $2 WHERE id = $1`, [imagen.id, firme]);
+      }
+      if (clase === 'contenedor') await this.pg.query(`UPDATE tarea SET codigo_equipo = $2 WHERE id = $1`, [tareaId, firme]);
+      if (clase === 'serie') await this.pg.query(`UPDATE tarea SET maquina_equipo = $2 WHERE id = $1`, [tareaId, firme]);
+    }
+    await this.pg.query(
+      `UPDATE asignacion_despacho SET validacion = 'validada', validada_en = now() WHERE id = $1`,
+      [paquete.id],
+    );
+    await this.movimiento(tareaId, paquete.id, 'validada', actor, 'El técnico corroboró que las lecturas son correctas.');
+    return `Quedaron validadas las lecturas de la cotización ${paquete.cot.split('+').join(' · ')}.`;
+  }
+
+  async dejarSinValidar(tareaId: string): Promise<boolean> {
+    const fila = await this.pg.query<{ id: string }>(
+      `UPDATE asignacion_despacho SET validacion = 'sin_validar'
+       WHERE id = (
+         SELECT id FROM asignacion_despacho
+         WHERE tarea_id = $1 AND estado = 'confirmada' AND validacion = 'pendiente'
+         ORDER BY confirmada_en DESC NULLS LAST, creado_en DESC
+         LIMIT 1
+       )
+       RETURNING id`,
+      [tareaId],
+    );
+    const id = fila.rows[0]?.id;
+    if (!id) return false;
+    await this.movimiento(tareaId, id, 'sin_validar', 'sistema', 'Pasaron 5 minutos sin respuesta del técnico. Quedó registrado sin validar el envío ni los códigos leídos.');
+    return true;
+  }
+
+  async corregir(tareaId: string, indice: number, codigo: string, actor = 'técnico'): Promise<string> {
     const fila = await this.pg.query<{ id: string; codigo_ocr: string | null; tipo_ocr: string | null; imagen_externa: string | null }>(
       `SELECT f.id, f.codigo_ocr, f.tipo_ocr, f.imagen_externa
        FROM asignacion_archivo f
@@ -391,8 +443,9 @@ export class TurnoDespacho {
     );
     const imagen = fila.rows[0];
     if (!imagen) return 'Ese número no está en las imágenes.';
-    const firme = codigo.replace(/[\s\-_]+/g, '').toUpperCase();
-    const clase = claseDe(imagen.tipo_ocr ?? '', firme);
+    const pelado = codigo.replace(/[\s\-_]+/g, '').toUpperCase();
+    const clase = claseDe(imagen.tipo_ocr ?? '', pelado);
+    const firme = asumirZgru(pelado, clase).codigo ?? pelado;
     const tipo = clase === 'contenedor' ? 'ZGRU' : clase === 'serie' ? 'SERIAL' : 'OTRO';
     await this.pg.query(`UPDATE asignacion_archivo SET codigo_firme = $2, tipo_ocr = $3 WHERE id = $1`, [imagen.id, firme, tipo]);
     if (imagen.codigo_ocr) {
@@ -408,6 +461,8 @@ export class TurnoDespacho {
     if (clase === 'serie') await this.pg.query(`UPDATE tarea SET maquina_equipo = $2 WHERE id = $1`, [tareaId, firme]);
     const aprendio = imagen.imagen_externa ? await confirmarImagen(imagen.imagen_externa, firme, tipo) : false;
     const nombre = clase === 'contenedor' ? 'contenedor' : clase === 'serie' ? 'serie de máquina' : 'código';
+    const anterior = imagen.codigo_ocr || 'sin lectura';
+    await this.movimiento(tareaId, null, 'correccion', actor, `Corrigió la imagen ${indice + 1}: el sistema leyó ${anterior} y el técnico dejó ${nombre} ${firme}.`);
     return aprendio
       ? `Quedó ${nombre} ${firme}. ProcesoImagen guardó la corrección para afinar la siguiente lectura.`
       : `Quedó ${nombre} ${firme}. La corrección quedó en la ficha.`;
@@ -494,8 +549,7 @@ export class TurnoDespacho {
         ? await this.pg.query<{ codigo_firme: string }>(`SELECT codigo_firme FROM lectura_aprendida WHERE upper(codigo_ocr) = upper($1)`, [crudo])
         : { rows: [] as Array<{ codigo_firme: string }> };
       const previo = imagen.codigo_firme || aprendido.rows[0]?.codigo_firme || null;
-      const contado = codigoContado(crudo, previo);
-      lineas.push(lineaLectura(indice + 1, claseDe(tipo, contado.codigo ?? crudo ?? ''), contado.codigo, crudo, contado.corregido));
+      lineas.push(presentarLectura(indice + 1, tipo, crudo, previo));
     }
     return lineas;
   }
@@ -534,8 +588,15 @@ export class TurnoDespacho {
       [asignacionId],
     );
     const lecturas = await this.leerCodigos(imagenes.rows);
+    await this.movimiento(
+      asignacion.tarea_id,
+      asignacionId,
+      'lectura',
+      'sistema',
+      lecturas.length > 0 ? lecturas.join('\n') : 'Procesó las imágenes y no encontró un código legible.',
+    );
     const destinos = await this.pg.query<{ telefono: string }>(
-      `SELECT telefono FROM usuario
+      `SELECT DISTINCT telefono FROM usuario
        WHERE activo AND rol IN ('tecnico', 'administrador') AND telefono IS NOT NULL AND telefono <> ''
        ORDER BY telefono`,
     );
@@ -543,8 +604,9 @@ export class TurnoDespacho {
       await this.pg.query(`UPDATE asignacion_despacho SET procesando_en = NULL WHERE id = $1`, [asignacionId]);
       return;
     }
-    const cuerpo = textoAvisoAsignacion(asignacion.cot, asignacion.cliente, asignacion.autor_nombre, asignacion.texto, imagenes.rows.length, lecturas);
+    const cuerpo = textoAvisoAsignacion(asignacion.cot, asignacion.cliente, asignacion.autor_nombre, asignacion.texto, imagenes.rows.length, lecturas, 'pendiente');
     const momentos = momentosDeEnvio(destinos.rows.length, new Date(), PAUSA_MS);
+    let avisados = 0;
     for (const [indice, destino] of destinos.rows.entries()) {
       const ya = await this.pg.query(
         `SELECT 1 FROM aviso WHERE tipo = 'asignacion_despacho' AND referencia_id = $1 AND destino = $2`,
@@ -563,7 +625,32 @@ export class TurnoDespacho {
           [randomUUID(), avisoId, imagen.clave, imagen.mime, imagen.nombre, orden],
         );
       }
+      await this.pg.query(
+        `INSERT INTO charla (telefono, paso, tarea_id, lista, pendiente, actualizado_en)
+         VALUES ($1, 'corroborar_lectura', $2, '[]'::jsonb, '{"origen":"aviso"}'::jsonb, now())
+         ON CONFLICT (telefono) DO UPDATE
+           SET paso = 'corroborar_lectura', tarea_id = EXCLUDED.tarea_id, lista = '[]'::jsonb,
+               pendiente = EXCLUDED.pendiente, actualizado_en = now()`,
+        [destino.telefono, asignacion.tarea_id],
+      );
+      avisados += 1;
     }
+    if (avisados > 0) {
+      await this.movimiento(
+        asignacion.tarea_id,
+        asignacionId,
+        'aviso',
+        'sistema',
+        `Avisó una sola vez, con las ${imagenes.rows.length} imágenes juntas, el texto y las lecturas. Queda a la espera del ok del técnico.`,
+      );
+    }
+  }
+
+  private async movimiento(tareaId: string, asignacionId: string | null, tipo: string, actor: string, detalle: string): Promise<void> {
+    await this.pg.query(
+      `INSERT INTO movimiento_despacho (id, tarea_id, asignacion_id, tipo, actor, detalle) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [randomUUID(), tareaId, asignacionId, tipo, actor.slice(0, 120), detalle.slice(0, 2000)],
+    );
   }
 
   private async avisarFaltantes(): Promise<void> {

@@ -53,9 +53,11 @@ type Tarea = TareaLista & {
     autor_nombre: string;
     texto: string;
     confirmada_en: string | null;
+    validacion?: string | null;
     imagenes?: Array<{ id: string; nombre: string }>;
     consulta?: string | null;
   } | null;
+  movimientos?: Array<{ id: string; tipo: string; actor: string; detalle: string; creado_en: string }>;
   borrador?: { codigo: string; maquina: string; autor_nombre: string } | null;
 };
 
@@ -475,7 +477,7 @@ export function PanelTareas({
           <Campo nombre="Teléfono" valor={ficha.comercial_telefono} />
           <Campo nombre="Código" valor={ficha.codigo_equipo ?? null} />
           <Campo nombre="Máquina" valor={ficha.maquina_equipo ?? null} />
-          <Campo nombre="Asignación de despacho" valor={ficha.asignacion ? `${ficha.asignacion.texto || 'Sin texto.'} — ${ficha.asignacion.autor_nombre}${ficha.asignacion.confirmada_en ? `, ${cuando(ficha.asignacion.confirmada_en)}` : ''}` : null} />
+          <Campo nombre="Asignación de despacho" valor={ficha.asignacion ? [ficha.asignacion.texto || 'Sin texto.', ficha.asignacion.autor_nombre, ficha.asignacion.confirmada_en ? cuando(ficha.asignacion.confirmada_en) : '', prioridad ? etiquetaValidacion(ficha.asignacion.validacion) : ''].filter(Boolean).join(' · ') : null} />
           <Campo nombre="Consulta a despacho" valor={ficha.asignacion?.consulta ?? null} />
         </dl>
         {ficha.asignacion?.imagenes && ficha.asignacion.imagenes.length > 0 ? (
@@ -484,6 +486,22 @@ export function PanelTareas({
               <FotoAsignacion key={imagen.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} archivoId={imagen.id} nombre={imagen.nombre} />
             ))}
           </div>
+        ) : null}
+        {prioridad && ficha.movimientos && ficha.movimientos.length > 0 ? (
+          <section>
+            <h3>Movimientos de despacho</h3>
+            <ol className="bitacora-tiempo">
+              {ficha.movimientos.map((movimiento) => (
+                <li key={movimiento.id}>
+                  <div className="bitacora-evento">
+                    <time>{cuando(movimiento.creado_en)}</time>
+                    <strong>{movimiento.actor}</strong>
+                  </div>
+                  <p>{movimiento.detalle}</p>
+                </li>
+              ))}
+            </ol>
+          </section>
         ) : null}
         {ficha.borrador ? (
           <div className="borrador-equipo">
@@ -1056,6 +1074,13 @@ function cita(fecha: string | null, hora: string | null): string | null {
   if (!fecha && !hora) return null;
   const dia = fecha ? fecha.slice(0, 10).split('-').reverse().join('/') : '';
   return [dia, hora].filter(Boolean).join(' ');
+}
+
+function etiquetaValidacion(validacion: string | null | undefined): string {
+  if (validacion === 'validada') return 'El técnico validó las lecturas.';
+  if (validacion === 'sin_validar') return 'Quedó registrado sin validar.';
+  if (validacion === 'pendiente') return 'Espera que el técnico corrobore.';
+  return '';
 }
 
 function etiquetaEstado(estado: string): string {

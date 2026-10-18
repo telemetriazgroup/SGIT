@@ -17,6 +17,7 @@ import {
   menuDecision,
   menuGeneral,
   momentosDeEnvio,
+  ackDespacho,
   negrita,
   notaGuardada,
   opcionesCot,
@@ -26,6 +27,9 @@ import {
   preguntaSiEsTodo,
   salioDeCot,
   textoReprogramacion,
+  silencioDespacho,
+  sinValidarAviso,
+  textoAvisoAsignacion,
   textoEcoAsignacion,
   textoTareaNueva,
   PREGUNTAS_DESPACHO,
@@ -74,7 +78,8 @@ type Paso =
   | 'despacho_recogiendo'
   | 'despacho_validar'
   | 'respuesta_despacho'
-  | 'consulta_despacho';
+  | 'consulta_despacho'
+  | 'corroborar_lectura';
 type ImagenPendiente = { nombre: string; mime: string; contenido: string };
 type TipoNota = 'seguimiento' | 'incidente' | 'cierre';
 type Pendiente = {
@@ -82,7 +87,10 @@ type Pendiente = {
   imagen?: ImagenPendiente | null;
   texto?: string;
   pregunta_lote?: boolean;
+  pregunta_en?: string;
   corrigiendo?: boolean;
+  indice?: number;
+  corte?: 'aviso' | 'menu';
   pagina?: number;
   origen?: 'tarea' | 'interno' | 'decision';
   mensajeId?: string;
@@ -147,6 +155,7 @@ const PASOS: Paso[] = [
   'despacho_validar',
   'respuesta_despacho',
   'consulta_despacho',
+  'corroborar_lectura',
 ];
 
 const LEASE_MS = 30_000;
@@ -400,20 +409,53 @@ export class BotService {
   async tomarAviso(ahora = new Date()): Promise<{ id: string; destino: string; cuerpo: string; imagenes: Array<{ nombre: string; mime: string; contenido: string }> } | null> {
     const sesion = await this.estado();
     if (sesion.estado !== 'listo' || sesion.fallo) return null;
-    const pendiente = await this.conexiones.pg.query<{ id: string; destino: string; cuerpo: string; no_enviar_antes: Date }>(
-      `SELECT id, destino, cuerpo, no_enviar_antes
-       FROM aviso
-       WHERE estado = 'pendiente'
-       ORDER BY no_enviar_antes, creado_en
-       LIMIT 1`,
-    );
-    const aviso = pendiente.rows[0];
-    if (!aviso) return null;
     const ultimo = sesion.ultimoEnvioEn ? new Date(sesion.ultimoEnvioEn) : null;
-    const porPausa = ultimo ? new Date(ultimo.getTime() + PAUSA_MS) : new Date(aviso.no_enviar_antes);
-    const noAntes = new Date(Math.max(new Date(aviso.no_enviar_antes).getTime(), porPausa.getTime()));
-    if (noAntes > ahora) return null;
-    return { id: aviso.id, destino: aviso.destino, cuerpo: aviso.cuerpo, imagenes: await this.imagenesDeAviso(aviso.id) };
+    const cliente = await this.conexiones.pg.connect();
+    let aviso: { id: string; destino: string; cuerpo: string } | null = null;
+    try {
+      await cliente.query('BEGIN');
+      const pendiente = await cliente.query<{ id: string; destino: string; cuerpo: string; no_enviar_antes: Date }>(
+        `SELECT id, destino, cuerpo, no_enviar_antes
+         FROM aviso
+         WHERE estado = 'pendiente'
+           AND (tomado_en IS NULL OR tomado_en < now() - interval '2 minutes')
+         ORDER BY no_enviar_antes, creado_en
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED`,
+      );
+      const fila = pendiente.rows[0];
+      if (!fila) {
+        await cliente.query('COMMIT');
+        return null;
+      }
+      const porPausa = ultimo ? new Date(ultimo.getTime() + PAUSA_MS) : new Date(fila.no_enviar_antes);
+      const noAntes = new Date(Math.max(new Date(fila.no_enviar_antes).getTime(), porPausa.getTime()));
+      if (noAntes > ahora) {
+        await cliente.query('COMMIT');
+        return null;
+      }
+      await cliente.query(`UPDATE aviso SET tomado_en = now() WHERE id = $1`, [fila.id]);
+      await cliente.query('COMMIT');
+      aviso = { id: fila.id, destino: fila.destino, cuerpo: fila.cuerpo };
+    } catch (error) {
+      await cliente.query('ROLLBACK');
+      throw error;
+    } finally {
+      cliente.release();
+    }
+    try {
+      return { ...aviso, imagenes: await this.imagenesDeAviso(aviso.id) };
+    } catch (error) {
+      await this.soltarAviso(aviso.id);
+      throw error;
+    }
+  }
+
+  async soltarAviso(id: string): Promise<void> {
+    await this.conexiones.pg.query(
+      `UPDATE aviso SET tomado_en = NULL WHERE id = $1 AND estado = 'pendiente'`,
+      [id],
+    );
   }
 
   private async imagenesDeAviso(avisoId: string): Promise<Array<{ nombre: string; mime: string; contenido: string }>> {
@@ -424,7 +466,7 @@ export class BotService {
     const almacen = new AlmacenCorreo(this.conexiones);
     const imagenes: Array<{ nombre: string; mime: string; contenido: string }> = [];
     for (const fila of filas.rows) {
-      if (imagenes.length >= 3) break;
+      if (imagenes.length >= 8) break;
       try {
         const bytes = await almacen.leer(fila.clave);
         if (bytes.length === 0 || bytes.length > 1_200_000) continue;
@@ -544,6 +586,7 @@ export class BotService {
       return this.enPreguntaImagen(numero, charla, quien, limpio, archivo, anotador);
     }
     if (paso === 'cot' && charla.tarea_id) return this.enCot(numero, charla.tarea_id, limpio);
+    if (paso === 'corroborar_lectura' && charla.tarea_id) return this.enCorroborar(numero, quien, charla, limpio);
     if (paso === 'respuesta_despacho' && charla.tarea_id) return this.enRespuestaDespacho(numero, charla, limpio);
     if (paso === 'consulta_despacho' && charla.tarea_id) return this.enConsultaDespacho(numero, charla.tarea_id, limpio);
     if (paso === 'asunto' && charla.pendiente?.mensajeId) return this.enAsunto(numero, charla.pendiente.mensajeId, limpio);
@@ -597,6 +640,57 @@ export class BotService {
     }
     if (numeroCot(limpio) || (limpio.length >= 2 && !/^\d+$/.test(limpio))) return this.buscar(telefono, limpio);
     return this.dejar(telefono, true, 'Escribe el número para entrar. Escribe menú para quedarte en el menú general.');
+  }
+
+  private async abrirCorroboracion(telefono: string, tareaId: string, corte: 'aviso' | 'menu'): Promise<RespuestaBot> {
+    const paquete = await this.turno().paquete(tareaId);
+    if (!paquete) {
+      await this.guardarCharla(telefono, 'cot', tareaId, [], null);
+      return this.dejar(telefono, true, 'Despacho todavía no respondió esta cotización.');
+    }
+    await this.guardarCharla(telefono, 'corroborar_lectura', tareaId, [], { corte });
+    return this.dejar(
+      telefono,
+      true,
+      textoAvisoAsignacion(paquete.cot, paquete.cliente, paquete.autor, paquete.texto, paquete.imagenes.length, paquete.lecturas, paquete.validacion),
+    );
+  }
+
+  private async enCorroborar(
+    telefono: string,
+    quien: { correo: string; nombre: string },
+    charla: Charla,
+    limpio: string,
+  ): Promise<RespuestaBot> {
+    const tareaId = charla.tarea_id;
+    if (!tareaId) return this.abrirMenu(telefono);
+    if (/^(menu|menú|volver)$/i.test(limpio)) return this.menuDeCot(telefono, tareaId);
+    const turno = this.turno();
+    if (charla.pendiente?.indice) {
+      const codigo = limpio.replace(/[\s\-_]+/g, '');
+      if (codigo.length < 4) {
+        return this.dejar(telefono, true, 'Escribe el código correcto. Ejemplo: ZGRU6203905');
+      }
+      const resultado = await turno.corregir(tareaId, charla.pendiente.indice - 1, codigo, quien.nombre);
+      const seguido = await this.abrirCorroboracion(telefono, tareaId, charla.pendiente.corte === 'aviso' ? 'aviso' : 'menu');
+      return { ...seguido, respuesta: `${resultado}\n${seguido.respuesta}` };
+    }
+    if (/^(ok|si|sí|correcto)$/i.test(limpio)) {
+      const resultado = await turno.aceptarLecturas(tareaId, quien.nombre);
+      const ref = await this.referencia(tareaId);
+      const elevado = await this.esElevado(telefono);
+      await this.guardarCharla(telefono, 'cot', tareaId, [], null);
+      return this.dejar(telefono, true, [resultado, ref ? menuCot(ref.linea, elevado) : ''].filter(Boolean).join('\n'));
+    }
+    const indice = Number(limpio);
+    if (Number.isInteger(indice) && indice >= 1) {
+      const paquete = await turno.paquete(tareaId);
+      const lectura = paquete?.lecturas[indice - 1];
+      if (!paquete || !lectura) return this.dejar(telefono, true, 'Ese número no está en las lecturas. Escribe ok o el número que ves.');
+      await this.guardarCharla(telefono, 'corroborar_lectura', tareaId, [], { corte: charla.pendiente?.corte, indice });
+      return this.dejar(telefono, true, `${lectura}\nEscribe el código correcto para esa imagen.`);
+    }
+    return this.abrirCorroboracion(telefono, tareaId, charla.pendiente?.corte === 'aviso' ? 'aviso' : 'menu');
   }
 
   private async verRespuestaDespacho(telefono: string, tareaId: string): Promise<RespuestaBot> {
@@ -709,7 +803,7 @@ export class BotService {
       if (!(await this.esElevado(telefono))) return this.menuDeCot(telefono, tareaId);
       return this.empezarCierre(telefono, { origen: 'tarea', tareaId });
     }
-    if (/^(9|respuesta de despacho)$/i.test(limpio)) return this.verRespuestaDespacho(telefono, tareaId);
+    if (/^(9|respuesta de despacho)$/i.test(limpio)) return this.abrirCorroboracion(telefono, tareaId, 'menu');
     return this.menuDeCot(telefono, tareaId);
   }
 
@@ -945,16 +1039,23 @@ export class BotService {
   }
 
   async preguntarLotes(ahora = new Date()): Promise<void> {
+    await this.cerrarDespachoSinOk(ahora);
+    await this.vencerCorroboraciones();
     const filas = await this.conexiones.pg.query<{ telefono: string; paso: string; tarea_id: string | null; pendiente: Pendiente | null }>(
       `SELECT telefono, paso, tarea_id, pendiente
        FROM charla
-       WHERE actualizado_en < $1::timestamptz
-         AND COALESCE(pendiente->>'pregunta_lote', '') <> 'true'
+       WHERE COALESCE(pendiente->>'pregunta_lote', '') <> 'true'
          AND (
-           (paso = 'espera_imagen' AND COALESCE(pendiente->>'tipo', '') IN ('seguimiento', 'incidente'))
-           OR paso = 'despacho_recogiendo'
+           (
+             paso = 'espera_imagen'
+             AND COALESCE(pendiente->>'tipo', '') IN ('seguimiento', 'incidente')
+             AND actualizado_en < now() - interval '10 seconds'
+           )
+           OR (
+             paso = 'despacho_recogiendo'
+             AND actualizado_en < now() - interval '15 seconds'
+           )
          )`,
-      [new Date(ahora.getTime() - 10_000).toISOString()],
     );
     for (const fila of filas.rows) {
       const pendiente = fila.pendiente && typeof fila.pendiente === 'object' ? fila.pendiente : {};
@@ -977,8 +1078,70 @@ export class BotService {
         [randomUUID(), fila.tarea_id, fila.telefono, preguntaSiEsTodo(fila.paso === 'despacho_recogiendo' ? 'despacho' : 'nota'), ahora.toISOString()],
       );
       await this.conexiones.pg.query(
-        `UPDATE charla SET pendiente = COALESCE(pendiente, '{}'::jsonb) || '{"pregunta_lote": true}'::jsonb WHERE telefono = $1`,
+        `UPDATE charla SET pendiente = COALESCE(pendiente, '{}'::jsonb) || $2::jsonb WHERE telefono = $1`,
+        [fila.telefono, JSON.stringify({ pregunta_lote: true, pregunta_en: ahora.toISOString() })],
+      );
+    }
+  }
+
+  private async cerrarDespachoSinOk(ahora: Date): Promise<void> {
+    const filas = await this.conexiones.pg.query<{ telefono: string; tarea_id: string }>(
+      `SELECT telefono, tarea_id
+       FROM charla
+       WHERE paso = 'despacho_recogiendo'
+         AND tarea_id IS NOT NULL
+         AND COALESCE(pendiente->>'pregunta_lote', '') = 'true'
+         AND (pendiente->>'pregunta_en')::timestamptz < now() - interval '1 minute'`,
+    );
+    for (const fila of filas.rows) {
+      const turno = this.turno();
+      const id = await turno.confirmar(fila.tarea_id, 'silencio');
+      const cot = (await turno.cotDe(fila.tarea_id)) ?? '';
+      if (id) {
+        await this.conexiones.pg.query(
+          `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
+           VALUES ($1, 'consulta_lote', $2, $3, $4, 'pendiente', $5)`,
+          [randomUUID(), fila.tarea_id, fila.telefono, silencioDespacho(cot), ahora.toISOString()],
+        );
+        await turno.abrirSiguiente(ahora, fila.telefono);
+      }
+      await this.conexiones.pg.query(
+        `UPDATE charla SET paso = 'menu', tarea_id = NULL, lista = '[]'::jsonb, pendiente = NULL, actualizado_en = now()
+         WHERE telefono = $1 AND paso = 'despacho_recogiendo'`,
         [fila.telefono],
+      );
+    }
+  }
+
+  private async vencerCorroboraciones(): Promise<void> {
+    const filas = await this.conexiones.pg.query<{ telefono: string; tarea_id: string; cot: string }>(
+      `SELECT c.telefono, c.tarea_id, t.cot
+       FROM charla c
+       JOIN tarea t ON t.id = c.tarea_id
+       WHERE c.paso = 'corroborar_lectura'
+         AND COALESCE(c.pendiente->>'corte', '') = 'aviso'
+         AND c.actualizado_en < now() - interval '5 minutes'`,
+    );
+    for (const fila of filas.rows) {
+      const dejo = await this.turno().dejarSinValidar(fila.tarea_id);
+      await this.conexiones.pg.query(
+        `UPDATE charla SET paso = 'menu', tarea_id = NULL, lista = '[]'::jsonb, pendiente = NULL, actualizado_en = now()
+         WHERE telefono = $1 AND paso = 'corroborar_lectura'`,
+        [fila.telefono],
+      );
+      if (!dejo) {
+        const estado = await this.conexiones.pg.query<{ validacion: string | null }>(
+          `SELECT validacion FROM asignacion_despacho
+           WHERE tarea_id = $1 AND estado = 'confirmada'
+           ORDER BY confirmada_en DESC NULLS LAST LIMIT 1`,
+          [fila.tarea_id],
+        );
+        if (estado.rows[0]?.validacion !== 'sin_validar') continue;
+      }
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
+         VALUES ($1, 'consulta_lote', $2, $3, $4, 'pendiente', now())`,
+        [randomUUID(), fila.tarea_id, fila.telefono, sinValidarAviso(fila.cot)],
       );
     }
   }
@@ -1234,8 +1397,9 @@ export class BotService {
       if (limpio && !/^(ok|listo|es todo|ya|1|datos)$/i.test(limpio)) await turno.agregar(tareaId, quien, limpio);
       if (!/^(ok|listo|es todo|ya)$/i.test(limpio)) {
         const imagenes = await turno.contarImagenes(tareaId);
+        const escrito = await turno.textoDe(tareaId);
         await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], null);
-        return this.dejar(telefono, true, `Quedó la imagen ${imagenes}. Puedes mandar otra. Si paras 10 segundos te pregunto si es todo. Escribe ok cuando termines.`);
+        return this.dejar(telefono, true, ackDespacho(imagenes, escrito));
       }
     }
     if (/^(1|datos)$/i.test(limpio)) {
@@ -1247,15 +1411,26 @@ export class BotService {
       const texto = await turno.textoDe(tareaId);
       const imagenes = await turno.contarImagenes(tareaId);
       if (!texto && imagenes === 0) return this.dejar(telefono, true, 'Todavía no anoté el contenedor, la máquina ni una imagen.');
-      const cot = (await turno.cotDe(tareaId)) ?? '';
-      await turno.marcarValidacion(tareaId);
-      await this.guardarCharla(telefono, 'despacho_validar', tareaId, [], null);
-      return this.dejar(telefono, true, textoEcoAsignacion(cot, texto, imagenes));
+      return this.cerrarTurno(telefono, tareaId);
     }
     if (!limpio) return this.dejar(telefono, true, 'Escribe el contenedor y la máquina, manda una imagen, o menu para ver otras pendientes.');
     const junto = await turno.agregar(tareaId, quien, limpio);
+    const imagenes = await turno.contarImagenes(tareaId);
     await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], null);
-    return this.dejar(telefono, true, `Quedó anotado.\n${negrita(junto)}\nPuedes mandar otra imagen o texto. Si paras 10 segundos te pregunto si es todo. Escribe ok cuando termines.`);
+    return this.dejar(telefono, true, ackDespacho(imagenes, junto));
+  }
+
+  private async cerrarTurno(telefono: string, tareaId: string): Promise<RespuestaBot> {
+    const turno = this.turno();
+    const cot = (await turno.cotDe(tareaId)) ?? '';
+    await turno.confirmar(tareaId, 'ok');
+    const siguiente = await turno.abrirSiguiente(new Date(), telefono);
+    const cierre = `Quedó guardado para la cotización ${cot.split('+').join(' · ')}. Las imágenes ya están en la ficha. Aviso a los técnicos cuando termine de leer los códigos.`;
+    if (!siguiente) {
+      await this.guardarCharla(telefono, 'menu', null, [], null);
+      return this.dejar(telefono, true, `${cierre}\nNo hay otra pendiente en este horario. Escribe menu cuando quieras ver las abiertas.`);
+    }
+    return this.dejar(telefono, true, `${cierre}\n${siguiente}`);
   }
 
   private async validarTurno(telefono: string, tareaId: string, limpio: string): Promise<RespuestaBot> {
@@ -1275,17 +1450,7 @@ export class BotService {
       await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], null);
       return this.dejar(telefono, true, 'Listo, lo dejamos de lado. Escribe de nuevo el contenedor y la máquina, o manda una imagen.');
     }
-    if (/^(ok|ya)$/i.test(limpio)) {
-      const cot = (await turno.cotDe(tareaId)) ?? '';
-      await turno.confirmar(tareaId);
-      const siguiente = await turno.abrirSiguiente(new Date(), telefono);
-      const cierre = `Quedó guardado para la cotización ${cot.split('+').join(' · ')}. Las imágenes ya están en la ficha. Aviso a los técnicos cuando termine de leer los códigos.`;
-      if (!siguiente) {
-        await this.guardarCharla(telefono, 'menu', null, [], null);
-        return this.dejar(telefono, true, `${cierre}\nNo hay otra pendiente en este horario. Escribe menu cuando quieras ver las abiertas.`);
-      }
-      return this.dejar(telefono, true, `${cierre}\n${siguiente}`);
-    }
+    if (/^(ok|ya)$/i.test(limpio)) return this.cerrarTurno(telefono, tareaId);
     return this.dejar(telefono, true, 'Responde ok si quedó bien, u otro para redactarlo de nuevo.');
   }
 

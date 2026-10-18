@@ -233,20 +233,25 @@ async function anotar(nivel: 'info' | 'fallo', texto: string): Promise<void> {
   await api.bitacora(nivel, texto).catch(() => undefined);
 }
 
+let enviando = false;
+
 async function enviarPendiente(): Promise<void> {
-  if (reiniciando) return;
+  if (reiniciando || enviando) return;
+  enviando = true;
   try {
     const aviso = await api.tomar();
     if (!aviso) return;
     const destino = aviso.destino.includes('@') ? aviso.destino : `${aviso.destino}@c.us`;
     const imagenes = aviso.imagenes ?? [];
-    if (imagenes.length === 0) {
-      await cliente.sendMessage(destino, aviso.cuerpo);
-    } else {
-      for (const [indice, imagen] of imagenes.entries()) {
+    try {
+      for (const imagen of imagenes) {
         const media = new MessageMedia(imagen.mime, imagen.contenido, imagen.nombre);
-        await cliente.sendMessage(destino, media, { caption: indice === 0 ? aviso.cuerpo : '', sendSeen: false });
+        await cliente.sendMessage(destino, media, { sendSeen: false });
       }
+      await cliente.sendMessage(destino, aviso.cuerpo, { sendSeen: false });
+    } catch (error) {
+      await api.soltarAviso(aviso.id);
+      throw error;
     }
     await api.confirmar(aviso.id);
   } catch (error) {
@@ -259,6 +264,8 @@ async function enviarPendiente(): Promise<void> {
     await api.fallo('La página de WhatsApp se cerró. Hay que reiniciar la sesión.').catch(() => undefined);
     await anotar('fallo', `La página de WhatsApp se cerró. ${texto}`);
     await recuperar('la página de WhatsApp se cerró');
+  } finally {
+    enviando = false;
   }
 }
 

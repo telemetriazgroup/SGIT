@@ -15,6 +15,14 @@ export function claseDe(tipo: string, codigo: string): ClaseCodigo {
   return 'otro';
 }
 
+export function asumirZgru(codigo: string | null, clase: ClaseCodigo): { codigo: string | null; asumido: boolean } {
+  const limpio = codigo?.replace(/[\s\-_]+/g, '').toUpperCase() || null;
+  if (!limpio || clase !== 'contenedor') return { codigo: limpio, asumido: false };
+  if (limpio.startsWith('ZGRU')) return { codigo: limpio, asumido: false };
+  if (/^\d{5,12}$/.test(limpio)) return { codigo: `ZGRU${limpio}`, asumido: true };
+  return { codigo: limpio, asumido: false };
+}
+
 export function codigoContado(ocr: string | null, aprendido: string | null): { codigo: string | null; corregido: boolean } {
   const leido = ocr?.trim() || null;
   const firme = aprendido?.trim() || null;
@@ -22,9 +30,22 @@ export function codigoContado(ocr: string | null, aprendido: string | null): { c
   return { codigo: firme, corregido: true };
 }
 
-export function lineaLectura(orden: number, clase: ClaseCodigo, codigo: string | null, crudo: string | null, corregido: boolean): string {
+export function presentarLectura(orden: number, tipo: string, crudo: string | null, firme: string | null): string {
+  const contado = codigoContado(crudo, firme);
+  const clase = claseDe(tipo, contado.codigo ?? crudo ?? '');
+  const puesto = asumirZgru(contado.codigo, clase);
+  const crudoLimpio = crudo?.replace(/[\s\-_]+/g, '').toUpperCase() || null;
+  const asumido = puesto.asumido && !contado.corregido;
+  const mismaCifra = Boolean(crudoLimpio && puesto.codigo === `ZGRU${crudoLimpio}`);
+  return lineaLectura(orden, clase, puesto.codigo, crudo, contado.corregido && !mismaCifra, asumido || mismaCifra);
+}
+
+export function lineaLectura(orden: number, clase: ClaseCodigo, codigo: string | null, crudo: string | null, corregido: boolean, asumido = false): string {
   const nombre = clase === 'contenedor' ? 'Contenedor' : clase === 'serie' ? 'Serie de máquina' : 'Código';
   if (!codigo) return `${orden}. Sin código legible.`;
+  if (asumido && crudo && crudo.replace(/[\s\-_]+/g, '').toUpperCase() !== codigo.toUpperCase()) {
+    return `${orden}. ${nombre} ${codigo}. El lector vio ${crudo.trim()} y se asumió ZGRU.`;
+  }
   if (corregido && crudo && crudo.toUpperCase() !== codigo.toUpperCase()) {
     return `${orden}. ${nombre} ${codigo}. El lector dijo ${crudo} y ya se había corregido.`;
   }

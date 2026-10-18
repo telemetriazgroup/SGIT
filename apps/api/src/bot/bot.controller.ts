@@ -169,6 +169,13 @@ export class BotController {
     await this.bot.confirmarEnvio(id);
   }
 
+  @Post('bot/salida/:id/soltar')
+  @HttpCode(204)
+  async soltarAviso(@Headers('x-bot-clave') clave: string | undefined, @Param('id') id: string) {
+    this.exigirBot(clave);
+    await this.bot.soltarAviso(id);
+  }
+
   @Post('bot/entrar')
   async entrar(
     @Headers('x-bot-clave') clave: string | undefined,

@@ -60,17 +60,46 @@ export function textoEcoAsignacion(cot: string, texto: string, imagenes = 0): st
   ].filter(Boolean).join('\n');
 }
 
-export function textoAvisoAsignacion(cot: string, cliente: string | null, autor: string, texto: string, imagenes: number, lecturas: string[] = []): string {
+export function textoAvisoAsignacion(cot: string, cliente: string | null, autor: string, texto: string, imagenes: number, lecturas: string[] = [], validacion: string | null = null): string {
+  const numeros = cot.split('+').join(' · ');
+  const estado = validacion === 'sin_validar'
+    ? 'Quedó registrado sin validar lo que envió despacho y lo que leyó el sistema.'
+    : validacion === 'validada'
+      ? 'Estas lecturas ya se validaron. Puedes corregir una si hace falta.'
+      : '¿Las lecturas son correctas?';
   return [
-    `Despacho respondió la cotización ${cot.split('+').join(' · ')}.`,
+    `Estás en la cotización ${numeros}.`,
     `Cliente: ${cliente ?? 'sin cliente'}`,
     `${autor}:`,
     negrita(texto) || 'Envió la respuesta en imagen.',
-    imagenes > 0 ? `Imágenes: ${imagenes}` : '',
+    imagenes > 0 ? `Imágenes juntas: ${imagenes}` : '',
     ...lecturas,
-    lecturas.length > 0 ? 'Si un código no es ese, en la cotización escribe 9 y luego 4 para corregirlo.' : '',
-    'En la cotización escribe 9 para verla de nuevo o para seguir consultando.',
+    estado,
+    'Escribe ok si sí.',
+    lecturas.length > 0 ? 'O escribe el número de la lectura que quieres corregir.' : '',
+    'Escribe menu para volver a la cotización.',
   ].filter(Boolean).join('\n');
+}
+
+export function ackDespacho(imagenes: number, texto: string): string {
+  return [
+    imagenes > 0 ? `Quedó la imagen ${imagenes}.` : 'Quedó anotado.',
+    negrita(texto),
+    'Si no envías más datos en los próximos 15 segundos, te pregunto si es todo.',
+    'Escribe ok cuando termines.',
+  ].filter(Boolean).join('\n');
+}
+
+export function silencioDespacho(cot: string): string {
+  return `No llegó el ok. Guardé el texto y las imágenes de la cotización ${cot.split('+').join(' · ')}. Aviso a los técnicos cuando termine de leer los códigos.`;
+}
+
+export function sinValidarAviso(cot: string): string {
+  return [
+    `Pasaron 5 minutos sin respuesta en la cotización ${cot.split('+').join(' · ')}.`,
+    'Quedó registrado lo que envió despacho y lo que leyó el sistema, sin validar.',
+    'Cuando entres a la cotización, la opción 9 muestra las lecturas para corregirlas.',
+  ].join('\n');
 }
 
 export function textoReconsultaDespacho(cot: string, pregunta: string, anterior: string, imagenes: number): string {
@@ -230,8 +259,14 @@ export function imagenesJuntas(referencia: string, total: number): string {
 }
 
 export function preguntaSiEsTodo(que: 'nota' | 'despacho'): string {
-  const cierre = que === 'despacho' ? 'procesar la respuesta' : 'guardar';
-  return [`Pasaron 10 segundos sin otra imagen ni texto.`, `¿Es todo? Escribe ok para ${cierre}, o manda otra imagen o texto.`].join('\n');
+  if (que === 'despacho') {
+    return [
+      'Pasaron 15 segundos sin otra imagen ni texto.',
+      '¿Es todo? Escribe ok para confirmar.',
+      'Si pasa 1 minuto sin ese ok, guardo el texto y las imágenes que ya enviaste.',
+    ].join('\n');
+  }
+  return ['Pasaron 10 segundos sin otra imagen ni texto.', '¿Es todo? Escribe ok para guardar, o manda otra imagen o texto.'].join('\n');
 }
 
 export function pideTexto(referencia: string, cierre = false): string {

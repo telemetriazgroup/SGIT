@@ -12,5 +12,8 @@ BEGIN
   END IF;
 END $$;
 
-ALTER TABLE aviso ADD CONSTRAINT aviso_tipo_check CHECK (tipo IN ('tarea_nueva', 'reprogramacion', 'prueba', 'consulta_despacho', 'aviso_snooze', 'apertura_despacho', 'asignacion_despacho'));
+ALTER TABLE aviso ADD CONSTRAINT aviso_tipo_check CHECK (tipo IN (
+  'tarea_nueva', 'reprogramacion', 'prueba', 'consulta_despacho', 'aviso_snooze',
+  'apertura_despacho', 'asignacion_despacho', 'consulta_lote'
+));
 ALTER TABLE aviso ALTER COLUMN tarea_id DROP NOT NULL;

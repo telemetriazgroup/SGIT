@@ -38,6 +38,9 @@ export function crearClienteBot(base: string, clave: string) {
       const respuesta = await fetch(`${base}/bot/salida/${id}/enviado`, { method: 'POST', headers: { 'x-bot-clave': clave } });
       if (!respuesta.ok) throw new Error(`confirmar ${respuesta.status}`);
     },
+    async soltarAviso(id: string): Promise<void> {
+      await fetch(`${base}/bot/salida/${id}/soltar`, { method: 'POST', headers: { 'x-bot-clave': clave } });
+    },
     async fallo(texto: string): Promise<void> {
       await fetch(`${base}/bot/fallo`, { method: 'POST', headers: cabeza, body: JSON.stringify({ texto }) });
     },

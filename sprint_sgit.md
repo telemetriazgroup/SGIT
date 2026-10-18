@@ -327,7 +327,9 @@ Con el número de laboratorio, no con el número operativo:
 
 ## Sprint 6 — Recordatorios y despacho
 
-**Inicio — 6 de octubre de 2026.** Johan entra como usuario despacho (`johan@sgit.local`). Solo ve las tareas que el superusuario habilitó. Entre 08:00 y 18:00 el bot le pregunta código y máquina si tiene WhatsApp; la respuesta queda en borrador hasta que un miembro la confirma. El sprint no se cierra todavía.
+**Inicio — 6 de octubre de 2026.** Johan entra como usuario despacho (`johan@sgit.local`). Solo ve las tareas que el superusuario habilitó. Entre 08:00 y 18:00 el bot le pregunta código y máquina si tiene WhatsApp; la respuesta queda en borrador hasta que un miembro la confirma.
+
+**Cierre — 18 de octubre de 2026.** Despacho responde por texto o por varias imágenes. Esas imágenes se guardan primero, se leen después y el técnico recibe un solo aviso, en la cotización, para decir ok o corregir una lectura. Si no responde en 5 minutos, queda registrado sin validar. Un contenedor leído en puros números se asume ZGRU hasta que el técnico escriba otro código. El superusuario ve esos movimientos en la ficha. El piloto del buzón real sigue sin dueño ni rango de fechas firmados. Con esto se abre el sprint 7.
 
 **Entregable.** Entre 08:00 y 18:00 el bot pregunta a despacho por código y máquina solo mientras la tarea no tiene avance. Si Johan contesta en el chat, el código queda en borrador hasta que un miembro lo confirma. El snooze avisa a la hora pedida. Con esto se puede abrir el piloto del buzón real, acotado por fechas.
 
@@ -368,6 +370,8 @@ Recorrido de la fase 2 con el número de laboratorio:
 ---
 
 ## Sprint 7 — Lectura de Odoo
+
+**Inicio — 18 de octubre de 2026.** La búsqueda no se programa todavía. El acta del sprint 0 tiene vacíos el modelo y el campo de la venta, del ticket y de la tarea de servicio, y en el entorno no está la clave de `sgit.tecnico`. Esos nombres se anotan mirando la COT `10020263623` y el ticket `#2139` en staging. No se inventan.
 
 **Entregable.** Al abrir la ficha se ve el estado de la venta de la COT y el del ticket, con la fecha de esa lectura. Si hay dos documentos, el operador elige. Si Odoo no responde, sigue viendo el último estado.
 

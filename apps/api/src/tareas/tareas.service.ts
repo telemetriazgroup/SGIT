@@ -316,6 +316,7 @@ export class TareasService {
         ...(await this.capaBitacora(tarea)),
         borrador: await this.borradorDe(tarea.id),
         asignacion: await this.asignacionConfirmada(tarea.id),
+        movimientos: await this.movimientosDespacho(tarea.id),
       };
     }
     const donde = numeros
@@ -338,6 +339,7 @@ export class TareasService {
       ...(await this.capaBitacora(tarea)),
       borrador: await this.borradorDe(tarea.id),
       asignacion: await this.asignacionConfirmada(tarea.id),
+      movimientos: await this.movimientosDespacho(tarea.id),
     };
   }
 
@@ -1286,15 +1288,24 @@ export class TareasService {
     return fila.rows[0] ?? null;
   }
 
+  private async movimientosDespacho(tareaId: string): Promise<Array<{ id: string; tipo: string; actor: string; detalle: string; creado_en: Date }>> {
+    const filas = await this.conexiones.pg.query<{ id: string; tipo: string; actor: string; detalle: string; creado_en: Date }>(
+      `SELECT id, tipo, actor, detalle, creado_en FROM movimiento_despacho WHERE tarea_id = $1 ORDER BY creado_en`,
+      [tareaId],
+    );
+    return filas.rows;
+  }
+
   private async asignacionConfirmada(tareaId: string): Promise<{
     autor_nombre: string;
     texto: string;
     confirmada_en: Date | null;
+    validacion: string | null;
     imagenes: Array<{ id: string; nombre: string }>;
     consulta: string | null;
   } | null> {
-    const fila = await this.conexiones.pg.query<{ id: string; autor_nombre: string; texto: string; confirmada_en: Date | null }>(
-      `SELECT id, autor_nombre, texto, confirmada_en
+    const fila = await this.conexiones.pg.query<{ id: string; autor_nombre: string; texto: string; confirmada_en: Date | null; validacion: string | null }>(
+      `SELECT id, autor_nombre, texto, confirmada_en, validacion
        FROM asignacion_despacho
        WHERE tarea_id = $1 AND estado = 'confirmada'
        ORDER BY confirmada_en DESC NULLS LAST, creado_en DESC
@@ -1315,6 +1326,7 @@ export class TareasService {
       autor_nombre: asignacion.autor_nombre,
       texto: asignacion.texto,
       confirmada_en: asignacion.confirmada_en,
+      validacion: asignacion.validacion,
       imagenes: imagenes.rows,
       consulta: consulta.rows[0]?.pregunta ?? null,
     };
