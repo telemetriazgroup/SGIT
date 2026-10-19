@@ -43,7 +43,9 @@ export function textoApertura(datos: DatosAviso): string {
     'Buenos días. Te escribe el asistente automático del área ZTrack.',
     `Tenemos una solicitud de telemetría en la cotización ${cotVisible(datos.cot)}, del cliente ${datos.cliente ?? 'sin cliente'}.`,
     sitio ? `${sitio}.` : '',
-    'Envíame el contenedor y la máquina asignados. Puedes escribir o mandar imágenes.',
+    datos.cantidad && datos.cantidad > 1
+      ? `Tengo ${datos.cantidad} solicitudes de telemetría. Envíame la foto de la máquina y del contenedor del primer equipo.`
+      : 'Envíame el contenedor y la máquina asignados. Puedes escribir o mandar imágenes.',
     'Escribe 1 o datos para ver la cotización.',
     'Escribe menu para ver las demás pendientes.',
   ].filter(Boolean).join('\n');
@@ -258,6 +260,8 @@ export function opcionesCot(elevado = false): string {
   ];
   if (elevado) lineas.push('8. Cerrar por regularización');
   lineas.push('9. Respuesta de despacho');
+  lineas.push('10. Pedir chip a almacén');
+  lineas.push('11. Telemetrías');
   return lineas.join('\n');
 }
 

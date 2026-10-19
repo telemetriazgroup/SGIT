@@ -67,6 +67,20 @@ type Tarea = TareaLista & {
   tiendas?: TiendaCampana[];
   servicios?: ServicioCampana[];
   borrador?: { codigo: string; maquina: string; autor_nombre: string } | null;
+  hilos?: HiloFicha[];
+};
+
+type HiloFicha = {
+  id: string;
+  orden: number;
+  estado: string;
+  lleva_telemetria: boolean | null;
+  contenedor: string | null;
+  maquina: string | null;
+  despacho_texto: string | null;
+  chip_celular: string | null;
+  chip_estado?: 'disponible' | 'ocupado' | null;
+  despacho_validado: boolean;
 };
 
 type CopiaOdoo = {
@@ -131,6 +145,7 @@ type NotaBitacora = {
   texto: string;
   autor_nombre: string;
   archivo_nombre: string | null;
+  archivado?: boolean;
   creado_en: string;
   imagenes?: Array<{ id: string; nombre: string }>;
 };
@@ -594,6 +609,7 @@ export function PanelTareas({
             ))}
           </div>
         ) : null}
+        <HilosCotizacion apiUrl={apiUrl} token={token} tareaId={ficha.id} hilos={ficha.hilos ?? []} cantidad={ficha.cantidad} editar={editar} alGuardar={setFicha} alFallar={setAviso} />
         {prioridad && ficha.movimientos && ficha.movimientos.length > 0 ? (
           <section>
             <h3>Movimientos de despacho</h3>
@@ -1644,6 +1660,212 @@ function etiquetaEstado(estado: string): string {
   return estado;
 }
 
+function HilosCotizacion({
+  apiUrl,
+  token,
+  tareaId,
+  hilos,
+  cantidad,
+  editar,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  tareaId: string;
+  hilos: HiloFicha[];
+  cantidad: number | null;
+  editar: boolean;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (mensaje: string) => void;
+}) {
+  const [numero, setNumero] = useState(String(hilos.length || cantidad || ''));
+  return (
+    <section>
+      <h3>Telemetrías</h3>
+      <p>{cantidad ? `La cotización trae ${cantidad}.` : 'La cotización no trae una cantidad.'} {hilos.length === 0 ? 'El técnico confirma el número en WhatsApp y se abre un hilo por telemetría.' : `${hilos.length} hilo${hilos.length === 1 ? '' : 's'}.`}</p>
+      {editar ? (
+        <form
+          className="herramientas"
+          onSubmit={(evento) => {
+            evento.preventDefault();
+            void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos`, { method: 'POST', body: JSON.stringify({ cantidad: Number(numero) }) })
+              .then(alGuardar)
+              .catch((error: unknown) => alFallar(texto(error)));
+          }}
+        >
+          <label htmlFor="cantidad-hilos">Corregir la cantidad de hilos</label>
+          <input id="cantidad-hilos" value={numero} onChange={(evento) => setNumero(evento.target.value)} inputMode="numeric" />
+          <button type="submit">Guardar cantidad</button>
+        </form>
+      ) : null}
+      {hilos.length > 0 ? (
+        <ol className="bitacora-tiempo">
+          {hilos.map((hilo) => {
+            const falta = [
+              hilo.despacho_validado ? '' : 'falta validar despacho',
+              hilo.lleva_telemetria == null ? 'falta decir si se instala' : '',
+              hilo.lleva_telemetria && hilo.chip_estado === 'ocupado' ? 'el chip está ocupado; pide otro o regulariza la foto' : '',
+              hilo.lleva_telemetria && hilo.chip_estado !== 'ocupado' && !hilo.chip_celular ? 'falta el chip' : '',
+            ].filter(Boolean);
+            return (
+              <li key={hilo.id}>
+                <div className="bitacora-evento">
+                  <strong>Hilo {hilo.orden}</strong>
+                  <span>{hilo.estado === 'listo' ? 'Listo para la orden de fabricación' : falta.join(' · ')}</span>
+                </div>
+                <p>
+                  {[hilo.contenedor ? `Contenedor ${hilo.contenedor}` : 'Sin contenedor', hilo.maquina ? `Máquina ${hilo.maquina}` : 'Sin máquina', hilo.lleva_telemetria === false ? 'Sin instalación' : hilo.chip_estado === 'ocupado' ? `Chip ocupado ${hilo.chip_celular}` : hilo.chip_celular ? `Chip ${hilo.chip_celular}` : 'Chip sin pedir'].join(' · ')}
+                </p>
+                {hilo.despacho_texto ? <p>{hilo.despacho_texto}</p> : null}
+                {editar ? <CorregirHilo apiUrl={apiUrl} token={token} tareaId={tareaId} hilo={hilo} alGuardar={alGuardar} alFallar={alFallar} /> : null}
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+    </section>
+  );
+}
+
+function CorregirHilo({
+  apiUrl,
+  token,
+  tareaId,
+  hilo,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  tareaId: string;
+  hilo: HiloFicha;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (mensaje: string) => void;
+}) {
+  const [contenedor, setContenedor] = useState(hilo.contenedor ?? '');
+  const [maquina, setMaquina] = useState(hilo.maquina ?? '');
+  const [imei, setImei] = useState('');
+  return (
+    <form
+      className="herramientas"
+      onSubmit={(evento) => {
+        evento.preventDefault();
+        void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}`, {
+          method: 'POST',
+          body: JSON.stringify({ contenedor, maquina, imei }),
+        })
+          .then(alGuardar)
+          .catch((error: unknown) => alFallar(texto(error)));
+      }}
+    >
+      <label htmlFor={`contenedor-${hilo.id}`}>Contenedor</label>
+      <input id={`contenedor-${hilo.id}`} value={contenedor} onChange={(evento) => setContenedor(evento.target.value)} />
+      <label htmlFor={`maquina-${hilo.id}`}>Máquina</label>
+      <input id={`maquina-${hilo.id}`} value={maquina} onChange={(evento) => setMaquina(evento.target.value)} />
+      <label htmlFor={`imei-${hilo.id}`}>IMEI del chip</label>
+      <input id={`imei-${hilo.id}`} value={imei} onChange={(evento) => setImei(evento.target.value)} placeholder="Solo si hay que cambiar el chip" />
+      <button type="submit">Guardar hilo</button>
+      <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="chip" etiqueta="Foto del chip" alGuardar={alGuardar} alFallar={alFallar} />
+      <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="contenedor" etiqueta="Foto del contenedor" alGuardar={alGuardar} alFallar={alFallar} />
+      <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="maquina" etiqueta="Foto de la máquina" alGuardar={alGuardar} alFallar={alFallar} />
+    </form>
+  );
+}
+
+function FotoRegularizar({
+  apiUrl,
+  token,
+  tareaId,
+  hiloId,
+  clase,
+  etiqueta,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  tareaId: string;
+  hiloId: string;
+  clase: 'chip' | 'contenedor' | 'maquina';
+  etiqueta: string;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (mensaje: string) => void;
+}) {
+  const [archivo, setArchivo] = useState<File | null>(null);
+  return (
+    <>
+      <label htmlFor={`foto-${clase}-${hiloId}`}>{etiqueta}</label>
+      <input id={`foto-${clase}-${hiloId}`} type="file" accept="image/*" onChange={(evento) => setArchivo(evento.target.files?.[0] ?? null)} />
+      <button
+        type="button"
+        onClick={() => {
+          if (!archivo) {
+            alFallar('Elige la foto.');
+            return;
+          }
+          const lector = new FileReader();
+          lector.onload = () => {
+            const contenido = String(lector.result).split(',')[1] ?? '';
+            void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hiloId}/foto`, {
+              method: 'POST',
+              body: JSON.stringify({ clase, nombre: archivo.name, mime: archivo.type || 'image/jpeg', contenido }),
+            })
+              .then(alGuardar)
+              .catch((error: unknown) => alFallar(texto(error)));
+          };
+          lector.readAsDataURL(archivo);
+        }}
+      >
+        Regularizar {etiqueta.toLowerCase()}
+      </button>
+    </>
+  );
+}
+
+function Transferir({
+  apiUrl,
+  token,
+  tareaId,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  tareaId: string;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (mensaje: string) => void;
+}) {
+  const [cuentas, setCuentas] = useState<Array<{ correo: string; nombre: string }>>([]);
+  const [correo, setCorreo] = useState('');
+  useEffect(() => {
+    void pedir<Array<{ correo: string; nombre: string }>>(apiUrl, token, '/tareas/tecnicos')
+      .then(setCuentas)
+      .catch((error: unknown) => alFallar(texto(error)));
+  }, [apiUrl, token, alFallar]);
+  return (
+    <form
+      className="herramientas"
+      onSubmit={(evento) => {
+        evento.preventDefault();
+        if (!correo) return;
+        void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/transferir`, { method: 'POST', body: JSON.stringify({ correo }) })
+          .then(alGuardar)
+          .catch((error: unknown) => alFallar(texto(error)));
+      }}
+    >
+      <label htmlFor="transferir">Transferir a</label>
+      <select id="transferir" value={correo} onChange={(evento) => setCorreo(evento.target.value)}>
+        <option value="">Elige un técnico</option>
+        {cuentas.map((cuenta) => (
+          <option key={cuenta.correo} value={cuenta.correo}>{cuenta.nombre}</option>
+        ))}
+      </select>
+      <button type="submit">Transferir tarea</button>
+    </form>
+  );
+}
+
 function Bitacora({
   apiUrl,
   token,
@@ -1666,6 +1888,7 @@ function Bitacora({
   const [fotos, setFotos] = useState<File[]>([]);
   const [guardando, setGuardando] = useState(false);
   const [anulando, setAnulando] = useState<string | null>(null);
+  const [editando, setEditando] = useState<string | null>(null);
   const [motivo, setMotivo] = useState('');
   const notas = ficha.notas ?? [];
 
@@ -1716,6 +1939,20 @@ function Bitacora({
     alGuardar(await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/validar`, { method: 'POST', body: JSON.stringify({ horas: 4 }) }));
   }
 
+  async function guardarEdicion(evento: FormEvent, notaId: string) {
+    evento.preventDefault();
+    setGuardando(true);
+    try {
+      alGuardar(await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${notaId}/editar`, { method: 'POST', body: JSON.stringify({ texto: textoNota }) }));
+      setGuardando(false);
+      setEditando(null);
+      setTextoNota('');
+    } catch (error: unknown) {
+      setGuardando(false);
+      alFallar(texto(error));
+    }
+  }
+
   async function anular(evento: FormEvent) {
     evento.preventDefault();
     if (!anulando) return;
@@ -1740,6 +1977,7 @@ function Bitacora({
       <div className="bitacora-cabeza">
         <h3>Bitácora</h3>
         <p>{ficha.responsable_nombre ? `La tomó ${ficha.responsable_nombre}.` : 'Nadie la ha tomado.'}</p>
+        {editar ? <Transferir apiUrl={apiUrl} token={token} tareaId={ficha.id} alGuardar={alGuardar} alFallar={alFallar} /> : null}
         <p>{ficha.recordar_en ? `Vuelve a salir: ${cuando(ficha.recordar_en)}.` : 'Sin recordatorio pedido.'}</p>
       </div>
       {ficha.estado === 'resuelta' ? (
@@ -1769,9 +2007,9 @@ function Bitacora({
         ) : null}
       </div>
       ) : null}
-      {notas.length > 0 ? (
+      {notas.filter((nota) => editar || !nota.archivado).length > 0 ? (
         <ol className="bitacora-tiempo">
-          {notas.map((nota) => (
+          {notas.filter((nota) => editar || !nota.archivado).map((nota) => (
             <li key={nota.id} className={nota.tipo}>
               <div className="bitacora-evento">
                 <time>{cuando(nota.creado_en)}</time>
@@ -1788,9 +2026,20 @@ function Bitacora({
                 <FotoNota key={imagen.id || nota.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} notaId={nota.id} nombre={imagen.nombre} archivoId={imagen.id || undefined} />
               ))}
               {editar && nota.tipo !== 'anulacion' && nota.tipo !== 'cierre' && ficha.estado !== 'resuelta' ? (
-                <button type="button" onClick={() => { setMotivo(''); setAnulando(nota.id); }}>
-                  Anular
-                </button>
+                <div className="bitacora-acciones">
+                  <button type="button" onClick={() => { setMotivo(''); setAnulando(nota.id); }}>Anular</button>
+                  <button type="button" onClick={() => { setEditando(nota.id); setTextoNota(nota.texto); }}>Editar</button>
+                  <button type="button" onClick={() => void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${nota.id}/archivar`, { method: 'POST', body: JSON.stringify({ archivado: !nota.archivado }) }).then(alGuardar).catch((error: unknown) => alFallar(texto(error)))}>
+                    {nota.archivado ? 'Restaurar' : 'Archivar'}
+                  </button>
+                </div>
+              ) : null}
+              {nota.archivado ? <p>Archivada. El técnico no la ve en WhatsApp ni en su ficha.</p> : null}
+              {editando === nota.id ? (
+                <form onSubmit={(evento) => void guardarEdicion(evento, nota.id)}>
+                  <textarea value={textoNota} onChange={(evento) => setTextoNota(evento.target.value)} rows={4} />
+                  <button type="submit" disabled={guardando}>Guardar texto</button>
+                </form>
               ) : null}
             </li>
           ))}

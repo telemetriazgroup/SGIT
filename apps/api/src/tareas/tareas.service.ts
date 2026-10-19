@@ -12,6 +12,8 @@ import { BotService } from '../bot/bot.service';
 import { OdooServicio, type LecturaTarea } from '../odoo/servicio';
 import { claveTienda, coincideTienda, tiendasDeHtml, tiendasDeTexto, type TiendaLeida } from './campana';
 import { vincularHijas } from './hijas';
+import { ajustarHilos, corregirEquipo, listarHilos } from './hilos';
+import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrarEquipo } from './regularizar';
 import { joinUrgente, ordenFecha, ordenUrgente } from './prioridad';
 
 export type ResultadoProceso = {
@@ -336,6 +338,7 @@ export class TareasService {
         borrador: await this.borradorDe(tarea.id),
         asignacion: await this.asignacionConfirmada(tarea.id),
         movimientos: await this.movimientosDespacho(tarea.id),
+        hilos: await listarHilos(this.conexiones.pg, tarea.id),
         odoo: await this.odooDe(tarea),
         ...(await this.capaCampana(tarea)),
       };
@@ -361,6 +364,7 @@ export class TareasService {
       borrador: await this.borradorDe(tarea.id),
       asignacion: await this.asignacionConfirmada(tarea.id),
       movimientos: await this.movimientosDespacho(tarea.id),
+      hilos: await listarHilos(this.conexiones.pg, tarea.id),
       odoo: await this.odooDe(tarea),
       ...(await this.capaCampana(tarea)),
     };
@@ -924,6 +928,111 @@ export class TareasService {
     if (resultado.rowCount === 0) throw new NotFoundException('No está esa tarea.');
   }
 
+  async transferir(id: string, autor: Autor, correo: string): Promise<void> {
+    await this.exigeVisible(autor.correo, 'tarea', id);
+    const destino = await this.conexiones.pg.query<{ nombre: string; rol: string }>(
+      `SELECT nombre, rol FROM usuario WHERE lower(correo) = lower($1) AND activo`,
+      [correo.trim()],
+    );
+    const quien = destino.rows[0];
+    if (!quien || (quien.rol !== 'tecnico' && quien.rol !== 'administrador' && quien.rol !== 'superusuario' && quien.rol !== 'operador')) {
+      throw new BadRequestException('Esa cuenta no puede tomar la tarea.');
+    }
+    const actual = await this.filaTarea(id);
+    await this.conexiones.pg.query(
+      `UPDATE tarea SET responsable_correo = $2, responsable_nombre = $3 WHERE id = $1`,
+      [id, correo.trim().toLowerCase(), quien.nombre],
+    );
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre)
+       VALUES ($1, $2, 'seguimiento', 'web', $3, $4, $5)`,
+      [randomUUID(), id, `La tarea pasó de ${actual.responsable_nombre ?? 'nadie'} a ${quien.nombre}.`, autor.correo, autor.nombre],
+    );
+  }
+
+  async archivarNota(tareaId: string, notaId: string, archivado: boolean): Promise<void> {
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE nota_bitacora SET archivado = $3 WHERE id = $1 AND tarea_id = $2 AND tipo IN ('seguimiento', 'incidente')`,
+      [notaId, tareaId, archivado],
+    );
+    if ((resultado.rowCount ?? 0) === 0) throw new NotFoundException('Esa nota no se puede archivar.');
+  }
+
+  async editarNota(tareaId: string, notaId: string, texto: string): Promise<void> {
+    const limpio = texto.trim();
+    if (!limpio) throw new BadRequestException('Escribe el texto.');
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE nota_bitacora SET texto = $3 WHERE id = $1 AND tarea_id = $2 AND tipo IN ('seguimiento', 'incidente') AND anula_id IS NULL`,
+      [notaId, tareaId, limpio],
+    );
+    if ((resultado.rowCount ?? 0) === 0) throw new NotFoundException('Esa nota no se puede editar.');
+  }
+
+  async fijarHilos(id: string, cantidad: number): Promise<void> {
+    try {
+      await ajustarHilos(this.conexiones.pg, id, cantidad);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'No pude corregir los hilos.');
+    }
+  }
+
+  async corregirHilo(id: string, hiloId: string, datos: { contenedor?: string; maquina?: string; imei?: string }, autor: { correo: string; nombre: string }): Promise<void> {
+    const hilos = await listarHilos(this.conexiones.pg, id);
+    if (!hilos.some((hilo) => hilo.id === hiloId)) throw new NotFoundException('Ese hilo no está en la cotización.');
+    const imei = datos.imei?.replace(/\D/g, '') ?? '';
+    if (imei) {
+      const chip = await this.conexiones.pg.query<{ imei: string; celular: string; estado: string; telemetria: string }>(
+        `SELECT imei, celular, estado, telemetria FROM chip WHERE NOT archivado AND (imei = $1 OR imei LIKE '%' || $1)`,
+        [imei],
+      );
+      const unico = chip.rows.length === 1 ? chip.rows[0] : chip.rows.find((fila) => fila.imei === imei);
+      if (!unico) throw new BadRequestException('Ese IMEI no está en los chips cargados.');
+      await registrarChip(this.conexiones, hiloId, id, { ...unico, por: 'completo', pista: unico.imei }, autor, null, 'técnico', 'web');
+    }
+    if (datos.contenedor?.trim() || datos.maquina?.trim()) {
+      await corregirEquipo(this.conexiones.pg, hiloId, { contenedor: datos.contenedor, maquina: datos.maquina });
+    }
+    if (!imei && !datos.contenedor?.trim() && !datos.maquina?.trim()) throw new BadRequestException('Escribe el contenedor, la máquina o el IMEI, o sube la foto.');
+  }
+
+  async regularizarFoto(
+    id: string,
+    hiloId: string,
+    autor: { correo: string; nombre: string },
+    datos: { clase?: string; nombre?: string; mime?: string; contenido?: string },
+  ): Promise<void> {
+    const hilos = await listarHilos(this.conexiones.pg, id);
+    if (!hilos.some((hilo) => hilo.id === hiloId)) throw new NotFoundException('Ese hilo no está en la cotización.');
+    const clase = datos.clase === 'chip' || datos.clase === 'contenedor' || datos.clase === 'maquina' ? datos.clase : '';
+    if (!clase) throw new BadRequestException('Indica si la foto es del chip, del contenedor o de la máquina.');
+    const contenido = Buffer.from(datos.contenido ?? '', 'base64');
+    if (contenido.length === 0 || contenido.length > 4 * 1024 * 1024) throw new BadRequestException('La foto pasa de 4 MB.');
+    const foto = { nombre: datos.nombre?.trim() || 'foto.jpg', mime: datos.mime || 'image/jpeg', contenido };
+    if (clase === 'chip') {
+      const lectura = await leerFotoChip(this.conexiones, foto);
+      if (!lectura) throw new BadRequestException('El lector no respondió. Manda la foto otra vez.');
+      const chip = chipParaGuardar(lectura.hallados);
+      if (!chip) throw new BadRequestException(lectura.paraWhatsapp);
+      await registrarChip(this.conexiones, hiloId, id, chip, autor, foto, 'técnico', 'web');
+      return;
+    }
+    const equipo = await leerFotoEquipo(foto);
+    if (!equipo) throw new BadRequestException('No pude leer un código en la foto. Escríbelo o manda otra imagen.');
+    const espera = clase === 'contenedor' ? 'contenedor' : 'serie';
+    if (equipo.clase !== espera) {
+      const visto = equipo.clase === 'contenedor' ? 'contenedor' : 'máquina';
+      throw new BadRequestException(`Esa foto se leyó como ${visto} ${equipo.codigo}. Súbela en el campo que corresponde.`);
+    }
+    await registrarEquipo(this.conexiones, hiloId, id, clase, equipo.codigo, autor, foto, 'web');
+  }
+
+  async tecnicos(): Promise<Array<{ correo: string; nombre: string }>> {
+    const filas = await this.conexiones.pg.query<{ correo: string; nombre: string }>(
+      `SELECT correo, nombre FROM usuario WHERE activo AND rol IN ('tecnico', 'administrador', 'operador', 'superusuario') ORDER BY nombre`,
+    );
+    return filas.rows;
+  }
+
   async tomar(id: string, autor: Autor): Promise<void> {
     await this.niegaDespacho(autor.correo);
     await this.exigeVisible(autor.correo, 'tarea', id);
@@ -1206,7 +1315,7 @@ export class TareasService {
 
   private async notasDe(tareaId: string): Promise<NotaBitacora[]> {
     const resultado = await this.conexiones.pg.query<NotaBitacora>(
-      `SELECT n.id, n.tipo, n.canal, n.texto, n.autor_nombre, n.autor_correo, n.archivo_nombre, n.archivo_mime, n.anula_id, n.creado_en,
+      `SELECT n.id, n.tipo, n.canal, n.texto, n.autor_nombre, n.autor_correo, n.archivo_nombre, n.archivo_mime, n.anula_id, n.archivado, n.creado_en,
               COALESCE(
                 (SELECT json_agg(json_build_object('id', f.id, 'nombre', f.nombre) ORDER BY f.orden)
                  FROM nota_archivo f WHERE f.nota_id = n.id),
@@ -1725,6 +1834,7 @@ type NotaBitacora = {
   archivo_nombre: string | null;
   archivo_mime: string | null;
   anula_id: string | null;
+  archivado: boolean;
   creado_en: Date;
   imagenes: Array<{ id: string; nombre: string }>;
 };

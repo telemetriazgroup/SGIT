@@ -84,7 +84,7 @@ export class TurnoDespacho {
     );
   }
 
-  async agregar(tareaId: string, autor: { correo: string; nombre: string }, texto: string): Promise<string> {
+  async agregar(tareaId: string, autor: { correo: string; nombre: string }, texto: string, orden = 1): Promise<string> {
     const vigente = await this.pg.query<{ id: string; texto: string }>(
       `SELECT id, texto FROM asignacion_despacho
        WHERE tarea_id = $1 AND estado IN ('recogiendo', 'por_validar')
@@ -108,9 +108,57 @@ export class TurnoDespacho {
         [asignacionId, tareaId, autor.correo, autor.nombre, junto],
       );
     }
+    await this.asegurarEquipo(asignacionId, orden);
+    await this.pg.query(
+      `UPDATE equipo_despacho SET texto = CASE WHEN texto = '' THEN $3 ELSE texto || E'\\n' || $3 END WHERE asignacion_id = $1 AND orden = $2`,
+      [asignacionId, orden, texto.trim()],
+    );
     await this.tocar(tareaId);
     await this.movimiento(tareaId, asignacionId, 'texto', autor.nombre, texto);
     return junto;
+  }
+
+  async cantidadDe(tareaId: string): Promise<number | null> {
+    const fila = await this.pg.query<{ cantidad: number | null }>(`SELECT cantidad FROM tarea WHERE id = $1`, [tareaId]);
+    const cantidad = fila.rows[0]?.cantidad;
+    return cantidad && cantidad > 0 ? cantidad : null;
+  }
+
+  async equipoTiene(tareaId: string, orden: number): Promise<boolean> {
+    const fila = await this.pg.query<{ tiene: boolean }>(
+      `SELECT (
+         EXISTS (
+           SELECT 1 FROM equipo_despacho e
+           JOIN asignacion_despacho a ON a.id = e.asignacion_id
+           WHERE a.tarea_id = $1 AND a.estado IN ('recogiendo', 'por_validar') AND e.orden = $2 AND length(trim(e.texto)) > 0
+         )
+         OR EXISTS (
+           SELECT 1 FROM asignacion_archivo f
+           JOIN asignacion_despacho a ON a.id = f.asignacion_id
+           WHERE a.tarea_id = $1 AND a.estado IN ('recogiendo', 'por_validar') AND COALESCE(f.orden_equipo, 1) = $2
+         )
+       ) AS tiene`,
+      [tareaId, orden],
+    );
+    return Boolean(fila.rows[0]?.tiene);
+  }
+
+  async cerrarEquipo(tareaId: string, orden: number): Promise<void> {
+    await this.pg.query(
+      `UPDATE equipo_despacho e
+       SET estado = 'recibido'
+       FROM asignacion_despacho a
+       WHERE a.id = e.asignacion_id AND a.tarea_id = $1 AND a.estado IN ('recogiendo', 'por_validar') AND e.orden = $2`,
+      [tareaId, orden],
+    );
+  }
+
+  private async asegurarEquipo(asignacionId: string, orden: number): Promise<void> {
+    await this.pg.query(
+      `INSERT INTO equipo_despacho (id, asignacion_id, orden) VALUES ($1, $2, $3)
+       ON CONFLICT (asignacion_id, orden) DO NOTHING`,
+      [randomUUID(), asignacionId, orden],
+    );
   }
 
   async textoDe(tareaId: string): Promise<string> {
@@ -361,6 +409,7 @@ export class TurnoDespacho {
     tareaId: string,
     autor: { correo: string; nombre: string },
     archivo: { nombre: string; mime: string; contenido: Buffer },
+    orden = 1,
   ): Promise<string | null> {
     const mime = archivo.mime.toLowerCase().split(';')[0].trim().replace('image/jpg', 'image/jpeg');
     if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mime)) return 'La foto tiene que ser una imagen.';
@@ -370,9 +419,10 @@ export class TurnoDespacho {
     const clave = `asignacion/${archivoId}`;
     await new AlmacenCorreo(this.conexiones).guardar(clave, archivo.contenido, mime);
     await this.pg.query(
-      `INSERT INTO asignacion_archivo (id, asignacion_id, clave, mime, nombre) VALUES ($1, $2, $3, $4, $5)`,
-      [archivoId, asignacionId, clave, mime, archivo.nombre.trim().slice(0, 180) || 'foto'],
+      `INSERT INTO asignacion_archivo (id, asignacion_id, clave, mime, nombre, orden_equipo) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [archivoId, asignacionId, clave, mime, archivo.nombre.trim().slice(0, 180) || 'foto', orden],
     );
+    await this.asegurarEquipo(asignacionId, orden);
     await this.tocar(tareaId);
     await this.movimiento(tareaId, asignacionId, 'imagen', autor.nombre, `Guardó la imagen ${archivo.nombre.trim().slice(0, 80) || 'foto'} antes de procesarla.`);
     return null;
@@ -516,6 +566,76 @@ export class TurnoDespacho {
     return { nombre: archivo.nombre, mime: archivo.mime, contenido };
   }
 
+  async consultarAhora(tareaId: string, pregunta: string, equipo = 1): Promise<'avisado' | 'ocupado' | 'sin_coordinador'> {
+    await this.reconsultar(tareaId, pregunta);
+    const destinos = await this.coordinadores();
+    if (destinos.length === 0) return 'sin_coordinador';
+    const tarea = await this.datos(tareaId);
+    if (!tarea) return 'sin_coordinador';
+    const curso = await this.pg.query<{ tarea_id: string }>(
+      `SELECT tarea_id FROM turno_despacho WHERE estado = 'en_curso' AND tarea_id <> $1 LIMIT 1`,
+      [tareaId],
+    );
+    const ajeno = curso.rows[0]?.tarea_id;
+    let ocupado = false;
+    if (ajeno) {
+      const escrito = await this.textoDe(ajeno);
+      const fotos = await this.contarImagenes(ajeno);
+      if (!escrito && fotos === 0) {
+        await this.pg.query(
+          `UPDATE turno_despacho SET estado = 'en_cola', telefono_dueno = NULL, ultimo_mensaje_en = NULL WHERE tarea_id = $1 AND estado = 'en_curso'`,
+          [ajeno],
+        );
+      } else ocupado = true;
+    }
+    if (!ocupado) {
+      try {
+        await this.pg.query(
+          `UPDATE turno_despacho
+           SET estado = 'en_curso', telefono_dueno = NULL, ultimo_mensaje_en = now(), pregunta = $2
+           WHERE tarea_id = $1 AND estado = 'reconsulta'`,
+          [tareaId, pregunta],
+        );
+      } catch (error) {
+        const codigo = (error as { code?: string }).code;
+        if (codigo !== '23505') throw error;
+        ocupado = true;
+      }
+    }
+    const anterior = await this.textoConfirmado(tareaId);
+    const imagenes = await this.contarImagenes(tareaId, ['confirmada']);
+    const pedido = textoReconsultaDespacho(tarea.cot, pregunta, anterior, imagenes, tarea.lugar);
+    const texto = ocupado
+      ? `${pedido}\nSi estás cerrando otra cotización, termina esa primero. Esta queda primera apenas la sueltes.`
+      : pedido;
+    const momentos = momentosDeEnvio(destinos.length, new Date(), PAUSA_MS);
+    for (const [indice, destino] of destinos.entries()) {
+      const charla = await this.pg.query<{ paso: string; tarea_id: string | null }>(
+        `SELECT paso, tarea_id FROM charla WHERE telefono = $1`,
+        [destino.telefono],
+      );
+      const paso = charla.rows[0]?.paso ?? '';
+      const escribiendoOtra = (paso === 'despacho_recogiendo' || paso === 'despacho_validar') && charla.rows[0]?.tarea_id !== tareaId;
+      if (!ocupado && !escribiendoOtra) {
+        await this.pg.query(
+          `INSERT INTO charla (telefono, paso, tarea_id, lista, pendiente, actualizado_en)
+           VALUES ($1, 'despacho_recogiendo', $2, '[]'::jsonb, $3::jsonb, now())
+           ON CONFLICT (telefono) DO UPDATE
+             SET paso = 'despacho_recogiendo', tarea_id = EXCLUDED.tarea_id, lista = '[]'::jsonb,
+                 pendiente = EXCLUDED.pendiente, actualizado_en = now()
+           WHERE charla.paso NOT IN ('despacho_recogiendo', 'despacho_validar') OR charla.tarea_id IS NOT DISTINCT FROM $2`,
+          [destino.telefono, tareaId, JSON.stringify({ equipo })],
+        );
+      }
+      await this.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
+         VALUES ($1, 'apertura_despacho', $2, $3, $4, 'pendiente', $5)`,
+        [randomUUID(), tareaId, destino.telefono, texto, momentos[indice].toISOString()],
+      );
+    }
+    return ocupado ? 'ocupado' : 'avisado';
+  }
+
   async reconsultar(tareaId: string, pregunta: string): Promise<void> {
     const actualizado = await this.pg.query(
       `UPDATE turno_despacho
@@ -608,8 +728,8 @@ export class TurnoDespacho {
   }
 
   private async publicarAviso(asignacionId: string): Promise<void> {
-    const fila = await this.pg.query<{ cot: string; cliente: string | null; lugar: string | null; autor_nombre: string; texto: string; tarea_id: string }>(
-      `SELECT t.cot, t.cliente, t.lugar, a.autor_nombre, a.texto, a.tarea_id
+    const fila = await this.pg.query<{ cot: string; cliente: string | null; lugar: string | null; autor_nombre: string; autor_correo: string; texto: string; tarea_id: string }>(
+      `SELECT t.cot, t.cliente, t.lugar, a.autor_nombre, a.autor_correo, a.texto, a.tarea_id
        FROM asignacion_despacho a
        JOIN tarea t ON t.id = a.tarea_id
        WHERE a.id = $1`,
@@ -625,6 +745,7 @@ export class TurnoDespacho {
       [asignacionId],
     );
     const lecturas = await this.leerCodigos(imagenes.rows);
+    await this.seguimientoAsignacion(asignacion, imagenes.rows, lecturas);
     await this.movimiento(
       asignacion.tarea_id,
       asignacionId,
@@ -688,6 +809,34 @@ export class TurnoDespacho {
         'aviso',
         'sistema',
         `Avisó una sola vez, con las ${imagenes.rows.length} imágenes juntas, el texto y las lecturas. Queda a la espera del ok del técnico.`,
+      );
+    }
+  }
+
+  private async seguimientoAsignacion(
+    asignacion: { tarea_id: string; autor_correo: string; autor_nombre: string; texto: string },
+    imagenes: Array<{ clave: string; mime: string; nombre: string }>,
+    lecturas: string[],
+  ): Promise<void> {
+    const escrito = asignacion.texto.trim() || 'Sin texto.';
+    const lectura = lecturas.length > 0 ? lecturas.join('\n') : 'No hubo imagen con código.';
+    const texto = `Despacho registró código y máquina.\nEscrito: ${escrito}\n${lectura}`;
+    const ya = await this.pg.query(
+      `SELECT 1 FROM nota_bitacora WHERE tarea_id = $1 AND texto = $2 AND creado_en > now() - interval '15 minutes'`,
+      [asignacion.tarea_id, texto],
+    );
+    if (ya.rows[0]) return;
+    const notaId = randomUUID();
+    const primera = imagenes[0];
+    await this.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime)
+       VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5, $6, $7, $8)`,
+      [notaId, asignacion.tarea_id, texto, asignacion.autor_correo, asignacion.autor_nombre, primera?.clave ?? null, primera?.nombre ?? null, primera?.mime ?? null],
+    );
+    for (const [orden, imagen] of imagenes.entries()) {
+      await this.pg.query(
+        `INSERT INTO nota_archivo (id, nota_id, clave, mime, nombre, orden) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [randomUUID(), notaId, imagen.clave, imagen.mime, imagen.nombre, orden],
       );
     }
   }

@@ -131,8 +131,8 @@ export class IdentidadService {
     if (cuenta.rol === 'superusuario') {
       if (rol !== 'superusuario') throw new BadRequestException('El superusuario no cambia de tipo.');
       if (!activo) throw new BadRequestException('La cuenta de superusuario se mantiene activa.');
-    } else if (rol !== 'administrador' && rol !== 'tecnico' && rol !== 'operador' && rol !== 'despacho') {
-      throw new BadRequestException('El tipo es administrador, técnico, operador o despacho.');
+    } else if (rol !== 'administrador' && rol !== 'tecnico' && rol !== 'operador' && rol !== 'despacho' && rol !== 'almacen') {
+      throw new BadRequestException('El tipo es administrador, técnico, operador, despacho o almacén.');
     }
     if (actor === destino && !activo) throw new BadRequestException('No puedes desactivar tu propia cuenta.');
     const numero = telefonoLimpio(telefono);
@@ -191,7 +191,7 @@ export class IdentidadService {
     if (!limpio) throw new BadRequestException('Indica el nombre.');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(destino)) throw new BadRequestException('El correo no es válido.');
     if (contrasena.length < 8) throw new BadRequestException('La contraseña tiene al menos 8 caracteres.');
-    if (rol !== 'administrador' && rol !== 'tecnico' && rol !== 'despacho') throw new BadRequestException('El rol es administrador, técnico o despacho.');
+    if (rol !== 'administrador' && rol !== 'tecnico' && rol !== 'despacho' && rol !== 'almacen') throw new BadRequestException('El rol es administrador, técnico, despacho o almacén.');
     const hash = await bcrypt.hash(contrasena, 10);
     try {
       await this.conexiones.pg.query(

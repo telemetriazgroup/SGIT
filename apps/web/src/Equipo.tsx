@@ -15,7 +15,7 @@ export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }
   const [nombre, setNombre] = useState('');
   const [correo, setCorreo] = useState('');
   const [contrasena, setContrasena] = useState('');
-  const [rol, setRol] = useState<'administrador' | 'tecnico' | 'despacho'>('tecnico');
+  const [rol, setRol] = useState<'administrador' | 'tecnico' | 'despacho' | 'almacen'>('tecnico');
   const [consultaDespacho, setConsultaDespacho] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
@@ -72,10 +72,11 @@ export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }
         </label>
         <label htmlFor="cuenta-rol">
           Tipo
-          <select id="cuenta-rol" value={rol} onChange={(evento) => setRol(evento.target.value === 'administrador' ? 'administrador' : evento.target.value === 'despacho' ? 'despacho' : 'tecnico')}>
+          <select id="cuenta-rol" value={rol} onChange={(evento) => setRol(rolDeCuenta(evento.target.value))}>
             <option value="tecnico">Técnico</option>
             <option value="administrador">Administrador</option>
             <option value="despacho">Despacho</option>
+            <option value="almacen">Almacén</option>
           </select>
         </label>
         {rol === 'despacho' ? (
@@ -214,6 +215,7 @@ function Editor({
             <option value="administrador">Administrador</option>
             <option value="operador">Operador</option>
             <option value="despacho">Despacho</option>
+            <option value="almacen">Almacén</option>
             {superusuario ? <option value="superusuario">Superusuario</option> : null}
           </select>
         </label>
@@ -388,7 +390,13 @@ function etiquetaRol(rol: string): string {
   if (rol === 'administrador') return 'Administrador';
   if (rol === 'tecnico') return 'Técnico';
   if (rol === 'despacho') return 'Despacho';
+  if (rol === 'almacen') return 'Almacén';
   return 'Operador';
+}
+
+function rolDeCuenta(valor: string): 'administrador' | 'tecnico' | 'despacho' | 'almacen' {
+  if (valor === 'administrador' || valor === 'despacho' || valor === 'almacen') return valor;
+  return 'tecnico';
 }
 
 async function pedir<T>(apiUrl: string, token: string, ruta: string, init?: RequestInit): Promise<T> {

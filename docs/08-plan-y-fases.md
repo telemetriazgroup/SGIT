@@ -103,7 +103,7 @@ El corte semanal, el entregable del viernes y las pruebas de cada proceso están
 
 **Trabajo.**
 
-- Abrir N atenciones, con motivo si N cambia respecto del correo.
+- Abrir N hilos, uno por telemetría. La cantidad se corrige en la ficha. Un chip ocupado no entra a la orden de fabricación.
 - Selector de lista de materiales y cantidades.
 - Alta idempotente de la MO.
 - PDF e impresión.

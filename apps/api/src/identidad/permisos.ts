@@ -1,6 +1,6 @@
 import type { Rol } from '@sgit/shared';
 
-const ROLES: readonly Rol[] = ['operador', 'administrador', 'superusuario', 'tecnico', 'despacho'];
+const ROLES: readonly Rol[] = ['operador', 'administrador', 'superusuario', 'tecnico', 'despacho', 'almacen'];
 
 export function esRol(valor: string): valor is Rol {
   return (ROLES as readonly string[]).includes(valor);

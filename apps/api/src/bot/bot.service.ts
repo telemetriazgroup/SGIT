@@ -4,6 +4,8 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AlmacenCorreo } from '../buzon/almacen';
 import { vincularHijas } from '../tareas/hijas';
+import { corregirEquipo, crearHilos, guardarChip, hiloListo, lineaHilo, listarHilos, marcarInstalacion, textoEquipo, validarDespacho } from '../tareas/hilos';
+import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrarEquipo } from '../tareas/regularizar';
 import { joinUrgente, ordenFecha, ordenUrgente } from '../tareas/prioridad';
 import { anotarConexion } from '../conexion/bitacora';
 import type { Conexiones } from '../conexiones';
@@ -38,6 +40,8 @@ import {
   textoTareaNueva,
   PREGUNTAS_DESPACHO,
 } from './avisos';
+import { cierreFabricacion, fragmentosDeTexto, identificarChips, imeisDeTexto, textoChip } from './lectura-chip';
+import { textoDeImagen } from './proceso-imagen';
 import { TurnoDespacho } from './turno-despacho';
 
 type Autor = { correo: string; nombre: string };
@@ -83,7 +87,11 @@ type Paso =
   | 'despacho_validar'
   | 'respuesta_despacho'
   | 'consulta_despacho'
-  | 'corroborar_lectura';
+  | 'corroborar_lectura'
+  | 'chip_menu'
+  | 'chip_foto'
+  | 'hilos'
+  | 'hilo';
 type ImagenPendiente = { nombre: string; mime: string; contenido: string };
 type TipoNota = 'seguimiento' | 'incidente' | 'cierre';
 type Pendiente = {
@@ -99,6 +107,9 @@ type Pendiente = {
   origen?: 'tarea' | 'interno' | 'decision';
   mensajeId?: string;
   espera_menu?: boolean;
+  equipo?: number;
+  hiloId?: string;
+  corrige?: 'imei' | 'contenedor' | 'maquina';
 };
 type Charla = { paso: Paso; tarea_id: string | null; lista: string[]; pendiente: Pendiente | null };
 type ArchivoSalida = { nombre: string; mime: string; contenido: string };
@@ -169,6 +180,10 @@ const PASOS: Paso[] = [
   'respuesta_despacho',
   'consulta_despacho',
   'corroborar_lectura',
+  'chip_menu',
+  'chip_foto',
+  'hilos',
+  'hilo',
 ];
 
 const LEASE_MS = 30_000;
@@ -482,7 +497,7 @@ export class BotService {
       if (imagenes.length >= 8) break;
       try {
         const bytes = await almacen.leer(fila.clave);
-        if (bytes.length === 0 || bytes.length > 1_200_000) continue;
+        if (bytes.length === 0 || bytes.length > 3_500_000) continue;
         imagenes.push({ nombre: fila.nombre, mime: fila.mime, contenido: bytes.toString('base64') });
       } catch {
         continue;
@@ -587,6 +602,7 @@ export class BotService {
     const charla = await this.charla(numero);
     const limpio = texto.trim();
     if (quien.rol === 'despacho') return this.atenderDespacho(numero, quien, limpio, charla, archivo);
+    if (quien.rol === 'almacen') return this.atenderAlmacen(numero, quien, limpio, archivo);
     if (charla.pendiente?.espera_menu) return this.abrirMenu(numero);
     if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(numero, charla);
     const paso = charla.paso;
@@ -601,6 +617,8 @@ export class BotService {
       return this.enPreguntaImagen(numero, charla, quien, limpio, archivo, anotador);
     }
     if (paso === 'cot' && charla.tarea_id) return this.enCot(numero, charla.tarea_id, limpio);
+    if (paso === 'hilos' && charla.tarea_id) return this.enHilos(numero, charla, limpio);
+    if (paso === 'hilo' && charla.tarea_id) return this.enHilo(numero, charla, limpio, archivo);
     if (paso === 'corroborar_lectura' && charla.tarea_id) return this.enCorroborar(numero, quien, charla, limpio);
     if (paso === 'respuesta_despacho' && charla.tarea_id) return this.enRespuestaDespacho(numero, charla, limpio);
     if (paso === 'consulta_despacho' && charla.tarea_id) return this.enConsultaDespacho(numero, charla.tarea_id, limpio);
@@ -796,14 +814,10 @@ export class BotService {
       await this.guardarCharla(telefono, 'consulta_despacho', tareaId, [], null);
       return this.dejar(telefono, true, 'Escribe la consulta o elige un número.');
     }
-    await this.turno().reconsultar(tareaId, pregunta);
+    const aviso = await this.pedirDespachoAhora(tareaId, pregunta, 1);
     const ref = await this.referencia(tareaId);
     await this.guardarCharla(telefono, 'cot', tareaId, [], null);
-    return this.dejar(
-      telefono,
-      true,
-      `Quedó registrada la consulta de ${ref?.linea ?? 'esta cotización'}: ${pregunta}\nDespacho la verá en su siguiente turno.`,
-    );
+    return this.dejar(telefono, true, `Quedó registrada la consulta de ${ref?.linea ?? 'esta cotización'}: ${pregunta}\n${aviso}`);
   }
 
   private async enCot(telefono: string, tareaId: string, limpio: string): Promise<RespuestaBot> {
@@ -819,6 +833,8 @@ export class BotService {
       return this.empezarCierre(telefono, { origen: 'tarea', tareaId });
     }
     if (/^(9|respuesta de despacho)$/i.test(limpio)) return this.abrirCorroboracion(telefono, tareaId, 'menu');
+    if (/^(10|pedir chip|chip|necesito telemetria|necesito telemetría)$/i.test(limpio)) return this.pedirChip(telefono, tareaId);
+    if (/^(11|telemetrias|telemetrías|hilos)$/i.test(limpio)) return this.abrirHilos(telefono, tareaId);
     return this.menuDeCot(telefono, tareaId);
   }
 
@@ -1478,7 +1494,7 @@ export class BotService {
     if (/^(menu|menú)$/i.test(limpio) && !archivo) return this.menuTurno(telefono, charla.tarea_id);
     if (charla.paso === 'despacho_menu' && !archivo) return this.elegirTurno(telefono, charla, limpio);
     if (charla.paso === 'despacho_validar' && charla.tarea_id && !archivo) return this.validarTurno(telefono, charla.tarea_id, limpio);
-    if (this.enAsignacion(charla.paso) && charla.tarea_id) return this.recogerTurno(telefono, quien, charla.tarea_id, limpio, archivo);
+    if (this.enAsignacion(charla.paso) && charla.tarea_id) return this.recogerTurno(telefono, quien, charla, limpio, archivo);
     const cot = numeroCot(limpio);
     if (cot) return this.abrirCotTurno(telefono, cot);
     if (!limpio || esSaludo(limpio)) return this.menuTurno(telefono, null);
@@ -1492,11 +1508,14 @@ export class BotService {
   private async recogerTurno(
     telefono: string,
     quien: { correo: string; nombre: string },
-    tareaId: string,
+    charla: Charla,
     limpio: string,
     archivo: ArchivoNota | null,
   ): Promise<RespuestaBot> {
+    const tareaId = charla.tarea_id;
+    if (!tareaId) return this.menuTurno(telefono, null);
     const turno = this.turno();
+    const equipo = charla.pendiente?.equipo ?? 1;
     const dueno = await turno.dueno(tareaId, telefono);
     if (!dueno.propio) {
       if (!dueno.otro) return this.menuTurno(telefono, null, 'Esa consulta ya se cerró.');
@@ -1504,32 +1523,46 @@ export class BotService {
     }
     await turno.tocar(tareaId);
     if (archivo) {
-      const rechazo = await turno.agregarImagen(tareaId, quien, archivo);
+      const rechazo = await turno.agregarImagen(tareaId, quien, archivo, equipo);
       if (rechazo) return this.dejar(telefono, true, rechazo);
-      if (limpio && !/^(ok|listo|es todo|ya|1|datos)$/i.test(limpio)) await turno.agregar(tareaId, quien, limpio);
+      if (limpio && !/^(ok|listo|es todo|ya|1|datos)$/i.test(limpio)) await turno.agregar(tareaId, quien, limpio, equipo);
       if (!/^(ok|listo|es todo|ya)$/i.test(limpio)) {
         const imagenes = await turno.contarImagenes(tareaId);
         const escrito = await turno.textoDe(tareaId);
-        await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], null);
+        await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], { equipo });
         return this.dejar(telefono, true, ackDespacho(imagenes, escrito));
       }
     }
     if (/^(1|datos)$/i.test(limpio)) {
       const resumen = await turno.resumen(tareaId);
-      await this.guardarCharla(telefono, 'despacho_detalle', tareaId, [], null);
+      await this.guardarCharla(telefono, 'despacho_detalle', tareaId, [], { equipo });
       return this.dejar(telefono, true, resumen ?? 'Esa cotización ya no está.');
     }
-    if (/^(ok|listo|es todo|ya)$/i.test(limpio)) {
-      const texto = await turno.textoDe(tareaId);
-      const imagenes = await turno.contarImagenes(tareaId);
-      if (!texto && imagenes === 0) return this.dejar(telefono, true, 'Todavía no anoté el contenedor, la máquina ni una imagen.');
-      return this.cerrarTurno(telefono, tareaId);
-    }
+    if (/^(ok|listo|es todo|ya)$/i.test(limpio)) return this.cerrarEquipo(telefono, tareaId, equipo);
     if (!limpio) return this.dejar(telefono, true, 'Escribe el contenedor y la máquina, manda una imagen, o menu para ver otras pendientes.');
-    const junto = await turno.agregar(tareaId, quien, limpio);
+    const junto = await turno.agregar(tareaId, quien, limpio, equipo);
     const imagenes = await turno.contarImagenes(tareaId);
-    await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], null);
+    await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], { equipo });
     return this.dejar(telefono, true, ackDespacho(imagenes, junto));
+  }
+
+  private async cerrarEquipo(telefono: string, tareaId: string, equipo: number): Promise<RespuestaBot> {
+    const turno = this.turno();
+    const total = (await turno.cantidadDe(tareaId)) ?? 1;
+    if (total > 1 && !(await turno.equipoTiene(tareaId, equipo))) {
+      return this.dejar(telefono, true, `El equipo ${equipo} queda pendiente. No paso al siguiente hasta que mandes la foto de la máquina y del contenedor.`);
+    }
+    if (total > 1 && equipo < total) {
+      await turno.cerrarEquipo(tareaId, equipo);
+      const siguiente = equipo + 1;
+      await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], { equipo: siguiente });
+      return this.dejar(telefono, true, `Quedó el equipo ${equipo}.\n${textoEquipo(total, siguiente)}`);
+    }
+    const texto = await turno.textoDe(tareaId);
+    const imagenes = await turno.contarImagenes(tareaId);
+    if (!texto && imagenes === 0) return this.dejar(telefono, true, 'Todavía no anoté el contenedor, la máquina ni una imagen.');
+    if (total > 1) await turno.cerrarEquipo(tareaId, equipo);
+    return this.cerrarTurno(telefono, tareaId);
   }
 
   private async cerrarTurno(telefono: string, tareaId: string): Promise<RespuestaBot> {
@@ -1608,8 +1641,9 @@ export class BotService {
     if (!listo) return this.dejar(telefono, true, 'Hay otra cotización en curso. Espera a que se cierre o escribe menu.');
     await turno.dueno(destinoId, telefono);
     const ref = await this.referencia(destinoId, true);
-    await this.guardarCharla(telefono, 'despacho_recogiendo', destinoId, [], null);
-    return this.dejar(telefono, true, [`Estás en ${ref?.linea ?? 'esa cotización'}.`, 'Escribe el contenedor y la máquina.', 'Escribe 1 o datos para ver la ficha.', 'Escribe menu para volver a la lista.'].join('\n'));
+    const total = await turno.cantidadDe(destinoId);
+    await this.guardarCharla(telefono, 'despacho_recogiendo', destinoId, [], { equipo: 1 });
+    return this.dejar(telefono, true, [`Estás en ${ref?.linea ?? 'esa cotización'}.`, textoEquipo(total, 1), 'Escribe 1 o datos para ver la ficha.', 'Escribe menu para volver a la lista.'].join('\n'));
   }
 
   private async esElevado(telefono: string): Promise<boolean> {
@@ -1767,7 +1801,7 @@ export class BotService {
     const notas = await this.conexiones.pg.query<NotaBreve>(
       `SELECT id, tipo, texto, autor_nombre, archivo_nombre, archivo_clave, archivo_mime, creado_en
        FROM nota_bitacora
-       WHERE tarea_id = $1 AND tipo IN ('seguimiento', 'incidente')
+       WHERE tarea_id = $1 AND tipo IN ('seguimiento', 'incidente') AND NOT archivado
        ORDER BY creado_en DESC
        LIMIT 5 OFFSET $2`,
       [tareaId, offset],
@@ -1834,7 +1868,7 @@ export class BotService {
     const filas = await this.conexiones.pg.query<NotaBreve>(
       `SELECT id, tipo, texto, autor_nombre, archivo_nombre, archivo_clave, archivo_mime, creado_en
        FROM nota_bitacora
-       WHERE tarea_id = $1 AND ($2::text IS NULL OR tipo = $2) AND ($3::uuid IS NULL OR id = $3)
+       WHERE tarea_id = $1 AND ($2::text IS NULL OR tipo = $2) AND ($3::uuid IS NULL OR id = $3) AND NOT archivado
        ORDER BY creado_en DESC
        LIMIT 1`,
       [tareaId, tipo, notaId],
@@ -1895,6 +1929,340 @@ export class BotService {
   private async tareasBreves(sql: string, valores: unknown[] = []): Promise<TareaBreve[]> {
     const filas = await this.conexiones.pg.query<TareaBreve>(sql, valores);
     return filas.rows;
+  }
+
+  private async abrirHilos(telefono: string, tareaId: string): Promise<RespuestaBot> {
+    const ref = await this.referencia(tareaId);
+    if (!ref) return this.abrirMenu(telefono, `Esa cotización ya no está.\n${menuGeneral(await this.esElevado(telefono))}`);
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    if (hilos.length === 0) {
+      const cantidad = await this.turno().cantidadDe(tareaId);
+      await this.guardarCharla(telefono, 'hilos', tareaId, [], null);
+      const detectado = cantidad ? `Detecté ${cantidad} ${cantidad === 1 ? 'telemetría' : 'telemetrías'}.` : 'No detecté la cantidad en la cotización.';
+      return this.dejar(telefono, true, [ref.linea, detectado, 'Escribe cuántas telemetrías son.', 'Si es 1 se abre un hilo. Si son 3 se abren 3.', 'Escribe menu para volver.'].join('\n'));
+    }
+    await this.guardarCharla(telefono, 'hilos', tareaId, hilos.map((hilo) => hilo.id), null);
+    return this.dejar(telefono, true, [ref.linea, 'Hilos de esta cotización:', ...hilos.map((hilo, indice) => `${indice + 1}. ${lineaHilo(hilo)}`), 'Escribe el número.', 'Escribe menu para volver.'].join('\n'));
+  }
+
+  private async enHilos(telefono: string, charla: Charla, limpio: string): Promise<RespuestaBot> {
+    const tareaId = charla.tarea_id;
+    if (!tareaId) return this.abrirMenu(telefono);
+    if (/^(menu|menú|volver)$/i.test(limpio)) return this.menuDeCot(telefono, tareaId);
+    const numero = Number(limpio);
+    if (charla.lista.length === 0 && Number.isInteger(numero)) {
+      let creados;
+      try {
+        creados = await crearHilos(this.conexiones.pg, tareaId, numero);
+      } catch (error) {
+        const mensaje = error instanceof Error ? error.message : 'No pude abrir los hilos.';
+        return this.dejar(telefono, true, mensaje);
+      }
+      const falta = creados.find((hilo) => !hilo.despacho_texto && !hilo.contenedor && !hilo.maquina);
+      const aviso = falta ? await this.pedirDespachoAhora(tareaId, `Confirma el contenedor y la máquina del equipo ${falta.orden}.`, falta.orden) : '';
+      const lista = await this.abrirHilos(telefono, tareaId);
+      return aviso ? { ...lista, respuesta: `${aviso}\n${lista.respuesta}` } : lista;
+    }
+    const id = charla.lista[numero - 1];
+    if (!id) return this.abrirHilos(telefono, tareaId);
+    return this.menuHilo(telefono, tareaId, id);
+  }
+
+  private async menuHilo(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    if (!hilo) return this.abrirHilos(telefono, tareaId);
+    const juicio = hiloListo(hilo);
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId });
+    return this.dejar(telefono, true, [
+      lineaHilo(hilo),
+      hilo.despacho_texto ? `Despacho escribió: ${hilo.despacho_texto}` : 'Despacho todavía no dejó texto de este equipo.',
+      juicio.listo ? 'Este hilo ya tiene lo necesario. La orden de fabricación es el siguiente módulo.' : `Para resolverlo: ${juicio.falta.join('; ')}.`,
+      '1. Validar lo que envió despacho',
+      '2. Pedir a despacho el código y el contenedor',
+      '3. Pedir chip a almacén. Si el anterior está ocupado, pide otro',
+      '4. Esta telemetría no se instala',
+      '5. Volver a los hilos',
+      '6. Regularizar el chip. Escribe el IMEI o manda la foto',
+      '7. Regularizar el contenedor. Escríbelo o manda la foto',
+      '8. Regularizar la máquina. Escríbela o manda la foto',
+      '9. Pedir otra imagen a almacén y a despacho',
+    ].join('\n'));
+  }
+
+  private async enHilo(telefono: string, charla: Charla, limpio: string, archivo: ArchivoNota | null = null): Promise<RespuestaBot> {
+    const tareaId = charla.tarea_id;
+    const hiloId = charla.pendiente?.hiloId;
+    if (!tareaId || !hiloId) return this.abrirMenu(telefono);
+    if (charla.pendiente?.corrige) return this.corregirHilo(telefono, tareaId, hiloId, charla.pendiente.corrige, limpio, archivo);
+    if (archivo) return this.dejar(telefono, true, 'Para regularizar una foto, elige 6 chip, 7 contenedor u 8 máquina, y luego mándala.');
+    if (/^(5|volver|menu|menú)$/i.test(limpio)) return this.abrirHilos(telefono, tareaId);
+    try {
+      if (/^1$/.test(limpio)) {
+        const hilo = await validarDespacho(this.conexiones.pg, hiloId);
+        return this.dejar(telefono, true, `${lineaHilo(hilo)}\n5. Volver a los hilos`);
+      }
+      if (/^2$/.test(limpio)) {
+        const hilos = await listarHilos(this.conexiones.pg, tareaId);
+        const hilo = hilos.find((item) => item.id === hiloId);
+        const aviso = await this.pedirDespachoAhora(tareaId, `Confirma el contenedor y la máquina del equipo ${hilo?.orden ?? ''}`.trim(), hilo?.orden ?? 1);
+        return this.dejar(telefono, true, `${aviso}\n5. Volver a los hilos`);
+      }
+      if (/^3$/.test(limpio)) {
+        await marcarInstalacion(this.conexiones.pg, hiloId, true);
+        return this.pedirChip(telefono, tareaId, hiloId);
+      }
+      if (/^4$/.test(limpio)) {
+        const hilo = await marcarInstalacion(this.conexiones.pg, hiloId, false);
+        return this.dejar(telefono, true, `${lineaHilo(hilo)}\n5. Volver a los hilos`);
+      }
+      if (/^6$/.test(limpio)) {
+        await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, corrige: 'imei' });
+        return this.dejar(telefono, true, 'Regularizar el chip. Escribe el IMEI o manda la foto de la tarjeta.\nSi está ocupado queda registrado y puedes pedir otro con 3.\nEscribe menu para volver al hilo.');
+      }
+      if (/^7$/.test(limpio)) {
+        await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, corrige: 'contenedor' });
+        return this.dejar(telefono, true, 'Regularizar el contenedor. Escríbelo o manda la foto.\nEscribe menu para volver al hilo.');
+      }
+      if (/^8$/.test(limpio)) {
+        await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, corrige: 'maquina' });
+        return this.dejar(telefono, true, 'Regularizar la máquina. Escríbela o manda la foto de la serie.\nEscribe menu para volver al hilo.');
+      }
+      if (/^9$/.test(limpio)) return this.pedirImagenConcluyente(telefono, tareaId, hiloId);
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'No pude actualizar el hilo.';
+      return this.dejar(telefono, true, `${mensaje}\n5. Volver a los hilos`);
+    }
+    return this.menuHilo(telefono, tareaId, hiloId);
+  }
+
+  private async corregirHilo(telefono: string, tareaId: string, hiloId: string, corrige: 'imei' | 'contenedor' | 'maquina', limpio: string, archivo: ArchivoNota | null): Promise<RespuestaBot> {
+    if (/^(menu|menú)$/i.test(limpio) && !archivo) return this.menuHilo(telefono, tareaId, hiloId);
+    if (/^5$/.test(limpio) && !archivo) return this.abrirHilos(telefono, tareaId);
+    try {
+      const quien = await this.conexiones.pg.query<{ correo: string; nombre: string }>(`SELECT correo, nombre FROM usuario WHERE telefono = $1`, [telefono]);
+      const autor = quien.rows[0] ?? { correo: '', nombre: 'Técnico' };
+      if (archivo) return this.regularizarFoto(telefono, tareaId, hiloId, corrige, autor, archivo);
+      if (corrige === 'contenedor' || corrige === 'maquina') {
+        const hilo = await corregirEquipo(this.conexiones.pg, hiloId, corrige === 'contenedor' ? { contenedor: limpio } : { maquina: limpio });
+        const menu = await this.menuHilo(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `Regularización. ${lineaHilo(hilo)}\n${menu.respuesta}` };
+      }
+      const digitos = limpio.replace(/\D/g, '');
+      if (digitos.length < 8) return this.dejar(telefono, true, 'Escribe el IMEI o manda la foto. Ejemplo: 8951029078500034086');
+      const catalogo = await this.conexiones.pg.query<{ imei: string; celular: string; estado: string; telemetria: string }>(
+        `SELECT imei, celular, estado, telemetria FROM chip WHERE NOT archivado`,
+      );
+      const lectura = identificarChips(digitos.length >= 14 ? [digitos] : [], catalogo.rows, digitos.length < 14 ? [digitos] : []);
+      const chip = lectura.hallados[0];
+      if (!chip) return this.dejar(telefono, true, 'Ese IMEI no está en los chips cargados. Escríbelo de nuevo o menu para volver.');
+      await registrarChip(this.conexiones, hiloId, tareaId, chip, autor, null, 'técnico', 'whatsapp');
+      const menu = await this.menuHilo(telefono, tareaId, hiloId);
+      const aviso = chip.estado === 'ocupado'
+        ? `Quedó registrado. IMEI ${chip.imei}. Celular ${chip.celular}. Está ocupado${chip.telemetria ? ` en ${chip.telemetria}` : ''}.\nNo se envía a una orden de fabricación. Pide otro chip con 3, o regulariza otra foto.`
+        : `IMEI ${chip.imei}. Celular ${chip.celular}.`;
+      return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'No pude corregir el hilo.';
+      return this.dejar(telefono, true, `${mensaje}\nEscribe menu para volver al hilo.`);
+    }
+  }
+
+  private async regularizarFoto(
+    telefono: string,
+    tareaId: string,
+    hiloId: string,
+    corrige: 'imei' | 'contenedor' | 'maquina',
+    autor: { correo: string; nombre: string },
+    archivo: ArchivoNota,
+  ): Promise<RespuestaBot> {
+    const rechazo = this.rechazoImagen(archivo);
+    if (rechazo) return this.dejar(telefono, true, rechazo);
+    if (corrige === 'imei') {
+      const lectura = await leerFotoChip(this.conexiones, archivo);
+      if (!lectura) return this.dejar(telefono, true, 'El lector no respondió. Manda la foto otra vez.');
+      const chip = chipParaGuardar(lectura.hallados);
+      if (!chip) return this.dejar(telefono, true, `${lectura.paraWhatsapp}\nEscríbelo o manda otra foto.`);
+      await registrarChip(this.conexiones, hiloId, tareaId, chip, autor, archivo, 'técnico', 'whatsapp');
+      const menu = await this.menuHilo(telefono, tareaId, hiloId);
+      const aviso = chip.estado === 'ocupado'
+        ? `Quedó registrado. IMEI ${chip.imei}. Celular ${chip.celular}. Está ocupado${chip.telemetria ? ` en ${chip.telemetria}` : ''}.\nNo se envía a una orden de fabricación. Pide otro chip con 3, o regulariza otra foto.`
+        : `IMEI ${chip.imei}. Celular ${chip.celular}.`;
+      return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
+    }
+    const equipo = await leerFotoEquipo(archivo);
+    if (!equipo) return this.dejar(telefono, true, 'No pude leer un código en la foto. Escríbelo o manda otra imagen.');
+    const espera = corrige === 'contenedor' ? 'contenedor' : 'serie';
+    if (equipo.clase !== espera) {
+      const visto = equipo.clase === 'contenedor' ? 'contenedor' : 'máquina';
+      return this.dejar(telefono, true, `Esa foto se leyó como ${visto} ${equipo.codigo}. Elige 7 o 8 según lo que sea, o escríbelo.`);
+    }
+    const hilo = await registrarEquipo(this.conexiones, hiloId, tareaId, corrige, equipo.codigo, autor, archivo, 'whatsapp');
+    const menu = await this.menuHilo(telefono, tareaId, hiloId);
+    return { ...menu, respuesta: `Regularización. ${lineaHilo(hilo)}\n${menu.respuesta}` };
+  }
+
+  private async pedirImagenConcluyente(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const frase = 'El área de desarrollo solicita otra imagen más concluyente.';
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    const orden = hilo?.orden ?? 1;
+    const ref = await this.referencia(tareaId);
+    const despacho = await this.pedirDespachoAhora(tareaId, `${frase} Manda otra foto del contenedor y de la máquina del equipo ${orden}.`, orden);
+    const quien = await this.conexiones.pg.query<{ nombre: string }>(`SELECT nombre FROM usuario WHERE telefono = $1`, [telefono]);
+    const consultaId = randomUUID();
+    await this.conexiones.pg.query(
+      `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id) VALUES ($1, $2, $3, $4, $5)`,
+      [consultaId, tareaId, telefono, quien.rows[0]?.nombre ?? 'Técnico', hiloId],
+    );
+    const almacenes = await this.conexiones.pg.query<{ telefono: string }>(
+      `SELECT telefono FROM usuario WHERE activo AND rol = 'almacen' AND telefono IS NOT NULL AND telefono <> ''`,
+    );
+    const cuerpo = `${ref?.linea ?? 'La cotización'}\n${frase}\nLa foto del chip del equipo ${orden} no alcanza. Manda otra imagen de la tarjeta o del chip.`;
+    for (const destino of almacenes.rows) {
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes) VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
+        [randomUUID(), tareaId, destino.telefono, cuerpo],
+      );
+    }
+    const almacen = almacenes.rows.length ? 'También se lo pedí a almacén.' : 'No hay un usuario de almacén con WhatsApp.';
+    return this.dejar(telefono, true, `${frase}\n${despacho}\n${almacen}\n5. Volver a los hilos`);
+  }
+
+  private async pedirDespachoAhora(tareaId: string, pregunta: string, equipo: number): Promise<string> {
+    const resultado = await this.turno().consultarAhora(tareaId, pregunta, equipo);
+    if (resultado === 'sin_coordinador') return 'No hay un coordinador de despacho con WhatsApp. El pedido quedó anotado.';
+    if (resultado === 'ocupado') return 'Ya le avisé a despacho. Le llegó el pedido ahora. Está cerrando otra cotización y esta queda primera apenas la suelte.';
+    return 'Ya le consulté a despacho. Le llegó ahora el pedido del contenedor y la máquina.';
+  }
+
+  private async pedirChip(telefono: string, tareaId: string, hiloId?: string): Promise<RespuestaBot> {
+    const ref = await this.referencia(tareaId);
+    if (!ref) return this.abrirMenu(telefono, `Esa cotización ya no está.\n${menuGeneral(await this.esElevado(telefono))}`);
+    const quien = await this.conexiones.pg.query<{ nombre: string }>(`SELECT nombre FROM usuario WHERE telefono = $1`, [telefono]);
+    const previa = await this.conexiones.pg.query<{ id: string }>(
+      `SELECT id FROM consulta_chip WHERE tarea_id = $1 AND tecnico_telefono = $2 AND estado = 'pendiente' ORDER BY creado_en DESC LIMIT 1`,
+      [tareaId, telefono],
+    );
+    const consultaId = previa.rows[0]?.id ?? randomUUID();
+    if (!previa.rows[0]) {
+      await this.conexiones.pg.query(
+        `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id) VALUES ($1, $2, $3, $4, $5)`,
+        [consultaId, tareaId, telefono, quien.rows[0]?.nombre ?? 'Técnico', hiloId ?? null],
+      );
+    } else if (hiloId) {
+      await this.conexiones.pg.query(`UPDATE consulta_chip SET hilo_id = $2 WHERE id = $1`, [consultaId, hiloId]);
+    }
+    const almacenes = await this.conexiones.pg.query<{ telefono: string }>(
+      `SELECT telefono FROM usuario WHERE activo AND rol = 'almacen' AND telefono IS NOT NULL AND telefono <> ''`,
+    );
+    const cuerpo = await this.textoPedidosChip();
+    for (const destino of almacenes.rows) {
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes) VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
+        [randomUUID(), tareaId, destino.telefono, cuerpo],
+      );
+    }
+    const aviso = almacenes.rows.length
+      ? 'Pedí el chip a almacén. Cuando manden la foto te digo el celular.'
+      : 'Anoté el pedido, pero no hay un usuario de almacén con WhatsApp para recibir la foto.';
+    if (hiloId) {
+      const menu = await this.menuHilo(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `${ref.linea}\n${aviso}\n${menu.respuesta}` };
+    }
+    return this.dejar(telefono, true, `${ref.linea}\n${aviso}\n${opcionesCot(await this.esElevado(telefono))}`);
+  }
+
+  private async atenderAlmacen(
+    telefono: string,
+    quien: { correo: string; nombre: string },
+    limpio: string,
+    archivo: ArchivoNota | null,
+  ): Promise<RespuestaBot> {
+    if (archivo) return this.leerChip(telefono, quien, archivo);
+    if (/^salir$/i.test(limpio)) return this.menuChips(telefono, 'El pedido sigue abierto. Manda la foto cuando la tengas.');
+    if (/^(menu|menú)$/i.test(limpio) || !limpio) return this.menuChips(telefono);
+    return this.menuChips(telefono, 'No hace falta escribir un número. Manda la foto de la tarjeta o del chip.');
+  }
+
+  private async menuChips(telefono: string, previo = ''): Promise<RespuestaBot> {
+    const pendientes = await this.chipsPendientes();
+    await this.guardarCharla(telefono, 'chip_menu', null, pendientes.map((consulta) => consulta.id), null);
+    const lista = await this.textoPedidosChip();
+    return this.dejar(telefono, true, [previo, lista].filter(Boolean).join('\n'));
+  }
+
+  private async textoPedidosChip(): Promise<string> {
+    const pendientes = await this.chipsPendientes();
+    if (pendientes.length === 0) return 'No hay pedidos de chip. Cuando un técnico pida telemetría, te llega aquí.';
+    const lineas = [];
+    for (const [indice, consulta] of pendientes.entries()) {
+      const ref = await this.referencia(consulta.tarea_id);
+      lineas.push(`${indice + 1}. ${ref?.linea ?? 'Cotización'} · ${consulta.tecnico_nombre}`);
+    }
+    return ['Pedidos de chip:', ...lineas, 'Manda la foto de la tarjeta o del chip. No hace falta escribir un número.'].join('\n');
+  }
+
+  private async chipsPendientes(): Promise<Array<{ id: string; tarea_id: string; tecnico_nombre: string; tecnico_telefono: string; hilo_id: string | null }>> {
+    const filas = await this.conexiones.pg.query<{ id: string; tarea_id: string; tecnico_nombre: string; tecnico_telefono: string; hilo_id: string | null }>(
+      `SELECT id, tarea_id, tecnico_nombre, tecnico_telefono, hilo_id FROM consulta_chip WHERE estado = 'pendiente' ORDER BY creado_en DESC LIMIT 10`,
+    );
+    return filas.rows;
+  }
+
+  private async leerChip(telefono: string, quien: { correo: string; nombre: string }, archivo: ArchivoNota): Promise<RespuestaBot> {
+    const pendientes = await this.chipsPendientes();
+    const consulta = pendientes[0];
+    if (!consulta) return this.dejar(telefono, true, 'No hay un pedido de chip abierto. La foto no se procesó.');
+    const ref = await this.referencia(consulta.tarea_id);
+    const leido = await textoDeImagen(archivo);
+    if (leido == null) return this.dejar(telefono, true, `${ref?.linea ?? 'Esa cotización'}\nGuardé la foto, pero el lector no respondió. Mándala otra vez.`);
+    const candidatos = imeisDeTexto(leido);
+    const fragmentos = fragmentosDeTexto(leido);
+    const catalogo = await this.conexiones.pg.query<{ imei: string; celular: string; estado: string; telemetria: string }>(
+      `SELECT imei, celular, estado, telemetria FROM chip WHERE NOT archivado`,
+    );
+    const resultado = identificarChips(candidatos, catalogo.rows, fragmentos);
+    const primero = chipParaGuardar(resultado.hallados);
+    if (consulta.hilo_id && primero) await guardarChip(this.conexiones.pg, consulta.hilo_id, primero.imei, primero.celular, primero.estado);
+    const esTarjeta = /alai|alaisecure|suma m[oó]vil|8951\d{10,}/i.test(leido);
+    const completo = `${esTarjeta ? 'La foto es una tarjeta de chip.\n' : ''}${textoChip(resultado.hallados, resultado.desconocidos)}`;
+    const paraWhatsapp = resultado.hallados.length === 0 && resultado.desconocidos.length === 0
+      ? 'No pude leer un IMEI en la foto. No hay coincidencia.'
+      : `${esTarjeta ? 'La foto es una tarjeta de chip.\n' : ''}${textoChip(resultado.hallados, resultado.desconocidos, true)}`;
+    const detalle = candidatos.length === 0 && resultado.hallados.length === 0 ? 'No pude leer un IMEI en la foto. No hay coincidencia.' : completo;
+    const cierre = cierreFabricacion(resultado.hallados);
+    const paraTecnico = resultado.hallados.length
+      ? `${ref?.linea ?? 'Tu cotización'}\nAlmacén identificó el chip.\n${paraWhatsapp}\n${cierre}`
+      : `${ref?.linea ?? 'Tu cotización'}\nAlmacén mandó la foto del chip y no hay coincidencia.\n${paraWhatsapp}`;
+    const notaId = randomUUID();
+    const avisoId = randomUUID();
+    const clave = `chips/${consulta.id}/${notaId}`;
+    const nombre = archivo.nombre || 'chip.jpg';
+    const mime = archivo.mime || 'image/jpeg';
+    await new AlmacenCorreo(this.conexiones).guardar(clave, archivo.contenido, mime);
+    await this.conexiones.pg.query(
+      `UPDATE consulta_chip
+       SET estado = 'leido', imei = $2, celular = $3, detalle = $4, leido_en = now()
+       WHERE id = $1`,
+      [consulta.id, resultado.hallados.map((chip) => chip.imei).join(', '), resultado.hallados.map((chip) => chip.celular).join(', '), detalle],
+    );
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime)
+       VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5, $6, $7, $8)`,
+      [notaId, consulta.tarea_id, `Almacén envió la foto del chip.\n${detalle}`, quien.correo, quien.nombre, clave, nombre, mime],
+    );
+    await this.conexiones.pg.query(
+      `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
+       VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
+      [avisoId, consulta.tarea_id, consulta.tecnico_telefono, paraTecnico],
+    );
+    await this.conexiones.pg.query(
+      `INSERT INTO aviso_adjunto (id, aviso_id, clave, mime, nombre, orden) VALUES ($1, $2, $3, $4, $5, 0)`,
+      [randomUUID(), avisoId, clave, mime, nombre],
+    );
+    await this.guardarCharla(telefono, 'chip_menu', null, [], null);
+    return this.dejar(telefono, true, 'Imagen procesada.');
   }
 
   private linea(tarea: { cot: string; cliente: string | null; lugar?: string | null; campana?: boolean; despacho_fecha?: string | null; despacho_hora?: string | null; cita_fecha?: string | null; cita_hora?: string | null }, despacho = false): string {

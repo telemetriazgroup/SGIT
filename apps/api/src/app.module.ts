@@ -7,9 +7,11 @@ import { TareasModule } from './tareas/tareas.module';
 import { IdentidadModule } from './identidad/identidad.module';
 import { PrepararBase } from './preparar-base';
 import { SaludModule } from './salud/salud.module';
+import { ChipsModule } from './chips/chips.module';
+import { ModemsModule } from './modems/modems.module';
 
 @Module({
-  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule],
+  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule, ChipsModule, ModemsModule],
   providers: [
     {
       provide: PrepararBase,

@@ -195,13 +195,99 @@ export class TareasController {
     return tarea;
   }
 
+  @Get('tareas/tecnicos')
+  async tecnicos(@Headers('authorization') autorizacion: string | undefined) {
+    await this.exigirEdicion(autorizacion);
+    return this.tareas.tecnicos();
+  }
+
   @Get('tareas/:id')
   async ficha(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     const usuario = await this.exigir(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     const tarea = await this.tareas.ficha(id);
     if (!tarea) throw new NotFoundException('No está esa tarea.');
+    if (!puedeEditarTarea(usuario.rol) && Array.isArray(tarea.notas)) {
+      tarea.notas = tarea.notas.filter((nota) => !nota.archivado);
+    }
     return tarea;
+  }
+
+  @Post('tareas/:id/hilos')
+  async fijarHilos(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { cantidad?: number },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.fijarHilos(id, Number(cuerpo?.cantidad));
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/hilos/:hiloId')
+  async corregirHilo(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('hiloId') hiloId: string,
+    @Body() cuerpo: { contenedor?: string; maquina?: string; imei?: string },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.corregirHilo(id, hiloId, cuerpo ?? {}, usuario);
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/hilos/:hiloId/foto')
+  async regularizarFoto(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('hiloId') hiloId: string,
+    @Body() cuerpo: { clase?: string; nombre?: string; mime?: string; contenido?: string },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.regularizarFoto(id, hiloId, usuario, cuerpo ?? {});
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/transferir')
+  async transferir(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { correo?: string },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.transferir(id, usuario, cuerpo?.correo ?? '');
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/notas/:notaId/archivar')
+  async archivarNota(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('notaId') notaId: string,
+    @Body() cuerpo: { archivado?: boolean },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    if (typeof cuerpo?.archivado !== 'boolean') throw new BadRequestException('Indica si la nota queda archivada.');
+    await this.tareas.archivarNota(id, notaId, cuerpo.archivado);
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/notas/:notaId/editar')
+  async editarNota(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('notaId') notaId: string,
+    @Body() cuerpo: { texto?: string },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.editarNota(id, notaId, cuerpo?.texto ?? '');
+    return this.fichaDe(id);
   }
 
   @Post('tareas/:id/campana')

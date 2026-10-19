@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import type { Conexiones } from '../conexiones';
 import { leerConfiguracion, type LecturaOdoo } from '../configuracion';
+import { seriesDe } from '../chips/orden';
 import { autenticar, buscar, camposDe, presentes } from './cliente';
 import {
   armarTarea,
@@ -336,6 +337,208 @@ export class OdooServicio {
     return resultado.rows[0] ?? null;
   }
 
+  async inventarioDe(series: string[]): Promise<{ lotes: Array<{ id: number; serie: string; producto: string; cantidad: number }>; lineas: Array<{ loteId: number; fecha: string; referencia: string; producto: string; desde: string; hacia: string; cantidad: number }>; aviso: string | null }> {
+    const config = await this.config();
+    if (!config) throw new BadRequestException('Odoo no está conectado.');
+    const uid = await autenticar(config);
+    const metaLote = await camposDe(config, uid, 'stock.lot');
+    const camposLote = presentes(metaLote, ['name', 'product_id', 'product_qty']);
+    const lotes = [];
+    for (const grupo of trozos(series, 80)) {
+      const filas = await buscar(config, uid, 'stock.lot', [['name', 'in', grupo]], camposLote, 500);
+      for (const fila of filas) {
+        lotes.push({
+          id: Number(fila.id),
+          serie: String(fila.name ?? ''),
+          producto: textoRelacion(fila.product_id),
+          cantidad: Number(fila.product_qty ?? 0),
+        });
+      }
+    }
+    const metaLinea = await camposDe(config, uid, 'stock.move.line');
+    const camposLinea = presentes(metaLinea, ['date', 'reference', 'product_id', 'lot_id', 'location_id', 'location_dest_id', 'qty_done', 'quantity']);
+    const lineas = [];
+    for (const grupo of trozos(lotes.map((lote) => lote.id), 80)) {
+      const filas = await buscar(config, uid, 'stock.move.line', [['lot_id', 'in', grupo]], camposLinea, 500);
+      for (const fila of filas) {
+        lineas.push({
+          loteId: idRelacion(fila.lot_id),
+          fecha: String(fila.date ?? ''),
+          referencia: String(fila.reference ?? ''),
+          producto: textoRelacion(fila.product_id),
+          desde: textoRelacion(fila.location_id),
+          hacia: textoRelacion(fila.location_dest_id),
+          cantidad: Number(fila.qty_done ?? fila.quantity ?? 0),
+        });
+      }
+    }
+    return { lotes, lineas, aviso: null };
+  }
+
+  async ordenDe(nombre: string): Promise<{
+    id: number;
+    nombre: string;
+    estado: string;
+    producto: string;
+    cantidad: number;
+    produciendo: number;
+    inicio: string;
+    fin: string;
+    responsable: string;
+    lista: string;
+    serie: string;
+    componentes: Array<{ producto: string; porConsumir: number; consumido: number; unidad: string; desde: string; serie: string }>;
+    notas: Array<{ fecha: string; autor: string; texto: string; imagenes: Array<{ nombre: string; mime: string; datos: Buffer }> }>;
+  } | null> {
+    const config = await this.config();
+    if (!config) throw new BadRequestException('Odoo no está conectado.');
+    const uid = await autenticar(config);
+    const meta = await camposDe(config, uid, 'mrp.production');
+    const campos = presentes(meta, ['name', 'state', 'product_id', 'product_qty', 'qty_producing', 'date_start', 'date_finished', 'user_id', 'bom_id', 'lot_producing_id', 'move_raw_ids']);
+    const filas = await buscar(config, uid, 'mrp.production', [['name', '=', nombre]], campos, 1);
+    const orden = filas[0];
+    if (!orden) return null;
+    const moveIds = Array.isArray(orden.move_raw_ids) ? orden.move_raw_ids.map(Number).filter((id) => id > 0) : [];
+    const metaMove = await camposDe(config, uid, 'stock.move');
+    const camposMove = presentes(metaMove, ['product_id', 'product_uom_qty', 'quantity', 'product_uom', 'location_id', 'picked', 'lot_ids']);
+    const moves = moveIds.length ? await buscar(config, uid, 'stock.move', [['id', 'in', moveIds]], camposMove, 40) : [];
+    const loteIds = moves.flatMap((move) => (Array.isArray(move.lot_ids) ? move.lot_ids.map(Number).filter((id) => id > 0) : []));
+    const nombres = await this.nombresDeLote(config, uid, loteIds);
+    const notas = await buscar(
+      config,
+      uid,
+      'mail.message',
+      [['model', '=', 'mrp.production'], ['res_id', '=', orden.id], ['message_type', 'in', ['comment', 'email', 'notification']]],
+      ['date', 'author_id', 'body', 'attachment_ids'],
+      30,
+    );
+    const imagenes = await this.imagenesDe(config, uid, notas);
+    return {
+      id: Number(orden.id),
+      nombre: String(orden.name ?? nombre),
+      estado: String(orden.state ?? ''),
+      producto: textoRelacion(orden.product_id),
+      cantidad: Number(orden.product_qty ?? 0),
+      produciendo: Number(orden.qty_producing ?? 0),
+      inicio: String(orden.date_start ?? ''),
+      fin: String(orden.date_finished ?? ''),
+      responsable: textoRelacion(orden.user_id),
+      lista: textoRelacion(orden.bom_id),
+      serie: textoRelacion(orden.lot_producing_id),
+      componentes: moves.map((move) => ({
+        producto: textoRelacion(move.product_id),
+        porConsumir: Number(move.product_uom_qty ?? 0),
+        consumido: Number(move.quantity ?? 0),
+        unidad: textoRelacion(move.product_uom),
+        desde: textoRelacion(move.location_id),
+        serie: seriesDe(move.lot_ids, nombres),
+      })),
+      notas: notas.map((nota) => ({
+        fecha: String(nota.date ?? ''),
+        autor: textoRelacion(nota.author_id),
+        texto: String(nota.body ?? ''),
+        imagenes: (Array.isArray(nota.attachment_ids) ? nota.attachment_ids.map(Number) : [])
+          .map((id) => imagenes.get(id))
+          .filter((imagen): imagen is { nombre: string; mime: string; datos: Buffer } => Boolean(imagen)),
+      })),
+    };
+  }
+
+  async modemsDe(): Promise<{
+    producto: string;
+    codigo: string;
+    existencia: number;
+    equipos: Array<{
+      odooId: number;
+      serie: string;
+      cantidad: number;
+      movimientos: Array<{ odooId: number; fecha: string; referencia: string; desde: string; hacia: string; cantidad: number; estado: string }>;
+    }>;
+    chipPorOrden: Record<string, string>;
+    aviso: string;
+  }> {
+    const config = await this.config();
+    if (!config) throw new BadRequestException('Odoo no está conectado.');
+    const uid = await autenticar(config);
+    const metaProducto = await camposDe(config, uid, 'product.product');
+    const productos = await buscar(config, uid, 'product.product', [['default_code', '=', 'INDND7509']], presentes(metaProducto, ['name', 'default_code', 'qty_available']), 1);
+    const producto = productos[0];
+    if (!producto) throw new BadRequestException('Odoo no tiene el producto USR-G786-G (INDND7509).');
+    const productoId = Number(producto.id);
+    const metaLote = await camposDe(config, uid, 'stock.lot');
+    const lotes = await buscar(config, uid, 'stock.lot', [['product_id', '=', productoId]], presentes(metaLote, ['name', 'product_qty']), 1000);
+    const metaLinea = await camposDe(config, uid, 'stock.move.line');
+    const lineas = await buscar(
+      config,
+      uid,
+      'stock.move.line',
+      [['product_id', '=', productoId]],
+      presentes(metaLinea, ['date', 'reference', 'lot_id', 'location_id', 'location_dest_id', 'qty_done', 'quantity', 'state']),
+      1000,
+    );
+    const porLote = new Map<number, Array<{ odooId: number; fecha: string; referencia: string; desde: string; hacia: string; cantidad: number; estado: string }>>();
+    for (const linea of lineas) {
+      const loteId = idRelacion(linea.lot_id);
+      if (!loteId) continue;
+      const lista = porLote.get(loteId) ?? [];
+      lista.push({
+        odooId: Number(linea.id),
+        fecha: String(linea.date ?? ''),
+        referencia: String(linea.reference ?? ''),
+        desde: textoRelacion(linea.location_id),
+        hacia: textoRelacion(linea.location_dest_id),
+        cantidad: Number(linea.qty_done ?? linea.quantity ?? 0),
+        estado: String(linea.state ?? ''),
+      });
+      porLote.set(loteId, lista);
+    }
+    const ordenes = [...new Set(lineas.map((linea) => String(linea.reference ?? '')).filter((referencia) => referencia.includes('/MO/')))];
+    const chipPorOrden: Record<string, string> = {};
+    if (ordenes.length) {
+      const fabricaciones = await buscar(config, uid, 'mrp.production', [['name', 'in', ordenes]], ['name', 'lot_producing_id'], 200);
+      for (const fabricacion of fabricaciones) chipPorOrden[String(fabricacion.name ?? '')] = textoRelacion(fabricacion.lot_producing_id);
+    }
+    return {
+      producto: String(producto.name ?? '').replace(/\s+/g, ' ').trim(),
+      codigo: String(producto.default_code ?? 'INDND7509'),
+      existencia: Number(producto.qty_available ?? 0),
+      equipos: lotes.map((lote) => ({
+        odooId: Number(lote.id),
+        serie: String(lote.name ?? ''),
+        cantidad: Number(lote.product_qty ?? 0),
+        movimientos: porLote.get(Number(lote.id)) ?? [],
+      })),
+      chipPorOrden,
+      aviso: lotes.length >= 1000 || lineas.length >= 1000 ? 'La lectura llegó al tope de 1000. Puede faltar una parte.' : '',
+    };
+  }
+
+  private async nombresDeLote(config: LecturaOdoo, uid: number, ids: number[]): Promise<Map<number, string>> {
+    const nombres = new Map<number, string>();
+    const unicos = [...new Set(ids)];
+    for (const grupo of trozos(unicos, 80)) {
+      const filas = await buscar(config, uid, 'stock.lot', [['id', 'in', grupo]], ['name'], 80);
+      for (const fila of filas) nombres.set(Number(fila.id), String(fila.name ?? ''));
+    }
+    return nombres;
+  }
+
+  private async imagenesDe(config: LecturaOdoo, uid: number, notas: Record<string, unknown>[]): Promise<Map<number, { nombre: string; mime: string; datos: Buffer }>> {
+    const ids = notas.flatMap((nota) => (Array.isArray(nota.attachment_ids) ? nota.attachment_ids.map(Number) : [])).filter((id) => id > 0);
+    const mapa = new Map<number, { nombre: string; mime: string; datos: Buffer }>();
+    for (const grupo of trozos(ids, 1)) {
+      const filas = await buscar(config, uid, 'ir.attachment', [['id', 'in', grupo]], ['name', 'mimetype', 'datas', 'file_size'], 1, 60_000);
+      for (const fila of filas) {
+        const mime = String(fila.mimetype ?? '');
+        const peso = Number(fila.file_size ?? 0);
+        const datos = typeof fila.datas === 'string' ? fila.datas : '';
+        if (!mime.startsWith('image/') || !datos || peso > 3_500_000) continue;
+        mapa.set(Number(fila.id), { nombre: String(fila.name ?? 'imagen'), mime, datos: Buffer.from(datos, 'base64') });
+      }
+    }
+    return mapa;
+  }
+
   private async habilitada(tareaId: string): Promise<boolean> {
     const resultado = await this.conexiones.pg.query(`SELECT 1 FROM habilitado WHERE clase = 'tarea' AND clave = $1`, [tareaId]);
     return (resultado.rowCount ?? 0) > 0;
@@ -441,6 +644,21 @@ export class OdooServicio {
       [tareaId, clase, aviso.slice(0, 400)],
     );
   }
+}
+
+function textoRelacion(valor: unknown): string {
+  return Array.isArray(valor) ? String(valor[1] ?? '') : '';
+}
+
+function idRelacion(valor: unknown): number {
+  const id = Array.isArray(valor) ? Number(valor[0]) : 0;
+  return Number.isInteger(id) ? id : 0;
+}
+
+function trozos<T>(lista: T[], tamano: number): T[][] {
+  const grupos: T[][] = [];
+  for (let indice = 0; indice < lista.length; indice += tamano) grupos.push(lista.slice(indice, indice + tamano));
+  return grupos;
 }
 
 export function armar(entrada: {

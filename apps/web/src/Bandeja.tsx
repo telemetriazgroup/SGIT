@@ -3,6 +3,8 @@ import type { SesionPublica } from '@sgit/shared';
 import { PanelBot } from './Bot';
 import { MiCuenta, PanelEquipo } from './Equipo';
 import { Logo } from './Logo';
+import { PanelChips } from './Chips';
+import { PanelModems } from './Modems';
 import { PanelOdoo } from './Odoo';
 import { PanelDiccionario, PanelTareas } from './Tareas';
 
@@ -98,6 +100,7 @@ function etiquetaRol(rol: string): string {
   if (rol === 'administrador') return 'Administrador';
   if (rol === 'tecnico') return 'Técnico';
   if (rol === 'despacho') return 'Despacho';
+  if (rol === 'almacen') return 'Almacén';
   return 'Operador';
 }
 
@@ -121,7 +124,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [paginas, setPaginas] = useState(1);
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'odoo' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'odoo' | 'chips' | 'modems' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
   const [redactando, setRedactando] = useState(false);
   const [notaProceso, setNotaProceso] = useState<string | null>(null);
   const [tareaAbierta, setTareaAbierta] = useState<string | null>(null);
@@ -455,6 +458,16 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
               Cuentas
             </button>
           ) : null}
+          {editar ? (
+            <>
+              <button type="button" className={vista === 'chips' ? 'activo' : ''} onClick={() => { setVista('chips'); setHilo(null); }}>
+                Chips
+              </button>
+              <button type="button" className={vista === 'modems' ? 'activo' : ''} onClick={() => { setVista('modems'); setHilo(null); }}>
+                M2M
+              </button>
+            </>
+          ) : null}
           {sesion.usuario.rol === 'superusuario' ? (
             <button type="button" className={vista === 'odoo' ? 'activo' : ''} onClick={() => { setVista('odoo'); setHilo(null); }}>
               Odoo
@@ -528,9 +541,13 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             </section>
           ) : null}
           {vista === 'tareas' ? (
-            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} />
+            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} />
           ) : vista === 'equipo' ? (
             <PanelEquipo apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'chips' ? (
+            <PanelChips apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'modems' ? (
+            <PanelModems apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'odoo' ? (
             <PanelOdoo apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'cuenta' ? (

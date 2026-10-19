@@ -27,6 +27,7 @@ export async function buscar(
   dominio: unknown[],
   campos: string[],
   limite: number,
+  esperaMs = ESPERA_MS,
 ): Promise<Record<string, unknown>[]> {
   if (dominio.length === 0) return [];
   const filas = await rpc(config, 'object', 'execute_kw', [
@@ -37,7 +38,7 @@ export async function buscar(
     'search_read',
     [dominio],
     { fields: campos, limit: limite, order: 'id desc' },
-  ]);
+  ], esperaMs);
   if (!Array.isArray(filas)) return [];
   return filas.filter((fila): fila is Record<string, unknown> => Boolean(fila) && typeof fila === 'object');
 }
@@ -50,9 +51,9 @@ export function limpiarCache(): void {
   cache.clear();
 }
 
-async function rpc(config: LecturaOdoo, servicio: string, metodo: string, args: unknown[]): Promise<unknown> {
+async function rpc(config: LecturaOdoo, servicio: string, metodo: string, args: unknown[], esperaMs = ESPERA_MS): Promise<unknown> {
   const control = new AbortController();
-  const reloj = setTimeout(() => control.abort(), ESPERA_MS);
+  const reloj = setTimeout(() => control.abort(), esperaMs);
   try {
     const respuesta = await fetch(`${config.url}/jsonrpc`, {
       method: 'POST',

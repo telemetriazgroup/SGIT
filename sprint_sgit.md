@@ -31,7 +31,7 @@ El correo de referencia es [docs/ejemplos/correo-cot-10020263623.md](docs/ejempl
 | 5 | 2 Bot | El laboratorio recibe el aviso y responde por el chat |
 | 6 | 2 Recordatorios | Despacho se consulta solo si no hay avance, y el piloto de bandeja puede encenderse |
 | 7 | 3 Odoo lectura | La ficha muestra venta y ticket, o el conflicto, aunque Odoo no responda |
-| 8 | 4 Atenciones | De la tarea salen N atenciones, con motivo si N cambia |
+| 8 | 4 Hilos | De la cotización salen N hilos. Uno queda listo con despacho validado y, si instala, un chip disponible |
 | 9 | 4 Fabricación | Una atención crea una sola MO en staging y se imprime |
 | 10 | 4 Almacén | Con fotos, o con “no fue necesario”, la atención queda lista para instalar |
 | 11 | 5 Instalación | Las evidencias de campo bloquean el paso si faltan |
@@ -54,7 +54,7 @@ Después del sprint 6 se puede pilotear el buzón real en un rango de fechas cor
 | Bitácora y recordatorios | 4 y 6 | `prueba.bitacora` |
 | Notificaciones y bot | 5 y 6 | `prueba.bot` |
 | Lectura Odoo | 7 | `prueba.odoo.lectura` |
-| Atenciones | 8 | `prueba.atenciones` |
+| Hilos de telemetría | 8 | `prueba.hilos` y `prueba.lectura-chip` |
 | Fabricación | 9 y 10 | `prueba.fabricacion` |
 | Instalación | 11 | `prueba.instalacion` |
 | Prueba de conexión | 12 | `prueba.conexion` |
@@ -409,40 +409,71 @@ Doble del cliente en la suite automática, y un caso contra staging en la prueba
 
 ---
 
-## Sprint 8 — Atenciones
+## Sprint 8 — Hilos
 
-**Entregable.** En la tarea, “Atender telemetría” propone tantas atenciones como dijo el bloque ZTRACK. El operador confirma. Si abre una cantidad distinta, tiene que escribir el motivo. Todavía no pide materiales.
+**Entregable.** El hilo reemplaza a la atención. De la cotización salen N hilos, uno por telemetría. El técnico confirma el número por WhatsApp. Despacho aporta el contenedor y la máquina. Si el hilo instala, almacén aporta el chip. El hilo queda listo para la orden de fabricación solo cuando despacho está validado y, si instala, el chip está disponible. Un chip ocupado se registra y el hilo sigue abierto: el técnico pide otro o regulariza la foto. El contenedor y la máquina se regularizan escritos o por imagen.
 
 **Historias.** H-40.
 
-**Proceso.** Atenciones.
+**Proceso.** Hilos de telemetría.
 
-### Pruebas — `prueba.atenciones`
+El sistema ya consulta a despacho las cotizaciones pendientes. Si hay más de una telemetría, le dice cuántas son y pide la foto del contenedor y de la máquina del primer equipo, y después del siguiente. Si un equipo no trae foto ni texto, queda pendiente y no se salta.
+
+Cuando el técnico toma la cotización, entra a Telemetrías. Si no hay hilos, escribe el número: 1 abre un hilo y 3 abren tres. Si a un hilo le falta el dato de despacho, la consulta sale en ese momento y no espera el ciclo automático. En cada hilo el menú es:
+
+1. Validar lo que envió despacho.
+2. Pedir ahora el contenedor y la máquina.
+3. Pedir chip a almacén. Si el anterior está ocupado, pide otro.
+4. Esta telemetría no se instala.
+5. Volver a los hilos.
+6. Regularizar el chip. Se escribe el IMEI o se manda la foto.
+7. Regularizar el contenedor. Se escribe o se manda la foto.
+8. Regularizar la máquina. Se escribe o se manda la foto.
+9. Pedir otra imagen a almacén y a despacho. El mensaje recalca que el área de desarrollo solicita otra imagen más concluyente.
+
+Almacén, al mandar la foto, recibe solo “Imagen procesada.” El resultado le llega al técnico. Si ya hay un celular, WhatsApp no lista las otras lecturas; esas quedan en el seguimiento. Si el chip está ocupado, el aviso dice que no se envía a una orden de fabricación.
+
+La cantidad de hilos se corrige en la ficha, en Telemetrías, entre 1 y 20. Subir agrega hilos. Bajar quita solo los últimos que no están listos y no tienen chip. En la misma ficha se corrigen el contenedor, la máquina y el IMEI, con la misma regla del chip ocupado. La ficha también permite transferir la tarea y archivar o editar un seguimiento.
+
+### Pruebas — `prueba.hilos` y `prueba.lectura-chip`
 
 | Caso | Resultado |
 | --- | --- |
-| Cantidad leída = 1 | Se propone una atención |
-| Confirmar esa una | Nace en `por_iniciar`. La tarea pasa a `en_atencion` |
-| Pedir 2 sin motivo | Se rechaza |
-| Pedir 2 con motivo | Nacen dos atenciones y el motivo queda en la bitácora |
-| Cantidad del correo nula | No se proponen atenciones hasta que el operador escriba el número y el motivo |
-| Cada atención | Tiene secuencia propia dentro de la tarea |
+| Hay 2 telemetrías | Despacho oye que son 2 y se le pide la foto del primer equipo, luego la del segundo |
+| El técnico escribe 3 y la cotización no tiene hilos | Nacen 3 hilos y la cantidad de la tarea queda en 3 |
+| Un hilo nuevo no tiene contenedor ni máquina | Despacho recibe el pedido en ese momento |
+| Despacho validado y la telemetría no se instala | El hilo queda listo |
+| Despacho validado, se instala y no hay chip | Sigue abierto. Falta el chip |
+| Despacho validado y el chip está disponible | Queda listo. La orden de fabricación es el siguiente módulo |
+| El chip leído está ocupado | Queda registrado y el hilo sigue abierto. El técnico pide otro o regulariza la foto |
+| La foto ya identificó un celular | WhatsApp muestra ese IMEI y ese celular. Las otras lecturas quedan en el seguimiento |
+| En la ficha se baja la cantidad y un hilo alto está listo o tiene chip | Se rechaza y ese hilo sigue |
+| Se corrige el IMEI | Se busca el celular. Si no está en los chips cargados, no se guarda |
+| La imagen no es concluyente | Se vuelve a pedir a almacén y a despacho, con la frase del área de desarrollo |
+| Almacén manda la foto | Almacén recibe “Imagen procesada.” El resultado le llega al técnico |
 
 ### Prueba guiada
 
-1. Sobre la tarea del fixture, abrir una atención y verla en `por_iniciar`.
-2. Intentar abrir una segunda sin motivo y ver el rechazo.
-3. Abrir la segunda con el motivo “el correo decía una y despacho confirmó dos” y ver ambas en la ficha.
+1. En una cotización tomada, abrir Telemetrías y confirmar el número de hilos.
+2. Si falta el contenedor o la máquina, ver que despacho recibe el pedido en ese momento.
+3. Validar despacho y marcar si esa telemetría se instala.
+4. Con un chip ocupado, ver que queda registrado y que el hilo no queda listo.
+5. En la ficha, corregir la cantidad y el contenedor, la máquina o el IMEI.
+6. Pedir otra imagen y ver que almacén y despacho reciben el pedido de una imagen más concluyente.
 
-**Queda fuera.** Listas de materiales y Odoo de fabricación.
+**Queda fuera.** La orden de fabricación, las listas de materiales y las fotos de almacén. Cambiar la cantidad no pide un motivo: se rechaza solo si el hilo que se quitaría ya está listo o ya tiene chip.
 
-**Sale cuando.** El equipo distingue la tarea (la COT) de cada telemetría que va a instalar.
+**Sale cuando.** El equipo distingue la cotización de cada telemetría, y un hilo listo tiene despacho validado y, si instala, un chip que no está ocupado.
+
+**Cierre — 19 de octubre de 2026.** El hilo reemplaza a la atención. `prueba.hilos` y `prueba.lectura-chip` quedaron verdes. En la ficha de la COT `10020263584` se registró el chip ocupado `8951029078500034086`, celular `919863833`, y el hilo 1 siguió abierto. El contenedor `ZGRU5333709` y la máquina `E0GM015342` se mantuvieron. Una foto sin IMEI no borró ese registro. La cantidad, el IMEI, el contenedor y la máquina se regularizan en la ficha o por WhatsApp, por texto o por imagen. La orden de fabricación no se crea aquí. Con esto se abre el sprint 9.
 
 ---
 
 ## Sprint 9 — Orden de fabricación
 
-**Entregable.** En una atención el operador elige la lista de materiales, ajusta cantidades, crea la fabricación en Odoo staging y descarga el PDF para firmar. Pulsar dos veces deja una sola MO.
+**Inicio — 19 de octubre de 2026.** Se abre desde un hilo listo. Un chip ocupado no entra.
+
+**Entregable.** En un hilo listo el operador elige la lista de materiales, ajusta cantidades, crea la fabricación en Odoo staging y descarga el PDF para firmar. Pulsar dos veces deja una sola MO. El hilo ocupa el lugar de la atención.
 
 **Historias.** H-41, H-42.
 
@@ -697,7 +728,7 @@ Una persona que no escribió el código ejecuta, en laboratorio:
 | 5 | Aviso y respuesta por el chat de laboratorio |
 | 6 | Reglas de 08:00 a 18:00 y luz verde al piloto acotado |
 | 7 | Estado de venta y ticket dentro de la ficha |
-| 8 | Una atención por cada telemetría |
+| 8 | Un hilo por telemetría, listo solo con despacho y, si instala, un chip disponible |
 | 9 | MO impresa, una sola, en staging |
 | 10 | Materiales recibidos o declarados innecesarios |
 | 11 | Expediente fotográfico de la instalación |

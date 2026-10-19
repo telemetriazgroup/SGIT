@@ -64,7 +64,7 @@ Recorrer con el número de laboratorio: tarea nueva → consulta a despacho simu
 
 | Id | Historia | Criterio |
 | --- | --- | --- |
-| H-40 | Como miembro quiero abrir las atenciones que dice el correo | Para cantidad 1 se propone una atención. Puedo abrir 2 si dejo motivo |
+| H-40 | Como técnico quiero un hilo por telemetría | Confirmo el número. Cada hilo queda listo con despacho validado y, si se instala, un chip disponible. Un chip ocupado se registra y el hilo sigue abierto. Puedo pedir otro o regularizar el chip, el contenedor y la máquina por texto o por foto |
 | H-41 | Como miembro quiero crear la MO con los materiales que elegí | Las cantidades confirmadas son las que recibe Odoo. El id queda en la atención |
 | H-42 | Como miembro no quiero duplicar la MO | Dos confirmaciones seguidas dejan un solo `odooMoId` |
 | H-43 | Como miembro quiero la constancia firmada | Sin foto de la MO no paso a espera de almacén. Sin foto de recepción no confirmo recibidos |

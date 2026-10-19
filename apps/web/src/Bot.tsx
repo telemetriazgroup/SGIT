@@ -300,7 +300,7 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
                   placeholder="51900000000"
                   onChange={(evento) => setTelefonos((actual) => ({ ...actual, [miembro.correo]: evento.target.value }))}
                 />
-                <em>{habilitado ? (miembro.rol === 'tecnico' ? 'Habilitado · recibe tareas' : miembro.rol === 'despacho' ? 'Habilitado · consulta de despacho' : 'Habilitado') : 'Sin número'}</em>
+                <em>{habilitado ? (miembro.rol === 'tecnico' ? 'Habilitado · recibe tareas' : miembro.rol === 'despacho' ? 'Habilitado · consulta de despacho' : miembro.rol === 'almacen' ? 'Habilitado · entrega chips' : 'Habilitado') : 'Sin número'}</em>
                 <button type="submit">Guardar</button>
               </form>
             </li>
@@ -403,6 +403,7 @@ function etiquetaRol(rol: string): string {
   if (rol === 'administrador') return 'Administrador';
   if (rol === 'tecnico') return 'Técnico';
   if (rol === 'despacho') return 'Despacho';
+  if (rol === 'almacen') return 'Almacén';
   return 'Operador';
 }
 

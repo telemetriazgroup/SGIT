@@ -51,9 +51,9 @@ Si necesitan esperar, marcan validación y “recuérdame en 4 horas”. A esa h
 
 ## 4. Atender la telemetría
 
-El miembro abre “Atender telemetría”. El correo dice 1 unidad; confirma 1 atención. Si el correo hubiera dicho 2, podría abrir las dos y decidir en cada una si lleva MO.
+El técnico abre Telemetrías y confirma el número. Una telemetría abre un hilo y tres abren tres. En cada hilo valida lo que mandó despacho y dice si se instala. Si se instala, almacén manda la foto del chip. El hilo queda listo cuando despacho está validado y, si instala, el chip está disponible. Un chip ocupado no entra.
 
-En esta atención hacen falta materiales:
+Cuando el hilo está listo, la orden de fabricación pide materiales:
 
 1. Elige la lista de instalación y deja transformador, cable, kit y enchufe según lo que realmente va a pedir (el correo de almacén describe el despacho del contenedor; la MO de telemetría es la lista de **esta** instalación, no una copia ciega de ese párrafo).
 2. SGIT crea la fabricación en Odoo y abre el PDF.

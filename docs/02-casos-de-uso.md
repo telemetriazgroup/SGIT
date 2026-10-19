@@ -60,7 +60,7 @@ A01 atiende N telemetrías ── A07 crea MO y materiales ┤
 | UC-15 | Adjuntar una imagen de referencia | A01 | 2 |
 | UC-16 | Pasar a validación y pedir recordatorio en N horas | A01 | 2 |
 | UC-17 | Registrar un incidente sobre una tarea | A01 | 2 |
-| UC-18 | Abrir atenciones de telemetría | A01 | 4 |
+| UC-18 | Abrir hilos de telemetría | A01 | 4 |
 | UC-19 | Crear una orden de fabricación y elegir materiales | A01, A07 | 4 |
 | UC-20 | Imprimir la MO y guardar la foto firmada | A01 | 4 |
 | UC-21 | Registrar la respuesta de almacén | A01 | 4 |
@@ -222,14 +222,15 @@ A la hora pedida en una validación (“recuérdame en 4 horas”), el bot vuelv
 
 Tipos previstos: despacho, técnica, almacén, transporte, instalación, plataforma, otro.
 
-## UC-18 Abrir atenciones
+## UC-18 Abrir hilos
 
 **Flujo.**
 
-1. En la tarea, “Atender telemetría”.
-2. El sistema propone N atenciones según la cantidad leída en ZTRACK (en el ejemplo, 1).
-3. El miembro confirma cuántas abre. Puede ser menos o más que el texto si la operación real difiere, y el motivo queda anotado.
-4. Cada atención nace en `por_iniciar` y lleva su propio código, máquina, chip y cierre.
+1. En WhatsApp, dentro de la cotización, Telemetrías.
+2. El técnico confirma cuántas telemetrías son. Una abre un hilo y tres abren tres.
+3. Cada hilo pide a despacho el contenedor y la máquina. Si se instala, pide el chip a almacén.
+4. Queda listo para la orden de fabricación cuando despacho está validado y, si instala, el chip está disponible. Un chip ocupado no se guarda.
+5. La cantidad se corrige en la ficha. El IMEI, el contenedor y la máquina se corrigen en la ficha o por WhatsApp.
 
 ## UC-19 a UC-22 Materiales
 
