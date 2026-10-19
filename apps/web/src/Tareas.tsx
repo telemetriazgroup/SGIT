@@ -15,6 +15,10 @@ type TareaLista = {
   cots?: string[];
   referencias?: string[];
   habilitada?: boolean;
+  campana?: boolean;
+  locales?: number;
+  despacho_fecha?: string | null;
+  despacho_hora?: string | null;
 };
 
 type Momento = {
@@ -58,7 +62,66 @@ type Tarea = TareaLista & {
     consulta?: string | null;
   } | null;
   movimientos?: Array<{ id: string; tipo: string; actor: string; detalle: string; creado_en: string }>;
+  odoo?: { venta: VistaOdoo; ticket: VistaOdoo; cambios?: CambioOdoo[] } | null;
+  campana?: boolean;
+  tiendas?: TiendaCampana[];
+  servicios?: ServicioCampana[];
   borrador?: { codigo: string; maquina: string; autor_nombre: string } | null;
+};
+
+type CopiaOdoo = {
+  nombre: string;
+  cliente: string;
+  estado: string;
+  factura: string;
+  entrega: string;
+  total: string;
+  nota: string;
+  lineas: Array<{ nombre: string; producto: string; tipo?: string; equipo?: string; cantidad: number | null; entregada: number | null; facturada: number | null; precio?: string; descuento?: string; importe?: string }>;
+  notas: Array<{ fecha: string; autor: string; texto: string }>;
+  ficha?: Array<{ nombre: string; valor: string; lado: 'izq' | 'der' }>;
+  pasos?: string[];
+  paso?: string;
+  cinta?: string;
+};
+
+type TiendaCampana = {
+  id: string;
+  orden: number | null;
+  cadena: string;
+  nombre: string;
+  contacto: string;
+  celular: string;
+  entrega_fecha: string | null;
+  entrega_hora: string;
+  status: string;
+  tamano: string;
+  direccion: string;
+  mapa: string;
+  estado: string;
+  codigo_equipo: string | null;
+  odoo_nombre: string;
+  odoo_estado: string;
+  notas?: Array<{ id: string; tipo: string; texto: string; autor_nombre: string; creado_en: string }>;
+};
+
+type ServicioCampana = { odoo_id: number; nombre: string; estado: string; tienda_id: string | null };
+
+type CambioOdoo = {
+  clase: 'venta' | 'ticket';
+  texto: string;
+  detalle: Array<{ campo: string; antes: string; despues: string }>;
+  creado_en: string;
+};
+
+type VistaOdoo = {
+  vinculo: 'unico' | 'sin_vinculo' | 'ambiguo';
+  odoo_id: number | null;
+  estado: string | null;
+  candidatos: Array<{ id: number; estado: string; nombre?: string }>;
+  copia: CopiaOdoo | null;
+  aviso: string | null;
+  leido_en: string | null;
 };
 
 type NotaBitacora = {
@@ -169,6 +232,7 @@ export function PanelTareas({
   const [consulta, setConsulta] = useState('');
   const [cola, setCola] = useState<Cola>('por_atender');
   const [vista, setVista] = useState<'abiertas' | 'resueltas'>('abiertas');
+  const [hoja, setHoja] = useState<'tarea' | 'odoo'>('tarea');
   const [respuesta, setRespuesta] = useState('');
   const [moviendo, setMoviendo] = useState<string | null>(null);
   const pedido = useRef(0);
@@ -260,6 +324,7 @@ export function PanelTareas({
   }
 
   async function abrir(id: string) {
+    setHoja('tarea');
     setFicha(await pedir<Tarea>(apiUrl, token, `/tareas/${id}`));
   }
 
@@ -459,6 +524,48 @@ export function PanelTareas({
         <h2>COT {cotVisible(ficha.cot, ficha.cots)}</h2>
         <p className="estado-tarea">{etiquetaEstado(ficha.estado)}</p>
         {aviso ? <p className="error">{aviso}</p> : null}
+        <div className="fichas-tabs" role="tablist">
+          <button type="button" role="tab" aria-selected={hoja === 'tarea'} className={hoja === 'tarea' ? 'activo' : ''} onClick={() => setHoja('tarea')}>
+            Seguimiento
+          </button>
+          <button type="button" role="tab" aria-selected={hoja === 'odoo'} className={hoja === 'odoo' ? 'activo' : ''} onClick={() => setHoja('odoo')}>
+            Odoo
+          </button>
+        </div>
+        {hoja === 'odoo' ? (
+          <HojaOdoo
+            ficha={ficha}
+            editar={editar}
+            onActualizar={() => {
+              void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/odoo/actualizar`, { method: 'POST' })
+                .then(setFicha)
+                .catch((error: unknown) => setAviso(texto(error)));
+            }}
+            elegir={(clase, odooId) => {
+              void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/odoo/vincular`, {
+                method: 'POST',
+                body: JSON.stringify({ clase, odooId }),
+              })
+                .then(setFicha)
+                .catch((error: unknown) => setAviso(texto(error)));
+            }}
+          />
+        ) : null}
+        {hoja === 'tarea' ? (
+        <>
+        {editar && !ficha.campana ? (
+          <button
+            type="button"
+            onClick={() => {
+              void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/campana`, { method: 'POST' })
+                .then(setFicha)
+                .catch((error: unknown) => setAviso(texto(error)));
+            }}
+          >
+            Pasar a campaña
+          </button>
+        ) : null}
+        {ficha.campana ? <TiendasCampana apiUrl={apiUrl} token={token} ficha={ficha} editar={editar} alGuardar={setFicha} alFallar={setAviso} /> : null}
         <h3>Datos de la cotización</h3>
         <dl>
           <Campo nombre="Ticket" valor={ficha.ticket} />
@@ -534,8 +641,11 @@ export function PanelTareas({
           }}
           alFallar={setAviso}
         />
+        <Fechas ficha={ficha} />
         <Situaciones situaciones={ficha.situaciones ?? []} />
         <Seguimiento seguimiento={ficha.seguimiento} parte="correos" />
+        </>
+        ) : null}
       </section>
     );
   }
@@ -661,10 +771,14 @@ export function PanelTareas({
                   <span className="avatar" aria-hidden="true">
                     C
                   </span>
-                  <span className="quien">COT {cotVisible(tarea.cot, tarea.cots)}</span>
+                  <span className="quien">{tarea.campana ? 'Campaña' : 'COT'} {cotVisible(tarea.cot, tarea.cots)}</span>
                   <span className="resumen-fila">
                     <strong>{tarea.cliente || tarea.lugar || tarea.descripcion || 'Sin cliente'}</strong>
+                    {tarea.campana ? <span className="extracto"> — {tarea.locales ?? 0} tiendas</span> : null}
                     {tarea.cliente && tarea.lugar ? <span className="extracto"> — {tarea.lugar}</span> : null}
+                    <span className={`fecha-despacho ${marcaFecha(tarea.despacho_fecha)}`}>
+                      {tarea.despacho_fecha ? cita(tarea.despacho_fecha, tarea.despacho_hora ?? null) : 'Sin fecha'}
+                    </span>
                     {tarea.referencias && tarea.referencias.length > 0 ? (
                       <span className="senales">
                         {tarea.referencias.map((frase) => (
@@ -885,6 +999,75 @@ function Correccion({
   );
 }
 
+const NOMBRES_FECHA = ['Fecha de la orden', 'Validez', 'Tiempo de entrega', 'Lugar de entrega', 'Inicio planeado', 'Fin planeado'];
+
+function Fechas({ ficha }: { ficha: Tarea }) {
+  const detectadas = [
+    ...NOMBRES_FECHA.flatMap((nombre) => {
+      const venta = ficha.odoo?.venta?.copia?.ficha?.find((campo) => campo.nombre === nombre);
+      const ticket = ficha.odoo?.ticket?.copia?.ficha?.find((campo) => campo.nombre === nombre);
+      return [
+        venta ? { origen: 'Cotización', campo: nombre, valor: venta.valor } : null,
+        ticket ? { origen: 'Servicio externo', campo: nombre, valor: ticket.valor } : null,
+      ];
+    }),
+  ].filter((fila): fila is { origen: string; campo: string; valor: string } => fila !== null);
+  const citaTarea = cita(ficha.cita_fecha, ficha.cita_hora);
+  const citaParcial = cita(ficha.cita_parcial_fecha ?? null, ficha.cita_parcial_hora ?? null);
+  const reprogramaciones = (ficha.situaciones ?? []).filter((situacion) => situacion.tipo === 'reprogramacion');
+  const cambiosFecha = (ficha.odoo?.cambios ?? []).flatMap((cambio) =>
+    cambio.detalle
+      .filter((fila) => NOMBRES_FECHA.includes(fila.campo) && fila.antes)
+      .map((fila) => ({ ...fila, cuando: cambio.creado_en, clase: cambio.clase })),
+  );
+  if (!citaTarea && !citaParcial && detectadas.length === 0 && reprogramaciones.length === 0 && cambiosFecha.length === 0) return null;
+  return (
+    <section>
+      <h3>Fechas</h3>
+      <ol className="linea-tiempo">
+        {citaTarea ? (
+          <li>
+            <strong>Cita de la tarea</strong>
+            <span>{[citaTarea, ficha.cita_direccion].filter(Boolean).join(' · ')}</span>
+          </li>
+        ) : null}
+        {citaParcial ? (
+          <li>
+            <strong>También citada</strong>
+            <span>{citaParcial}</span>
+          </li>
+        ) : null}
+        {detectadas.map((fila) => (
+          <li key={`${fila.origen}-${fila.campo}`}>
+            <strong>{fila.origen} · {fila.campo}</strong>
+            <span>{fila.valor}</span>
+          </li>
+        ))}
+        {reprogramaciones.map((situacion, indice) => (
+          <li key={`repro-${indice}`} className="nuestra">
+            <time>{cuando(situacion.fecha)}</time>
+            <strong>Reprogramación del correo</strong>
+            <span>
+              {situacion.cita_anterior
+                ? `Antes: ${[situacion.cita_anterior.fecha, situacion.cita_anterior.hora, situacion.cita_anterior.direccion].filter(Boolean).join(' · ')}`
+                : null}
+            </span>
+            <span>{situacion.resumen}</span>
+          </li>
+        ))}
+        {cambiosFecha.map((fila, indice) => (
+          <li key={`odoo-fecha-${indice}`} className="nuestra">
+            <time>{cuando(fila.cuando)}</time>
+            <strong>{fila.clase === 'ticket' ? 'Servicio externo' : 'Cotización'} · {fila.campo}</strong>
+            <span>Antes: {fila.antes}</span>
+            <span>Ahora: {fila.despues}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function Situaciones({ situaciones }: { situaciones: Situacion[] }) {
   if (situaciones.length === 0) return null;
   return (
@@ -1042,6 +1225,12 @@ function nombreDe(de: string): string {
   return nombre || 'Sin nombre';
 }
 
+function fechaOdoo(fecha: string): string {
+  const normal = fecha.includes('T') ? fecha : fecha.replace(' ', 'T');
+  const conZona = /[zZ]|[+-]\d{2}:?\d{2}$/.test(normal) ? normal : `${normal}Z`;
+  return Number.isNaN(new Date(conZona).getTime()) ? fecha : cuando(conZona);
+}
+
 function cuando(fecha: string | null): string {
   if (!fecha) return '';
   return new Intl.DateTimeFormat('es-PE', {
@@ -1070,11 +1259,374 @@ function cotVisible(cot: string, cots?: string[]): string {
   return lista.join(' · ');
 }
 
+function marcaFecha(fecha: string | null | undefined): 'pasada' | 'hoy' | 'proxima' | 'sin' {
+  if (!fecha) return 'sin';
+  const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(new Date());
+  const dia = fecha.slice(0, 10);
+  if (dia < hoy) return 'pasada';
+  if (dia === hoy) return 'hoy';
+  return 'proxima';
+}
+
 function cita(fecha: string | null, hora: string | null): string | null {
   if (!fecha && !hora) return null;
   const dia = fecha ? fecha.slice(0, 10).split('-').reverse().join('/') : '';
   return [dia, hora].filter(Boolean).join(' ');
 }
+
+function TiendasCampana({
+  apiUrl,
+  token,
+  ficha,
+  editar,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  ficha: Tarea;
+  editar: boolean;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (aviso: string) => void;
+}) {
+  return (
+    <section className="campana">
+      <h3>Tiendas de la campaña</h3>
+      <p>Cada tienda se consulta sola a despacho, con esta cotización y el nombre de la cadena y la tienda. Mientras esté pendiente o en seguimiento sigue en la cola. Atendida o realizada, sale.</p>
+      {(ficha.tiendas ?? []).length === 0 ? <p>Todavía no hay tiendas en los correos de esta cotización.</p> : null}
+      <ul className="tiendas">
+        {(ficha.tiendas ?? []).map((tienda) => (
+          <TarjetaTienda key={tienda.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} tienda={tienda} editar={editar} alGuardar={alGuardar} alFallar={alFallar} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function etiquetaTienda(estado: string): string {
+  if (estado === 'resuelta') return 'Realizada';
+  if (estado === 'atendida') return 'Atendida';
+  if (estado === 'en_seguimiento') return 'En seguimiento';
+  return 'Pendiente';
+}
+
+function TarjetaTienda({
+  apiUrl,
+  token,
+  tareaId,
+  tienda,
+  editar,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  tareaId: string;
+  tienda: TiendaCampana;
+  editar: boolean;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (aviso: string) => void;
+}) {
+  const [nota, setNota] = useState('');
+  const [codigo, setCodigo] = useState(tienda.codigo_equipo ?? '');
+  const entrega = [tienda.entrega_fecha ? tienda.entrega_fecha.slice(0, 10).split('-').reverse().join('/') : '', tienda.entrega_hora].filter(Boolean).join(' ');
+  return (
+    <li className={tienda.estado === 'resuelta' ? 'tienda-lista' : ''}>
+      <header>
+        <strong>{[tienda.cadena, tienda.nombre].filter(Boolean).join(' · ')}</strong>
+        <span>{etiquetaTienda(tienda.estado)}</span>
+      </header>
+      <dl>
+        <Campo nombre="Contacto" valor={tienda.contacto || null} />
+        <Campo nombre="Celular" valor={tienda.celular || null} />
+        <Campo nombre="Entrega" valor={entrega || null} />
+        <Campo nombre="Status" valor={tienda.status || null} />
+        <Campo nombre="Tamaño" valor={tienda.tamano || null} />
+        <Campo nombre="Dirección" valor={tienda.direccion || null} />
+        <Campo nombre="Mapa" valor={tienda.mapa || null} enlace />
+        <Campo nombre="Servicio externo" valor={[tienda.odoo_nombre, tienda.odoo_estado].filter(Boolean).join(' · ') || null} />
+        <Campo nombre="Telemetría" valor={tienda.codigo_equipo} />
+      </dl>
+      {(tienda.notas ?? []).length > 0 ? (
+        <ol className="bitacora-tiempo">
+          {tienda.notas?.map((item) => (
+            <li key={item.id} className={item.tipo}>
+              <div className="bitacora-evento">
+                <time>{cuando(item.creado_en)}</time>
+                <strong>{item.tipo === 'incidente' ? 'Incidente' : 'Seguimiento'}</strong>
+                <span>{item.autor_nombre}</span>
+              </div>
+              <p>{item.texto}</p>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {editar && tienda.estado !== 'resuelta' ? (
+        <form
+          className="cuenta-alta"
+          onSubmit={(evento) => {
+            evento.preventDefault();
+            void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas`, {
+              method: 'POST',
+              body: JSON.stringify({ tipo: 'seguimiento', texto: nota, tiendaId: tienda.id }),
+            })
+              .then((guardada) => {
+                setNota('');
+                alGuardar(guardada);
+              })
+              .catch((error: unknown) => alFallar(texto(error)));
+          }}
+        >
+          <label>
+            Seguimiento o incidente
+            <input value={nota} onChange={(evento) => setNota(evento.target.value)} />
+          </label>
+          <div className="bitacora-acciones">
+            <button type="submit">Anotar seguimiento</button>
+            {tienda.estado === 'pendiente' || tienda.estado === 'en_seguimiento' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/atender`, { method: 'POST' })
+                    .then(alGuardar)
+                    .catch((error: unknown) => alFallar(texto(error)));
+                }}
+              >
+                Marcar atendida
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas`, {
+                  method: 'POST',
+                  body: JSON.stringify({ tipo: 'incidente', texto: nota, tiendaId: tienda.id }),
+                })
+                  .then((guardada) => {
+                    setNota('');
+                    alGuardar(guardada);
+                  })
+                  .catch((error: unknown) => alFallar(texto(error)));
+              }}
+            >
+              Anotar incidente
+            </button>
+          </div>
+          <label>
+            Código de telemetría
+            <input value={codigo} onChange={(evento) => setCodigo(evento.target.value)} />
+          </label>
+          <button
+            type="button"
+            className="primario"
+            onClick={() => {
+              void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/realizar`, {
+                method: 'POST',
+                body: JSON.stringify({ codigo }),
+              })
+                .then(alGuardar)
+                .catch((error: unknown) => alFallar(texto(error)));
+            }}
+          >
+            Marcar tienda realizada
+          </button>
+        </form>
+      ) : null}
+    </li>
+  );
+}
+
+function HojaOdoo({
+  ficha,
+  editar,
+  onActualizar,
+  elegir,
+}: {
+  ficha: Tarea;
+  editar: boolean;
+  onActualizar: () => void;
+  elegir: (clase: 'venta' | 'ticket', odooId: number) => void;
+}) {
+  return (
+    <div className="odoo-hojas">
+      <DocumentoOdoo titulo="Cotización" lectura={ficha.odoo?.venta} elegir={editar && !ficha.campana ? (id) => elegir('venta', id) : null} />
+      {ficha.campana ? (
+        <article className="odoo-hoja">
+          <header className="odoo-cabeza">
+            <p className="odoo-kicker">Servicios externos</p>
+            <h3>{(ficha.servicios ?? []).length} servicios de la campaña</h3>
+          </header>
+          <ul className="tiendas">
+            {(ficha.servicios ?? []).map((servicio) => (
+              <li key={servicio.odoo_id}>
+                {servicio.nombre || servicio.odoo_id}
+                {servicio.estado ? ` · ${servicio.estado}` : ''}
+              </li>
+            ))}
+          </ul>
+        </article>
+      ) : (
+        <DocumentoOdoo titulo="Servicio externo" lectura={ficha.odoo?.ticket} elegir={editar ? (id) => elegir('ticket', id) : null} />
+      )}
+      <CambiosOdoo cambios={ficha.odoo?.cambios ?? []} />
+      {editar ? (
+        <button type="button" onClick={onActualizar}>
+          Actualizar desde Odoo
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function CambiosOdoo({ cambios }: { cambios: CambioOdoo[] }) {
+  return (
+    <section>
+      <h3>Cambios y evolución</h3>
+      {cambios.length === 0 ? <p className="meta">Todavía no hay una evolución guardada.</p> : null}
+      <ol className="linea-tiempo">
+        {cambios.map((cambio, indice) => (
+          <li key={`${cambio.creado_en}-${indice}`}>
+            <time>{cuando(cambio.creado_en)}</time>
+            <strong>{cambio.clase === 'ticket' ? 'Servicio externo' : 'Cotización'}</strong>
+            <span>{cambio.texto}</span>
+            {cambio.detalle.filter((fila) => fila.antes).map((fila) => (
+              <span key={fila.campo}>{fila.campo}: {fila.antes} → {fila.despues}</span>
+            ))}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function DocumentoOdoo({ titulo, lectura, elegir }: { titulo: string; lectura: VistaOdoo | undefined; elegir: ((id: number) => void) | null }) {
+  const copia = lectura?.copia;
+  const ficha = copia?.ficha ?? [];
+  const pasos = copia?.pasos ?? [];
+  return (
+    <article className="odoo-hoja">
+      <header className="odoo-cabeza">
+        <p className="odoo-kicker">{titulo}</p>
+        <h3>{copia?.nombre || titulo}</h3>
+        {pasos.length > 0 ? (
+          <div className="odoo-pasos">
+            {pasos.map((paso) => (
+              <span key={paso} className={presentarFecha(paso) === presentarFecha(copia?.paso ?? '') ? 'actual' : ''}>
+                {presentarFecha(paso)}
+              </span>
+            ))}
+            {copia?.cinta ? <strong className="odoo-cinta">{presentarFecha(copia.cinta)}</strong> : null}
+          </div>
+        ) : copia?.estado ? (
+          <p className="odoo-etapa">{presentarFecha(copia.estado)}</p>
+        ) : null}
+      </header>
+      {lectura?.aviso ? <p className={copia ? 'bajada' : 'error'}>{lectura.aviso}</p> : null}
+      {lectura?.vinculo === 'sin_vinculo' && !copia ? <p>Sin vínculo en Odoo.</p> : null}
+      {lectura?.vinculo === 'ambiguo' && elegir ? (
+        <div className="bitacora-acciones">
+          {lectura.candidatos.map((candidato) => (
+            <button key={candidato.id} type="button" onClick={() => elegir(candidato.id)}>
+              Elegir {candidato.nombre || candidato.id}
+              {candidato.estado ? ` · ${candidato.estado}` : ''}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {copia ? (
+        <div className="odoo-cuerpo">
+          <div className="odoo-formulario">
+            <dl>
+              {ficha.filter((campo) => campo.lado === 'izq').map((campo) => (
+                <Campo key={campo.nombre} nombre={campo.nombre} valor={presentarFecha(campo.valor)} />
+              ))}
+            </dl>
+            <dl>
+              {ficha.filter((campo) => campo.lado === 'der').map((campo) => (
+                <Campo key={campo.nombre} nombre={campo.nombre} valor={presentarFecha(campo.valor)} />
+              ))}
+            </dl>
+            {copia.nota ? <p className="odoo-nota">{copia.nota}</p> : null}
+            {copia.lineas.length > 0 ? (
+              <table className="odoo-lineas">
+                <thead>
+                  <tr>
+                    <th>Descripción</th>
+                    <th>Tipo</th>
+                    <th>Equipo</th>
+                    <th>Cantidad</th>
+                    <th>Entregado</th>
+                    <th>Facturado</th>
+                    <th>Precio</th>
+                    <th>Desc.</th>
+                    <th>Importe</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {copia.lineas.map((linea, indice) => (
+                    <tr key={`${linea.producto}-${indice}`}>
+                      <td>
+                        <strong>{linea.producto}</strong>
+                        {linea.nombre ? <span>{linea.nombre}</span> : null}
+                      </td>
+                      <td>{linea.tipo}</td>
+                      <td>{linea.equipo}</td>
+                      <td>{linea.cantidad ?? ''}</td>
+                      <td>{linea.entregada ?? ''}</td>
+                      <td>{linea.facturada ?? ''}</td>
+                      <td>{linea.precio}</td>
+                      <td>{linea.descuento}</td>
+                      <td>{linea.importe}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+            {copia.total ? <p className="odoo-total">Total {copia.total}</p> : null}
+            {lectura?.leido_en ? <p className="meta">Leído {cuando(lectura.leido_en)}</p> : null}
+          </div>
+          <aside className="odoo-chatter">
+            <h4>Notas</h4>
+            {copia.notas.length === 0 ? <p className="meta">Sin notas.</p> : null}
+            <ol>
+              {copia.notas.map((nota, indice) => (
+                <li key={`${nota.fecha}-${indice}`}>
+                  <div>
+                    <strong>{nota.autor || 'Odoo'}</strong>
+                    <time>{nota.fecha ? fechaOdoo(nota.fecha) : ''}</time>
+                  </div>
+                  <p>{nota.texto}</p>
+                </li>
+              ))}
+            </ol>
+          </aside>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function presentarFecha(valor: string): string {
+  const conocido = EN_ESPANOL[valor];
+  if (conocido) return conocido;
+  return /^\d{4}-\d{2}-\d{2}/.test(valor) ? fechaOdoo(valor) : valor;
+}
+
+const EN_ESPANOL: Record<string, string> = {
+  'Quotation': 'Cotización',
+  'Quotation Sent': 'Cotización enviada',
+  'Sales Order': 'Orden de venta',
+  Locked: 'Bloqueado',
+  Cancelled: 'Cancelado',
+  'Nothing to Invoice': 'Nada que facturar',
+  'To Invoice': 'Por facturar',
+  'Fully Invoiced': 'Facturado',
+  'Upselling Opportunity': 'Oportunidad de venta adicional',
+  'Not Delivered': 'Sin entrega',
+  Started: 'Entrega iniciada',
+  'Partially Delivered': 'Entrega parcial',
+  'Fully Delivered': 'Entregado',
+};
 
 function etiquetaValidacion(validacion: string | null | undefined): string {
   if (validacion === 'validada') return 'El técnico validó las lecturas.';

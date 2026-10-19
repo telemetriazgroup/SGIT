@@ -22,6 +22,6 @@ ALTER TABLE charla ADD CONSTRAINT charla_paso_check CHECK (
     'pregunta_imagen', 'espera_imagen', 'nota', 'pregunta_resumen', 'resumen', 'detalle',
     'internos', 'decisiones', 'asunto', 'decision',
     'despacho_oferta', 'despacho_detalle', 'despacho_menu', 'despacho_recogiendo', 'despacho_validar',
-    'respuesta_despacho', 'consulta_despacho'
+    'respuesta_despacho', 'consulta_despacho', 'corroborar_lectura'
   )
 );

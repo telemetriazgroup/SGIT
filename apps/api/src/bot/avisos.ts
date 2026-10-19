@@ -9,34 +9,53 @@ export type DatosAviso = {
   cantidad: number | null;
 };
 
+export function cotVisible(cot: string): string {
+  return cot.split('#')[0].split('+').join(' · ');
+}
+
+function esTienda(cot: string): boolean {
+  return cot.includes('#');
+}
+
+function lineaSitio(cot: string, lugar: string | null | undefined): string | null {
+  if (!esTienda(cot) || !lugar?.trim()) return null;
+  return `Cadena y tienda: ${lugar.trim()}`;
+}
+
+function telemetrias(datos: DatosAviso): string {
+  if (datos.cantidad !== null && datos.cantidad !== undefined) return String(datos.cantidad);
+  return esTienda(datos.cot) ? 'una o más' : 'sin cantidad';
+}
+
 export function textoTareaNueva(datos: DatosAviso): string {
   return [
-    `COT ${datos.cot.split('+').join(' · ')}`,
+    `COT ${cotVisible(datos.cot)}`,
     `Cliente: ${datos.cliente ?? 'sin cliente'}`,
-    `Lugar: ${datos.lugar ?? 'sin lugar'}`,
+    lineaSitio(datos.cot, datos.lugar) ?? `Lugar: ${datos.lugar ?? 'sin lugar'}`,
     `Cita: ${datos.cita ?? 'sin cita'}`,
-    `Telemetrías: ${datos.cantidad ?? 'sin cantidad'}`,
+    `Telemetrías: ${telemetrias(datos)}`,
   ].join('\n');
 }
 
 export function textoApertura(datos: DatosAviso): string {
-  const cot = datos.cot.split('+').join(' · ');
+  const sitio = lineaSitio(datos.cot, datos.lugar);
   return [
     'Buenos días. Te escribe el asistente automático del área ZTrack.',
-    `Tenemos una solicitud de telemetría en la cotización ${cot}, del cliente ${datos.cliente ?? 'sin cliente'}.`,
+    `Tenemos una solicitud de telemetría en la cotización ${cotVisible(datos.cot)}, del cliente ${datos.cliente ?? 'sin cliente'}.`,
+    sitio ? `${sitio}.` : '',
     'Envíame el contenedor y la máquina asignados. Puedes escribir o mandar imágenes.',
     'Escribe 1 o datos para ver la cotización.',
     'Escribe menu para ver las demás pendientes.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export function textoFichaDespacho(datos: DatosAviso): string {
   return [
-    `COT ${datos.cot.split('+').join(' · ')}`,
+    `COT ${cotVisible(datos.cot)}`,
     `Cliente: ${datos.cliente ?? 'sin cliente'}`,
-    `Lugar: ${datos.lugar ?? 'sin lugar'}`,
+    lineaSitio(datos.cot, datos.lugar) ?? `Lugar: ${datos.lugar ?? 'sin lugar'}`,
     `Cita: ${datos.cita ?? 'sin cita'}`,
-    `Telemetrías: ${datos.cantidad ?? 'sin cantidad'}`,
+    `Telemetrías: ${telemetrias(datos)}`,
     'Envíame el contenedor y la máquina asignados.',
   ].join('\n');
 }
@@ -52,7 +71,7 @@ export function negrita(texto: string): string {
 
 export function textoEcoAsignacion(cot: string, texto: string, imagenes = 0): string {
   return [
-    `Entiendo que para la cotización ${cot.split('+').join(' · ')} está asignado:`,
+    `Entiendo que para la cotización ${cotVisible(cot)} está asignado:`,
     negrita(texto) || 'Sin texto.',
     imagenes > 0 ? `Imágenes: ${imagenes}` : '',
     'Responde ok si es así.',
@@ -60,16 +79,27 @@ export function textoEcoAsignacion(cot: string, texto: string, imagenes = 0): st
   ].filter(Boolean).join('\n');
 }
 
-export function textoAvisoAsignacion(cot: string, cliente: string | null, autor: string, texto: string, imagenes: number, lecturas: string[] = [], validacion: string | null = null): string {
-  const numeros = cot.split('+').join(' · ');
+export function textoAvisoAsignacion(
+  cot: string,
+  cliente: string | null,
+  autor: string,
+  texto: string,
+  imagenes: number,
+  lecturas: string[] = [],
+  validacion: string | null = null,
+  lugar: string | null = null,
+): string {
+  const numeros = cotVisible(cot);
   const estado = validacion === 'sin_validar'
     ? 'Quedó registrado sin validar lo que envió despacho y lo que leyó el sistema.'
     : validacion === 'validada'
       ? 'Estas lecturas ya se validaron. Puedes corregir una si hace falta.'
       : '¿Las lecturas son correctas?';
+  const sitio = lineaSitio(cot, lugar);
   return [
-    `Estás en la cotización ${numeros}.`,
+    esTienda(cot) ? `Campaña ${numeros}.` : `Estás en la cotización ${numeros}.`,
     `Cliente: ${cliente ?? 'sin cliente'}`,
+    sitio ? `${sitio}.` : '',
     `${autor}:`,
     negrita(texto) || 'Envió la respuesta en imagen.',
     imagenes > 0 ? `Imágenes juntas: ${imagenes}` : '',
@@ -90,21 +120,26 @@ export function ackDespacho(imagenes: number, texto: string): string {
   ].filter(Boolean).join('\n');
 }
 
-export function silencioDespacho(cot: string): string {
-  return `No llegó el ok. Guardé el texto y las imágenes de la cotización ${cot.split('+').join(' · ')}. Aviso a los técnicos cuando termine de leer los códigos.`;
+export function silencioDespacho(cot: string, lugar: string | null = null): string {
+  const sitio = lineaSitio(cot, lugar);
+  return `No llegó el ok. Guardé el texto y las imágenes de la cotización ${cotVisible(cot)}${sitio ? `, ${sitio.toLowerCase()}` : ''}. Aviso a los técnicos cuando termine de leer los códigos.`;
 }
 
-export function sinValidarAviso(cot: string): string {
+export function sinValidarAviso(cot: string, lugar: string | null = null): string {
+  const sitio = lineaSitio(cot, lugar);
   return [
-    `Pasaron 5 minutos sin respuesta en la cotización ${cot.split('+').join(' · ')}.`,
+    `Pasaron 5 minutos sin respuesta en la cotización ${cotVisible(cot)}.`,
+    sitio ? `${sitio}.` : '',
     'Quedó registrado lo que envió despacho y lo que leyó el sistema, sin validar.',
     'Cuando entres a la cotización, la opción 9 muestra las lecturas para corregirlas.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
-export function textoReconsultaDespacho(cot: string, pregunta: string, anterior: string, imagenes: number): string {
+export function textoReconsultaDespacho(cot: string, pregunta: string, anterior: string, imagenes: number, lugar: string | null = null): string {
+  const sitio = lineaSitio(cot, lugar);
   return [
-    `El equipo técnico pregunta por la cotización ${cot.split('+').join(' · ')}:`,
+    `El equipo técnico pregunta por la cotización ${cotVisible(cot)}:`,
+    sitio ? `${sitio}.` : '',
     negrita(pregunta) || pregunta,
     'La asignación anterior fue:',
     negrita(anterior) || 'Sin texto.',
@@ -123,9 +158,9 @@ export const PREGUNTAS_DESPACHO = [
 export function textoConsultaDespacho(datos: DatosAviso): string {
   return [
     '¿Qué código y máquina van en esta atención?',
-    `COT ${datos.cot.split('+').join(' · ')}`,
+    `COT ${cotVisible(datos.cot)}`,
     `Cliente: ${datos.cliente ?? 'sin cliente'}`,
-    `Lugar: ${datos.lugar ?? 'sin lugar'}`,
+    lineaSitio(datos.cot, datos.lugar) ?? `Lugar: ${datos.lugar ?? 'sin lugar'}`,
     `Cita: ${datos.cita ?? 'sin cita'}`,
     'Responde citando la COT, el código y la máquina.',
     'Ejemplo: COT 10020000000 código ABC123 máquina TK-4',
@@ -135,9 +170,9 @@ export function textoConsultaDespacho(datos: DatosAviso): string {
 export function textoSnooze(datos: DatosAviso): string {
   return [
     'Recordatorio',
-    `COT ${datos.cot.split('+').join(' · ')}`,
+    `COT ${cotVisible(datos.cot)}`,
     `Cliente: ${datos.cliente ?? 'sin cliente'}`,
-    `Lugar: ${datos.lugar ?? 'sin lugar'}`,
+    lineaSitio(datos.cot, datos.lugar) ?? `Lugar: ${datos.lugar ?? 'sin lugar'}`,
     `Cita: ${datos.cita ?? 'sin cita'}`,
   ].join('\n');
 }
@@ -154,8 +189,18 @@ export function menuDespacho(): string {
   return ['1. Tareas recientes', '2. Buscar', '3. Salir'].join('\n');
 }
 
+export function avisoSilencioMenu(guardado = false): string {
+  return [
+    'Pasaron 5 minutos sin respuesta.',
+    guardado
+      ? 'Guardé el texto y las imágenes que ya habías enviado.'
+      : 'Cerré esta consulta. Lo que no llegaste a confirmar no quedó guardado.',
+    'Escribe menu o cualquier cosa y te envío el menú completo.',
+  ].join('\n');
+}
+
 export function textoReprogramacion(datos: DatosAviso): string {
-  return [`Reprogramación`, `COT ${datos.cot.split('+').join(' · ')}`, `Cita: ${datos.cita ?? 'sin cita'}`].join('\n');
+  return [`Reprogramación`, `COT ${cotVisible(datos.cot)}`, lineaSitio(datos.cot, datos.lugar) ?? '', `Cita: ${datos.cita ?? 'sin cita'}`].filter(Boolean).join('\n');
 }
 
 export function momentosDeEnvio(cantidad: number, ahora: Date, pausaMs = PAUSA_MS): Date[] {

@@ -3,12 +3,15 @@ import path from 'path';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AlmacenCorreo } from '../buzon/almacen';
+import { vincularHijas } from '../tareas/hijas';
+import { joinUrgente, ordenFecha, ordenUrgente } from '../tareas/prioridad';
 import { anotarConexion } from '../conexion/bitacora';
 import type { Conexiones } from '../conexiones';
 import {
   NO_HABILITADO,
   PAUSA_MS,
   citaVisible,
+  cotVisible,
   digitos,
   imagenRecibida,
   imagenesJuntas,
@@ -29,6 +32,7 @@ import {
   textoReprogramacion,
   silencioDespacho,
   sinValidarAviso,
+  avisoSilencioMenu,
   textoAvisoAsignacion,
   textoEcoAsignacion,
   textoTareaNueva,
@@ -94,11 +98,20 @@ type Pendiente = {
   pagina?: number;
   origen?: 'tarea' | 'interno' | 'decision';
   mensajeId?: string;
+  espera_menu?: boolean;
 };
 type Charla = { paso: Paso; tarea_id: string | null; lista: string[]; pendiente: Pendiente | null };
 type ArchivoSalida = { nombre: string; mime: string; contenido: string };
 type RespuestaBot = { habilitado: boolean; respuesta: string; archivo: ArchivoSalida | null };
-type TareaBreve = { id: string; cot: string; cliente: string | null };
+type TareaBreve = {
+  id: string;
+  cot: string;
+  cliente: string | null;
+  lugar?: string | null;
+  campana?: boolean;
+  despacho_fecha?: string | null;
+  despacho_hora?: string | null;
+};
 type NotaBreve = {
   id: string;
   tipo: 'seguimiento' | 'incidente';
@@ -574,6 +587,8 @@ export class BotService {
     const charla = await this.charla(numero);
     const limpio = texto.trim();
     if (quien.rol === 'despacho') return this.atenderDespacho(numero, quien, limpio, charla, archivo);
+    if (charla.pendiente?.espera_menu) return this.abrirMenu(numero);
+    if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(numero, charla);
     const paso = charla.paso;
     const general = paso === 'menu' || paso === 'recientes' || paso === 'busca' || paso === 'confirma' || paso === 'resultados' || paso === 'internos' || paso === 'decisiones';
     const elevado = await this.esElevado(numero);
@@ -652,7 +667,7 @@ export class BotService {
     return this.dejar(
       telefono,
       true,
-      textoAvisoAsignacion(paquete.cot, paquete.cliente, paquete.autor, paquete.texto, paquete.imagenes.length, paquete.lecturas, paquete.validacion),
+      textoAvisoAsignacion(paquete.cot, paquete.cliente, paquete.autor, paquete.texto, paquete.imagenes.length, paquete.lecturas, paquete.validacion, paquete.lugar),
     );
   }
 
@@ -700,7 +715,7 @@ export class BotService {
       return this.dejar(telefono, true, 'Despacho todavía no respondió esta cotización.');
     }
     const lineas = [
-      `Respuesta de despacho para ${paquete.cot.split('+').join(' · ')}`,
+      `Respuesta de despacho para ${cotVisible(paquete.cot)}${paquete.cot.includes('#') && paquete.lugar ? ` · ${paquete.lugar}` : ''}`,
       `${paquete.autor}: ${negrita(paquete.texto) || 'Sin texto.'}`,
       paquete.imagenes.length > 0 ? `Imágenes: ${paquete.imagenes.length}` : 'Sin imágenes.',
       ...paquete.lecturas,
@@ -782,12 +797,12 @@ export class BotService {
       return this.dejar(telefono, true, 'Escribe la consulta o elige un número.');
     }
     await this.turno().reconsultar(tareaId, pregunta);
-    const cot = (await this.turno().cotDe(tareaId)) ?? '';
+    const ref = await this.referencia(tareaId);
     await this.guardarCharla(telefono, 'cot', tareaId, [], null);
     return this.dejar(
       telefono,
       true,
-      `Quedó registrada la consulta de ${cot.split('+').join(' · ')}: ${pregunta}\nDespacho la verá en su siguiente turno.`,
+      `Quedó registrada la consulta de ${ref?.linea ?? 'esta cotización'}: ${pregunta}\nDespacho la verá en su siguiente turno.`,
     );
   }
 
@@ -1041,6 +1056,7 @@ export class BotService {
   async preguntarLotes(ahora = new Date()): Promise<void> {
     await this.cerrarDespachoSinOk(ahora);
     await this.vencerCorroboraciones();
+    await this.vencerSilencio(ahora);
     const filas = await this.conexiones.pg.query<{ telefono: string; paso: string; tarea_id: string | null; pendiente: Pendiente | null }>(
       `SELECT telefono, paso, tarea_id, pendiente
        FROM charla
@@ -1114,8 +1130,8 @@ export class BotService {
   }
 
   private async vencerCorroboraciones(): Promise<void> {
-    const filas = await this.conexiones.pg.query<{ telefono: string; tarea_id: string; cot: string }>(
-      `SELECT c.telefono, c.tarea_id, t.cot
+    const filas = await this.conexiones.pg.query<{ telefono: string; tarea_id: string; cot: string; lugar: string | null }>(
+      `SELECT c.telefono, c.tarea_id, t.cot, t.lugar
        FROM charla c
        JOIN tarea t ON t.id = c.tarea_id
        WHERE c.paso = 'corroborar_lectura'
@@ -1141,9 +1157,76 @@ export class BotService {
       await this.conexiones.pg.query(
         `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
          VALUES ($1, 'consulta_lote', $2, $3, $4, 'pendiente', now())`,
-        [randomUUID(), fila.tarea_id, fila.telefono, sinValidarAviso(fila.cot)],
+        [randomUUID(), fila.tarea_id, fila.telefono, sinValidarAviso(fila.cot, fila.lugar)],
       );
     }
+  }
+
+  private async vencerSilencio(ahora: Date): Promise<void> {
+    const filas = await this.conexiones.pg.query<{ telefono: string; paso: string; tarea_id: string | null }>(
+      `SELECT telefono, paso, tarea_id
+       FROM charla
+       WHERE actualizado_en < now() - interval '5 minutes'
+         AND COALESCE(pendiente->>'pregunta_lote', '') <> 'true'
+         AND COALESCE(pendiente->>'espera_menu', '') <> 'true'
+         AND paso IN (
+           'despacho_oferta', 'despacho_detalle', 'despacho_menu', 'despacho_recogiendo', 'despacho_validar',
+           'cot', 'recientes', 'busca', 'confirma', 'resultados', 'internos', 'decisiones',
+           'nota', 'espera_imagen', 'pregunta_imagen', 'pregunta_resumen', 'resumen', 'detalle',
+           'asunto', 'decision', 'respuesta_despacho', 'consulta_despacho', 'corroborar_lectura'
+         )`,
+    );
+    for (const fila of filas.rows) {
+      const cerrado = await this.conexiones.pg.query(
+        `UPDATE charla
+         SET paso = 'menu', tarea_id = NULL, lista = '[]'::jsonb, pendiente = '{"espera_menu":true}'::jsonb, actualizado_en = now()
+         WHERE telefono = $1 AND paso = $2 AND actualizado_en < now() - interval '5 minutes'`,
+        [fila.telefono, fila.paso],
+      );
+      if ((cerrado.rowCount ?? 0) === 0) continue;
+      let guardado = false;
+      if (fila.paso.startsWith('despacho_') && fila.tarea_id) {
+        const otro = await this.conexiones.pg.query(
+          `SELECT 1 FROM charla
+           WHERE tarea_id = $1 AND telefono <> $2 AND paso LIKE 'despacho_%'
+             AND actualizado_en >= now() - interval '5 minutes'`,
+          [fila.tarea_id, fila.telefono],
+        );
+        if (!otro.rows[0]) {
+          const escrito = await this.turno().textoDe(fila.tarea_id);
+          const imagenes = await this.turno().contarImagenes(fila.tarea_id);
+          if (escrito || imagenes > 0) guardado = Boolean(await this.turno().confirmar(fila.tarea_id, 'silencio'));
+          else await this.turno().abandonar(fila.tarea_id);
+        }
+      }
+      if (!fila.paso.startsWith('despacho_')) await this.vaciarLote(fila.telefono);
+      const ya = await this.conexiones.pg.query(
+        `SELECT 1 FROM aviso WHERE tipo = 'consulta_lote' AND destino = $1 AND estado = 'pendiente' AND cuerpo = $2`,
+        [fila.telefono, avisoSilencioMenu(guardado)],
+      );
+      if (ya.rows[0]) continue;
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
+         VALUES ($1, 'consulta_lote', $2, $3, $4, 'pendiente', $5)`,
+        [randomUUID(), fila.tarea_id, fila.telefono, avisoSilencioMenu(guardado), ahora.toISOString()],
+      );
+    }
+  }
+
+  private async cancelarTecnico(telefono: string, charla: Charla): Promise<RespuestaBot> {
+    const capturando = charla.paso === 'nota'
+      || charla.paso === 'espera_imagen'
+      || charla.paso === 'pregunta_imagen'
+      || charla.paso === 'consulta_despacho'
+      || Boolean(charla.pendiente?.corrigiendo);
+    const lote = await this.contarLote(telefono);
+    if (lote > 0) await this.vaciarLote(telefono);
+    const elevado = await this.esElevado(telefono);
+    if (capturando || lote > 0) {
+      return this.abrirMenu(telefono, `Cancelé lo que estabas escribiendo. No quedó guardado.\n${menuGeneral(elevado)}`);
+    }
+    if (charla.tarea_id && charla.paso !== 'menu') return this.salirDeCot(telefono, charla.tarea_id);
+    return this.cerrarConsulta(telefono);
   }
 
   private rechazoImagen(archivo: ArchivoNota): string | null {
@@ -1191,12 +1274,8 @@ export class BotService {
   }
 
   private async entrarEn(telefono: string, tareaId: string): Promise<RespuestaBot> {
-    const estado = await this.conexiones.pg.query<{ estado: string }>(`SELECT estado FROM tarea WHERE id = $1`, [tareaId]);
-    if (estado.rows[0]?.estado === 'resuelta') {
-      const ref = await this.referencia(tareaId);
-      const elevado = await this.esElevado(telefono);
-      return this.abrirMenu(telefono, `${ref?.linea ?? 'Esa cotización'}\nYa está resuelta y no vuelve a la lista.\n${menuGeneral(elevado)}`);
-    }
+    const marca = await this.conexiones.pg.query<{ estado: string; campana: boolean }>(`SELECT estado, campana FROM tarea WHERE id = $1`, [tareaId]);
+    if (!marca.rows[0]) return this.abrirMenu(telefono, `Esa cotización ya no está.\n${menuGeneral(await this.esElevado(telefono))}`);
     if (!(await this.veTodo(telefono))) {
       const visible = await this.conexiones.pg.query(`SELECT 1 FROM habilitado WHERE clase = 'tarea' AND clave = $1`, [tareaId]);
       if (!visible.rows[0]) {
@@ -1204,7 +1283,33 @@ export class BotService {
         return this.abrirMenu(telefono, `${ref?.linea ?? 'Esa cotización'}\nTodavía no está habilitada.\n${menuGeneral(await this.esElevado(telefono))}`);
       }
     }
+    if (marca.rows[0].campana) return this.menuTiendas(telefono, tareaId);
+    if (marca.rows[0].estado === 'resuelta') {
+      const ref = await this.referencia(tareaId);
+      const elevado = await this.esElevado(telefono);
+      return this.abrirMenu(telefono, `${ref?.linea ?? 'Esa cotización'}\nYa está resuelta y no vuelve a la lista.\n${menuGeneral(elevado)}`);
+    }
     return this.menuDeCot(telefono, tareaId);
+  }
+
+  private async menuTiendas(telefono: string, tareaId: string): Promise<RespuestaBot> {
+    await vincularHijas(this.conexiones.pg, tareaId);
+    const ref = await this.referencia(tareaId);
+    const tiendas = await this.conexiones.pg.query<{ id: string; cadena: string; nombre: string; entrega_fecha: string | null; entrega_hora: string }>(
+      `SELECT h.id, t.cadena, t.nombre, to_char(t.entrega_fecha, 'YYYY-MM-DD') AS entrega_fecha, t.entrega_hora
+       FROM tienda t
+       JOIN tarea h ON h.id = t.tarea_hija_id
+       WHERE t.tarea_id = $1 AND t.estado IN ('pendiente', 'en_seguimiento')
+       ORDER BY ${ordenFecha('t.entrega_fecha', 't.orden NULLS LAST, t.nombre')}`,
+      [tareaId],
+    );
+    const cabeza = ref?.linea ?? 'Campaña';
+    if (tiendas.rows.length === 0) {
+      return this.abrirMenu(telefono, `${cabeza}\nNo tiene tiendas pendientes. Las atendidas o realizadas ya salieron de la consulta.\n${menuGeneral(await this.esElevado(telefono))}`);
+    }
+    await this.guardarCharla(telefono, 'resultados', tareaId, tiendas.rows.map((tienda) => tienda.id), null);
+    const lineas = tiendas.rows.map((tienda, indice) => `${indice + 1}. ${[tienda.cadena, tienda.nombre].filter(Boolean).join(' · ')} · ${textoFecha(tienda.entrega_fecha, tienda.entrega_hora)}`);
+    return this.dejar(telefono, true, [cabeza, 'Tiendas pendientes:', ...lineas, 'Escribe el número de la tienda. Escribe menú para volver.'].join('\n'));
   }
 
   private async internos(telefono: string): Promise<RespuestaBot> {
@@ -1359,9 +1464,16 @@ export class BotService {
     archivo: ArchivoNota | null,
   ): Promise<RespuestaBot> {
     const turno = this.turno();
-    if (/^salir$/i.test(limpio)) {
-      if (charla.tarea_id) await turno.soltar(charla.tarea_id, telefono);
-      return this.cerrarConsulta(telefono);
+    if (charla.pendiente?.espera_menu) return this.menuTurno(telefono, null);
+    if (/^salir$/i.test(limpio) && !archivo) {
+      const escrito = charla.tarea_id ? await turno.textoDe(charla.tarea_id) : '';
+      const imagenes = charla.tarea_id ? await turno.contarImagenes(charla.tarea_id) : 0;
+      if (charla.tarea_id && (escrito || imagenes > 0)) await turno.descartar(charla.tarea_id);
+      if (charla.tarea_id) await turno.abandonar(charla.tarea_id);
+      const aviso = escrito || imagenes > 0
+        ? 'Cancelé lo que estabas escribiendo. No quedó guardado.'
+        : 'Listo. Saliste de la consulta.';
+      return this.menuTurno(telefono, null, aviso);
     }
     if (/^(menu|menú)$/i.test(limpio) && !archivo) return this.menuTurno(telefono, charla.tarea_id);
     if (charla.paso === 'despacho_menu' && !archivo) return this.elegirTurno(telefono, charla, limpio);
@@ -1425,7 +1537,7 @@ export class BotService {
     const cot = (await turno.cotDe(tareaId)) ?? '';
     await turno.confirmar(tareaId, 'ok');
     const siguiente = await turno.abrirSiguiente(new Date(), telefono);
-    const cierre = `Quedó guardado para la cotización ${cot.split('+').join(' · ')}. Las imágenes ya están en la ficha. Aviso a los técnicos cuando termine de leer los códigos.`;
+    const cierre = `Quedó guardado para la cotización ${cotVisible(cot)}. Las imágenes ya están en la ficha. Aviso a los técnicos cuando termine de leer los códigos.`;
     if (!siguiente) {
       await this.guardarCharla(telefono, 'menu', null, [], null);
       return this.dejar(telefono, true, `${cierre}\nNo hay otra pendiente en este horario. Escribe menu cuando quieras ver las abiertas.`);
@@ -1461,7 +1573,7 @@ export class BotService {
       return this.dejar(telefono, true, [previo, 'No hay cotizaciones habilitadas.'].filter(Boolean).join('\n'));
     }
     await this.guardarCharla(telefono, 'despacho_menu', tareaId, tareas.map((tarea) => tarea.id), null);
-    const lineas = tareas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea)}`);
+    const lineas = tareas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea, true)}`);
     return this.dejar(telefono, true, [previo, 'Cotizaciones abiertas:', ...lineas, 'Escribe el número. Escribe salir para terminar.'].filter(Boolean).join('\n'));
   }
 
@@ -1479,12 +1591,12 @@ export class BotService {
 
   private async abrirCotTurno(telefono: string, texto: string): Promise<RespuestaBot> {
     const cot = numeroCot(texto);
-    const tareas = cot ? await this.porNumero(cot, false) : texto.trim().length >= 2 ? await this.porCliente(texto.trim(), false) : [];
+    const tareas = cot ? await this.porNumero(cot, false, true) : texto.trim().length >= 2 ? await this.porCliente(texto.trim(), false, true) : [];
     if (tareas.length === 0 && cot && (await this.cotExiste(cot))) return this.menuTurno(telefono, null, `COT ${cot}\nTodavía no está habilitada.`);
     if (tareas.length === 0) return this.menuTurno(telefono, null, 'No encontré esa cotización.');
     if (tareas.length > 1) {
       await this.guardarCharla(telefono, 'despacho_menu', null, tareas.map((tarea) => tarea.id), null);
-      const lineas = tareas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea)}`);
+      const lineas = tareas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea, true)}`);
       return this.dejar(telefono, true, ['Encontré varias:', ...lineas, 'Escribe el número.'].join('\n'));
     }
     return this.tomarTurno(telefono, null, tareas[0].id);
@@ -1495,7 +1607,7 @@ export class BotService {
     const listo = await turno.cambiar(actualId, destinoId);
     if (!listo) return this.dejar(telefono, true, 'Hay otra cotización en curso. Espera a que se cierre o escribe menu.');
     await turno.dueno(destinoId, telefono);
-    const ref = await this.referencia(destinoId);
+    const ref = await this.referencia(destinoId, true);
     await this.guardarCharla(telefono, 'despacho_recogiendo', destinoId, [], null);
     return this.dejar(telefono, true, [`Estás en ${ref?.linea ?? 'esa cotización'}.`, 'Escribe el contenedor y la máquina.', 'Escribe 1 o datos para ver la ficha.', 'Escribe menu para volver a la lista.'].join('\n'));
   }
@@ -1559,17 +1671,15 @@ export class BotService {
   private async recientes(telefono: string): Promise<RespuestaBot> {
     const veTodo = await this.veTodo(telefono);
     const tareas = await this.tareasBreves(
-      `SELECT tarea.id, tarea.cot, tarea.cliente
+      `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
        FROM tarea
-       LEFT JOIN LATERAL (
-         SELECT max(c.fecha) AS fecha
-         FROM mensaje_correo origen
-         JOIN mensaje_correo c ON c.gmail_thread_id = origen.gmail_thread_id
-         WHERE origen.id = tarea.mensaje_id
-       ) ult ON true
+       ${joinUrgente('tarea')}
        WHERE tarea.cot <> '10000000000' AND tarea.estado <> 'resuelta'
+         AND tarea.padre_id IS NULL
          ${this.filtroTarea(veTodo)}
-       ORDER BY ult.fecha DESC NULLS LAST, tarea.creado_en DESC
+       ORDER BY ${ordenUrgente('tarea')}
        LIMIT 10`,
     );
     if (tareas.length === 0) {
@@ -1578,7 +1688,7 @@ export class BotService {
     }
     await this.guardarCharla(telefono, 'recientes', null, tareas.map((tarea) => tarea.id), null);
     const lineas = tareas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea)}`);
-    return this.dejar(telefono, true, ['Tareas recientes:', ...lineas, 'Escribe el número para entrar. Escribe menú para quedarte en el menú general.'].join('\n'));
+    return this.dejar(telefono, true, ['Tareas por atender:', ...lineas, 'Escribe el número para entrar. Escribe menú para quedarte en el menú general.'].join('\n'));
   }
 
   private async buscar(telefono: string, texto: string): Promise<RespuestaBot> {
@@ -1620,13 +1730,13 @@ export class BotService {
       campo('Ticket', tarea.ticket),
       campo('Descripción', tarea.descripcion),
       campo('Cliente', tarea.cliente),
-      campo('Lugar', tarea.lugar),
+      campo(tarea.cot.includes('#') ? 'Cadena y tienda' : 'Lugar', tarea.lugar),
       campo('Cita', citaVisible(tarea.cita_fecha, tarea.cita_hora)),
       campo('Dirección', direccionLimpia(tarea.cita_direccion)),
       campo('Mapa', tarea.cita_mapa),
       campo('También citado', citaVisible(tarea.cita_parcial_fecha, tarea.cita_parcial_hora)),
       campo('Temperatura', temperatura || null),
-      campo('Telemetrías', tarea.cantidad === null ? null : String(tarea.cantidad)),
+      campo('Telemetrías', tarea.cantidad === null ? (tarea.cot.includes('#') ? 'una o más' : null) : String(tarea.cantidad)),
       campo('Contenedor', tarea.contenedor),
       campo('Comercial', comercial || null),
       campo('Correo', tarea.comercial_correo),
@@ -1743,38 +1853,41 @@ export class BotService {
     }
   }
 
-  private async porNumero(cot: string, veTodo: boolean): Promise<TareaBreve[]> {
+  private filtroCola(despacho: boolean): string {
+    if (!despacho) return `AND tarea.padre_id IS NULL`;
+    return `AND tarea.campana = false AND NOT EXISTS (
+      SELECT 1 FROM tienda x WHERE x.tarea_hija_id = tarea.id AND x.estado IN ('atendida', 'resuelta')
+    )`;
+  }
+
+  private async porNumero(cot: string, veTodo: boolean, despacho = false): Promise<TareaBreve[]> {
     return this.tareasBreves(
-      `SELECT tarea.id, tarea.cot, tarea.cliente
+      `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
        FROM tarea
-       LEFT JOIN LATERAL (
-         SELECT max(c.fecha) AS fecha
-         FROM mensaje_correo origen
-         JOIN mensaje_correo c ON c.gmail_thread_id = origen.gmail_thread_id
-         WHERE origen.id = tarea.mensaje_id
-       ) ult ON true
+       ${joinUrgente('tarea')}
        WHERE tarea.cot <> '10000000000' AND (tarea.cot = $1 OR $1 = ANY(tarea.cots))
+         ${this.filtroCola(despacho)}
          ${this.filtroTarea(veTodo)}
-       ORDER BY ult.fecha DESC NULLS LAST, tarea.creado_en DESC
-       LIMIT 10`,
+       ORDER BY ${ordenUrgente('tarea')}
+       LIMIT 40`,
       [cot],
     );
   }
 
-  private async porCliente(nombre: string, veTodo: boolean): Promise<TareaBreve[]> {
+  private async porCliente(nombre: string, veTodo: boolean, despacho = false): Promise<TareaBreve[]> {
     return this.tareasBreves(
-      `SELECT tarea.id, tarea.cot, tarea.cliente
+      `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
        FROM tarea
-       LEFT JOIN LATERAL (
-         SELECT max(c.fecha) AS fecha
-         FROM mensaje_correo origen
-         JOIN mensaje_correo c ON c.gmail_thread_id = origen.gmail_thread_id
-         WHERE origen.id = tarea.mensaje_id
-       ) ult ON true
+       ${joinUrgente('tarea')}
        WHERE tarea.cot <> '10000000000' AND tarea.cliente ILIKE $1 ESCAPE '\\'
+         ${this.filtroCola(despacho)}
          ${this.filtroTarea(veTodo)}
-       ORDER BY ult.fecha DESC NULLS LAST, tarea.creado_en DESC
-       LIMIT 10`,
+       ORDER BY ${ordenUrgente('tarea')}
+       LIMIT 40`,
       [comoLike(nombre)],
     );
   }
@@ -1784,14 +1897,30 @@ export class BotService {
     return filas.rows;
   }
 
-  private linea(tarea: { cot: string; cliente: string | null }): string {
-    return `COT ${tarea.cot.split('+').join(' · ')} · ${tarea.cliente?.trim() || 'sin cliente'}`;
+  private linea(tarea: { cot: string; cliente: string | null; lugar?: string | null; campana?: boolean; despacho_fecha?: string | null; despacho_hora?: string | null; cita_fecha?: string | null; cita_hora?: string | null }, despacho = false): string {
+    const cot = tarea.cot.split('#')[0].split('+').join(' · ');
+    const quien = tarea.cliente?.trim() || tarea.lugar?.trim() || 'sin cliente';
+    const fecha = ` · ${textoFecha(tarea.despacho_fecha ?? tarea.cita_fecha, tarea.despacho_hora ?? tarea.cita_hora)}`;
+    if (tarea.cot.includes('#')) {
+      const tienda = tarea.lugar?.trim() || 'tienda';
+      return despacho ? `COT ${cot} · ${tienda}${fecha}` : `Campaña ${cot} · ${tienda}${fecha}`;
+    }
+    if (!despacho && tarea.campana) return `Campaña ${cot} · ${quien}${fecha}`;
+    return `COT ${cot} · ${quien}${fecha}`;
   }
 
-  private async referencia(tareaId: string): Promise<{ linea: string } | null> {
-    const filas = await this.conexiones.pg.query<{ cot: string; cliente: string | null }>(`SELECT cot, cliente FROM tarea WHERE id = $1`, [tareaId]);
+  private async referencia(tareaId: string, despacho = false): Promise<{ linea: string } | null> {
+    const filas = await this.conexiones.pg.query<{ cot: string; cliente: string | null; lugar: string | null; campana: boolean; despacho_fecha: string | null; despacho_hora: string | null }>(
+      `SELECT tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
+       FROM tarea
+       ${joinUrgente('tarea')}
+       WHERE tarea.id = $1`,
+      [tareaId],
+    );
     const tarea = filas.rows[0];
-    return tarea ? { linea: this.linea(tarea) } : null;
+    return tarea ? { linea: this.linea(tarea, despacho) } : null;
   }
 
   private async charla(telefono: string): Promise<Charla> {
@@ -1888,6 +2017,12 @@ function direccionLimpia(valor: string | null): string | null {
   if (!valor) return null;
   const limpia = valor.replace(/<\s*https?:\/\/[^>]*>/gi, ' ').replace(/https?:\/\/\S+/gi, ' ').replace(/[<>]/g, ' ').replace(/\s+/g, ' ').trim();
   return limpia || null;
+}
+
+function textoFecha(fecha?: string | null, hora?: string | null): string {
+  if (!fecha) return 'sin fecha';
+  const dia = fecha.slice(0, 10).split('-').reverse().join('/');
+  return [dia, hora?.trim()].filter(Boolean).join(' ');
 }
 
 function horaLima(fecha: Date): string {

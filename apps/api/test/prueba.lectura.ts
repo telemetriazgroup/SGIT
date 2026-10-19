@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { negrita, textoAvisoAsignacion } from '../src/bot/avisos';
+import { avisoSilencioMenu, negrita, textoApertura, textoAvisoAsignacion, textoFichaDespacho } from '../src/bot/avisos';
 import { asumirZgru, claseDe, codigoContado, lineaLectura, presentarLectura } from '../src/bot/proceso-imagen';
 
 test('el contenedor ZGRU y la serie de la máquina no se confunden', () => {
@@ -22,6 +22,28 @@ test('el aviso al técnico pide un ok y deja en negrita lo que escribió despach
   assert.match(texto, /Escribe ok si sí/);
   assert.match(texto, /Estás en la cotización 10020263584/);
   assert.doesNotMatch(texto, /escribe 9/);
+});
+
+test('una tienda de campaña nombra la cotización, la cadena y la tienda', () => {
+  const datos = { cot: '10020263499#METRO|BARRANCA', cliente: 'DONOFRIO HELADOS S.A.', lugar: 'METRO · BARRANCA', cita: '2026-10-15 15:00', cantidad: null };
+  const apertura = textoApertura(datos);
+  assert.match(apertura, /cotización 10020263499/);
+  assert.match(apertura, /Cadena y tienda: METRO · BARRANCA/);
+  assert.doesNotMatch(apertura, /METRO\|BARRANCA/);
+  const ficha = textoFichaDespacho(datos);
+  assert.match(ficha, /COT 10020263499/);
+  assert.match(ficha, /Telemetrías: una o más/);
+  const aviso = textoAvisoAsignacion(datos.cot, datos.cliente, 'Johan', 'Listo el reefer', 1, [], null, datos.lugar);
+  assert.match(aviso, /Campaña 10020263499/);
+  assert.match(aviso, /Cadena y tienda: METRO · BARRANCA/);
+});
+
+test('a los 5 minutos sin respuesta se cierra y el siguiente mensaje pide el menú', () => {
+  const aviso = avisoSilencioMenu();
+  assert.match(aviso, /5 minutos sin respuesta/);
+  assert.match(aviso, /no quedó guardado/);
+  assert.match(aviso, /cualquier cosa/);
+  assert.match(avisoSilencioMenu(true), /Guardé el texto y las imágenes/);
 });
 
 test('lo escrito por la persona va en negrita y el resto no', () => {

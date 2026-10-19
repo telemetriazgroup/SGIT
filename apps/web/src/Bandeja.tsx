@@ -3,6 +3,7 @@ import type { SesionPublica } from '@sgit/shared';
 import { PanelBot } from './Bot';
 import { MiCuenta, PanelEquipo } from './Equipo';
 import { Logo } from './Logo';
+import { PanelOdoo } from './Odoo';
 import { PanelDiccionario, PanelTareas } from './Tareas';
 
 type Avance = {
@@ -120,7 +121,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [paginas, setPaginas] = useState(1);
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'odoo' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
   const [redactando, setRedactando] = useState(false);
   const [notaProceso, setNotaProceso] = useState<string | null>(null);
   const [tareaAbierta, setTareaAbierta] = useState<string | null>(null);
@@ -454,6 +455,11 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
               Cuentas
             </button>
           ) : null}
+          {sesion.usuario.rol === 'superusuario' ? (
+            <button type="button" className={vista === 'odoo' ? 'activo' : ''} onClick={() => { setVista('odoo'); setHilo(null); }}>
+              Odoo
+            </button>
+          ) : null}
           <button type="button" className={vista === 'cuenta' ? 'activo' : ''} onClick={() => { setVista('cuenta'); setHilo(null); }}>
             Mi cuenta
           </button>
@@ -525,6 +531,8 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} />
           ) : vista === 'equipo' ? (
             <PanelEquipo apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'odoo' ? (
+            <PanelOdoo apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'cuenta' ? (
             <MiCuenta apiUrl={apiUrl} token={sesion.token} alCambiarNombre={onNombre} />
           ) : vista === 'diccionario' ? (

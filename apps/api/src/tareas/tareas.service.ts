@@ -9,6 +9,10 @@ import { barridoCorre, entraHoraria } from './barrido';
 import { evaluarCita, type Cita } from './cita';
 import { cotsDe, normalizarFecha, plano } from './texto';
 import { BotService } from '../bot/bot.service';
+import { OdooServicio, type LecturaTarea } from '../odoo/servicio';
+import { claveTienda, coincideTienda, tiendasDeHtml, tiendasDeTexto, type TiendaLeida } from './campana';
+import { vincularHijas } from './hijas';
+import { joinUrgente, ordenFecha, ordenUrgente } from './prioridad';
 
 export type ResultadoProceso = {
   mensajeId: string;
@@ -33,7 +37,11 @@ type FilaMensaje = {
 };
 
 export class TareasService {
-  constructor(private readonly conexiones: Conexiones) {}
+  private readonly odoo: OdooServicio;
+
+  constructor(private readonly conexiones: Conexiones) {
+    this.odoo = new OdooServicio(conexiones);
+  }
 
   async procesarMensaje(id: string): Promise<ResultadoProceso> {
     const mensaje = await this.mensaje(id);
@@ -143,7 +151,13 @@ export class TareasService {
          OR coalesce(descripcion, '') ILIKE $1 ESCAPE '\\'
          OR coalesce(comercial_nombre, '') ILIKE $1 ESCAPE '\\'
          OR array_to_string(cots, ' ') ILIKE $1 ESCAPE '\\'
-         OR array_to_string(referencias, ' ') ILIKE $1 ESCAPE '\\')
+         OR array_to_string(referencias, ' ') ILIKE $1 ESCAPE '\\'
+         OR EXISTS (
+           SELECT 1 FROM tienda buscada
+           WHERE buscada.tarea_id = tarea.id
+             AND (buscada.nombre ILIKE $1 ESCAPE '\\' OR buscada.cadena ILIKE $1 ESCAPE '\\')
+         ))
+       AND tarea.padre_id IS NULL
        AND tarea.cot <> '10000000000'
        AND ${estado}`;
     const publicada = `AND ($2::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))`;
@@ -154,6 +168,10 @@ export class TareasService {
     const resultado = await this.conexiones.pg.query<FilaTarea>(
       `SELECT tarea.id, tarea.cot, tarea.cots, tarea.referencias, tarea.estado, tarea.ticket, tarea.lugar, tarea.cliente, tarea.descripcion, tarea.cita_fecha, tarea.cita_hora,
               tarea.comercial_nombre, ult.fecha,
+              tarea.campana,
+              to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora,
+              (SELECT count(*)::int FROM tienda WHERE tienda.tarea_id = tarea.id) AS locales,
               EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text) AS habilitada
        FROM tarea
        LEFT JOIN LATERAL (
@@ -162,9 +180,10 @@ export class TareasService {
          JOIN mensaje_correo c ON c.gmail_thread_id = origen.gmail_thread_id
          WHERE origen.id = tarea.mensaje_id
        ) ult ON true
+       ${joinUrgente('tarea')}
        ${donde}
        AND ($4::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))
-       ORDER BY ult.fecha DESC NULLS LAST, tarea.creado_en DESC
+       ORDER BY habilitada DESC, ${ordenUrgente('tarea')}
        LIMIT $2 OFFSET $3`,
       [filtro, TAMANO, (actual - 1) * TAMANO, verOcultas],
     );
@@ -317,6 +336,8 @@ export class TareasService {
         borrador: await this.borradorDe(tarea.id),
         asignacion: await this.asignacionConfirmada(tarea.id),
         movimientos: await this.movimientosDespacho(tarea.id),
+        odoo: await this.odooDe(tarea),
+        ...(await this.capaCampana(tarea)),
       };
     }
     const donde = numeros
@@ -340,7 +361,194 @@ export class TareasService {
       borrador: await this.borradorDe(tarea.id),
       asignacion: await this.asignacionConfirmada(tarea.id),
       movimientos: await this.movimientosDespacho(tarea.id),
+      odoo: await this.odooDe(tarea),
+      ...(await this.capaCampana(tarea)),
     };
+  }
+
+  async vincularOdoo(tareaId: string, clase: string, odooId: number): Promise<void> {
+    if (clase !== 'venta' && clase !== 'ticket') throw new BadRequestException('El vínculo es de venta o de ticket.');
+    if (!Number.isInteger(odooId) || odooId <= 0) throw new BadRequestException('Elige un documento de la lista.');
+    await this.conexiones.pg.query(
+      `INSERT INTO vinculo_odoo (tarea_id, clase, odoo_id) VALUES ($1, $2, $3)
+       ON CONFLICT (tarea_id, clase) DO UPDATE SET odoo_id = EXCLUDED.odoo_id`,
+      [tareaId, clase, odooId],
+    );
+  }
+
+  configuracionOdoo() {
+    return this.odoo.publica();
+  }
+
+  guardarOdoo(entrada: { url?: string; db?: string; usuario?: string; clave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string }) {
+    return this.odoo.guardar(entrada);
+  }
+
+  probarOdoo(entrada: { url?: string; db?: string; usuario?: string; clave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string }) {
+    return this.odoo.probar(entrada);
+  }
+
+  actualizarOdoo(id: string) {
+    return this.fichaConOdoo(id, true);
+  }
+
+  private async odooDe(tarea: FilaTarea): Promise<LecturaTarea | null> {
+    const lectura = await this.odoo.deTarea({ id: tarea.id, cot: tarea.cot, ticket: tarea.ticket, estado: tarea.estado }, false);
+    if (tarea.campana) await this.asimilarServicios(tarea, lectura?.venta.odoo_id ?? null);
+    return lectura;
+  }
+
+  async marcarCampana(id: string): Promise<void> {
+    const tarea = await this.conexiones.pg.query<{ cot: string }>(`SELECT cot FROM tarea WHERE id = $1`, [id]);
+    if (!tarea.rows[0]) throw new NotFoundException('No está esa tarea.');
+    await this.conexiones.pg.query(
+      `UPDATE tarea SET campana = true, estado = CASE WHEN estado = 'resuelta' THEN 'en_seguimiento' ELSE estado END WHERE id = $1`,
+      [id],
+    );
+    await this.incorporarTiendas(id, tarea.rows[0].cot);
+  }
+
+  async realizarTienda(tareaId: string, tiendaId: string, codigo: string): Promise<void> {
+    await vincularHijas(this.conexiones.pg, tareaId);
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE tienda SET estado = 'resuelta', codigo_equipo = COALESCE(NULLIF($3, ''), codigo_equipo) WHERE id = $1 AND tarea_id = $2`,
+      [tiendaId, tareaId, codigo.trim()],
+    );
+    if (resultado.rowCount === 0) throw new NotFoundException('No está esa tienda.');
+    await this.conexiones.pg.query(
+      `UPDATE tarea SET estado = 'resuelta'
+       WHERE id = (SELECT tarea_hija_id FROM tienda WHERE id = $1) AND estado <> 'resuelta'`,
+      [tiendaId],
+    );
+  }
+
+  async atenderTienda(tareaId: string, tiendaId: string): Promise<void> {
+    await vincularHijas(this.conexiones.pg, tareaId);
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE tienda SET estado = 'atendida' WHERE id = $1 AND tarea_id = $2 AND estado <> 'resuelta'`,
+      [tiendaId, tareaId],
+    );
+    if (resultado.rowCount === 0) throw new NotFoundException('No está esa tienda.');
+  }
+
+  private async incorporarTiendas(tareaId: string, cot: string): Promise<number> {
+    const mensajes = await this.conexiones.pg.query<{ html: string; texto: string }>(
+      `SELECT html, texto FROM mensaje_correo
+       WHERE asunto ~ ('(^|[^0-9])' || $1 || '([^0-9]|$)') OR texto ~ ('(^|[^0-9])' || $1 || '([^0-9]|$)')
+       ORDER BY fecha ASC NULLS LAST`,
+      [cot],
+    );
+    const leidas = new Map<string, TiendaLeida>();
+    for (const mensaje of mensajes.rows) {
+      const delHtml = tiendasDeHtml(mensaje.html ?? '');
+      const lista = delHtml.length > 0 ? delHtml : tiendasDeTexto(mensaje.texto ?? '');
+      for (const tienda of lista) leidas.set(claveTienda(tienda.cadena, tienda.tienda), tienda);
+    }
+    for (const tienda of leidas.values()) {
+      await this.conexiones.pg.query(
+        `INSERT INTO tienda (id, tarea_id, clave, orden, cadena, nombre, contacto, celular, entrega_fecha, entrega_hora, status, tamano, direccion, mapa)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         ON CONFLICT (tarea_id, clave) DO UPDATE SET
+           orden = COALESCE(EXCLUDED.orden, tienda.orden),
+           contacto = CASE WHEN EXCLUDED.contacto <> '' THEN EXCLUDED.contacto ELSE tienda.contacto END,
+           celular = CASE WHEN EXCLUDED.celular <> '' THEN EXCLUDED.celular ELSE tienda.celular END,
+           entrega_fecha = COALESCE(EXCLUDED.entrega_fecha, tienda.entrega_fecha),
+           entrega_hora = CASE WHEN EXCLUDED.entrega_hora <> '' THEN EXCLUDED.entrega_hora ELSE tienda.entrega_hora END,
+           status = CASE WHEN EXCLUDED.status <> '' THEN EXCLUDED.status ELSE tienda.status END,
+           tamano = CASE WHEN EXCLUDED.tamano <> '' THEN EXCLUDED.tamano ELSE tienda.tamano END,
+           direccion = CASE WHEN EXCLUDED.direccion <> '' THEN EXCLUDED.direccion ELSE tienda.direccion END,
+           mapa = CASE WHEN EXCLUDED.mapa <> '' THEN EXCLUDED.mapa ELSE tienda.mapa END`,
+        [
+          randomUUID(),
+          tareaId,
+          claveTienda(tienda.cadena, tienda.tienda),
+          tienda.orden,
+          tienda.cadena,
+          tienda.tienda,
+          tienda.contacto,
+          tienda.celular,
+          tienda.entregaFecha,
+          tienda.entregaHora,
+          tienda.status,
+          tienda.tamano,
+          tienda.direccion,
+          tienda.mapa,
+        ],
+      );
+    }
+    await vincularHijas(this.conexiones.pg, tareaId);
+    return leidas.size;
+  }
+
+  private async asimilarServicios(tarea: FilaTarea, ordenId: number | null): Promise<void> {
+    try {
+      const servicios = await this.odoo.listarServicios(String(tarea.cot ?? ''), ordenId);
+      for (const servicio of servicios) {
+        await this.conexiones.pg.query(
+          `INSERT INTO servicio_odoo (tarea_id, odoo_id, nombre, estado)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (tarea_id, odoo_id) DO UPDATE SET nombre = EXCLUDED.nombre, estado = EXCLUDED.estado`,
+          [tarea.id, servicio.id, servicio.nombre, servicio.estado],
+        );
+      }
+      const tiendas = await this.conexiones.pg.query<{ id: string; nombre: string }>(`SELECT id, nombre FROM tienda WHERE tarea_id = $1`, [tarea.id]);
+      const libres = await this.conexiones.pg.query<{ odoo_id: number; nombre: string; estado: string }>(
+        `SELECT odoo_id, nombre, estado FROM servicio_odoo WHERE tarea_id = $1 AND tienda_id IS NULL`,
+        [tarea.id],
+      );
+      for (const servicio of libres.rows) {
+        const coinciden = tiendas.rows.filter((tienda) => coincideTienda(servicio.nombre, tienda.nombre));
+        if (coinciden.length !== 1) continue;
+        await this.conexiones.pg.query(
+          `UPDATE servicio_odoo SET tienda_id = $3 WHERE tarea_id = $1 AND odoo_id = $2 AND tienda_id IS NULL`,
+          [tarea.id, servicio.odoo_id, coinciden[0].id],
+        );
+        await this.conexiones.pg.query(
+          `UPDATE tienda SET odoo_id = $2, odoo_nombre = $3, odoo_estado = $4 WHERE id = $1 AND (odoo_id IS NULL OR odoo_id = $2)`,
+          [coinciden[0].id, servicio.odoo_id, servicio.nombre, servicio.estado],
+        );
+      }
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'Odoo no respondió.';
+      console.error(`Campaña: ${mensaje.slice(0, 200)}`);
+    }
+  }
+
+  private async capaCampana(tarea: FilaTarea): Promise<{ campana: boolean; tiendas: TiendaGuardada[]; servicios: ServicioGuardado[] }> {
+    if (!tarea.campana) return { campana: false, tiendas: [], servicios: [] };
+    const faltan = await this.conexiones.pg.query(`SELECT 1 FROM tienda WHERE tarea_id = $1 AND tarea_hija_id IS NULL LIMIT 1`, [tarea.id]);
+    if (faltan.rows[0]) await vincularHijas(this.conexiones.pg, tarea.id);
+    const tiendas = await this.conexiones.pg.query<TiendaGuardada>(
+      `SELECT id, orden, cadena, nombre, contacto, celular, entrega_fecha, entrega_hora, status, tamano, direccion, mapa, estado, codigo_equipo, odoo_id, odoo_nombre, odoo_estado
+       FROM tienda WHERE tarea_id = $1 ORDER BY ${ordenFecha('entrega_fecha', 'orden NULLS LAST, nombre')}`,
+      [tarea.id],
+    );
+    const notas = await this.conexiones.pg.query<{ id: string; tienda_id: string; tipo: string; texto: string; autor_nombre: string; creado_en: Date }>(
+      `SELECT n.id, COALESCE(n.tienda_id, h.id) AS tienda_id, n.tipo, n.texto, n.autor_nombre, n.creado_en
+       FROM nota_bitacora n
+       LEFT JOIN tienda h ON h.tarea_hija_id = n.tarea_id AND h.tarea_id = $1
+       WHERE n.tienda_id IN (SELECT id FROM tienda WHERE tarea_id = $1)
+          OR h.id IS NOT NULL
+       ORDER BY n.creado_en`,
+      [tarea.id],
+    );
+    const servicios = await this.conexiones.pg.query<ServicioGuardado>(
+      `SELECT odoo_id, nombre, estado, tienda_id FROM servicio_odoo WHERE tarea_id = $1 ORDER BY nombre`,
+      [tarea.id],
+    );
+    return {
+      campana: true,
+      tiendas: tiendas.rows.map((tienda) => ({ ...tienda, notas: notas.rows.filter((nota) => nota.tienda_id === tienda.id) })),
+      servicios: servicios.rows,
+    };
+  }
+
+  private async fichaConOdoo(id: string, forzar: boolean) {
+    const resultado = await this.conexiones.pg.query<FilaTarea>(`SELECT id, cot, ticket, estado FROM tarea WHERE id = $1`, [id]);
+    const tarea = resultado.rows[0];
+    if (!tarea) throw new NotFoundException('No está esa tarea.');
+    await this.odoo.deTarea(tarea, forzar);
+    return this.ficha(id);
   }
 
   async diccionario(): Promise<Array<{ id: string; termino: string; activo: boolean }>> {
@@ -575,6 +783,8 @@ export class TareasService {
         protegidos,
       ],
     );
+    const campana = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM tarea WHERE cot = $1 AND campana`, [lectura.cot.valor]);
+    if (campana.rows[0]) await this.incorporarTiendas(campana.rows[0].id, lectura.cot.valor ?? '');
   }
 
   private async retirarSinEncargo(): Promise<void> {
@@ -582,6 +792,7 @@ export class TareasService {
       `DELETE FROM tarea t
        WHERE t.estado = 'detectada'
          AND t.cot <> '10000000000'
+         AND t.padre_id IS NULL
          AND NOT EXISTS (
            SELECT 1
            FROM mensaje_correo m
@@ -726,23 +937,48 @@ export class TareasService {
     );
   }
 
-  async anotar(id: string, autor: Autor, tipo: string, texto: string, archivo: ArchivoNota | null, canal: 'web' | 'whatsapp' = 'web', extras: ArchivoNota[] = []): Promise<void> {
+  async anotar(
+    id: string,
+    autor: Autor,
+    tipo: string,
+    texto: string,
+    archivo: ArchivoNota | null,
+    canal: 'web' | 'whatsapp' = 'web',
+    extras: ArchivoNota[] = [],
+    tiendaId: string | null = null,
+  ): Promise<void> {
     await this.niegaDespacho(autor.correo);
     if (tipo !== 'seguimiento' && tipo !== 'incidente') throw new BadRequestException('La nota es un seguimiento o un incidente.');
     await this.exigeVisible(autor.correo, 'tarea', id);
     const limpio = texto.trim();
     if (!limpio) throw new BadRequestException('Escribe la nota.');
     await this.filaTarea(id);
+    if (tiendaId) {
+      const tienda = await this.conexiones.pg.query(`SELECT 1 FROM tienda WHERE id = $1 AND tarea_id = $2`, [tiendaId, id]);
+      if ((tienda.rowCount ?? 0) === 0) throw new NotFoundException('No está esa tienda.');
+      await vincularHijas(this.conexiones.pg, id);
+    }
     const imagen = await this.prepararImagen(archivo);
     const notaId = randomUUID();
     const almacen = new AlmacenCorreo(this.conexiones);
     if (imagen) await almacen.guardar(imagen.clave(notaId), imagen.contenido, imagen.mime);
     await this.conexiones.pg.query(
       `INSERT INTO nota_bitacora (
-         id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [notaId, id, tipo, canal, limpio, autor.correo, autor.nombre, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
+         id, tarea_id, tienda_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [notaId, id, tiendaId, tipo, canal, limpio, autor.correo, autor.nombre, imagen ? imagen.clave(notaId) : null, imagen?.nombre ?? null, imagen?.mime ?? null],
     );
+    if (tiendaId) {
+      await this.conexiones.pg.query(
+        `UPDATE tienda SET estado = 'en_seguimiento' WHERE id = $1 AND estado = 'pendiente'`,
+        [tiendaId],
+      );
+      await this.conexiones.pg.query(
+        `UPDATE tarea SET estado = CASE WHEN estado IN ('resuelta', 'en_validacion') THEN estado ELSE 'en_seguimiento' END
+         WHERE id = (SELECT tarea_hija_id FROM tienda WHERE id = $1) AND estado <> 'resuelta'`,
+        [tiendaId],
+      );
+    }
     await this.guardarFotos(notaId, imagen, extras, almacen);
     if (tipo === 'seguimiento') {
       await this.conexiones.pg.query(
@@ -760,12 +996,18 @@ export class TareasService {
     const tarea = await this.conexiones.pg.query<{ estado: string }>(`SELECT estado FROM tarea WHERE id = $1`, [id]);
     if (!tarea.rows[0]) throw new NotFoundException('No está esa tarea.');
     if (tarea.rows[0].estado === 'resuelta') throw new BadRequestException('Esta tarea ya está resuelta.');
+    const abiertas = await this.conexiones.pg.query(
+      `SELECT 1 FROM tienda WHERE tarea_id = $1 AND estado <> 'resuelta' AND EXISTS (SELECT 1 FROM tarea WHERE id = $1 AND campana)`,
+      [id],
+    );
+    if ((abiertas.rowCount ?? 0) > 0) throw new BadRequestException('La campaña sigue abierta: quedan tiendas por realizar.');
     await this.insertarNota(id, null, 'cierre', canal, limpio, autor, archivo);
     await this.conexiones.pg.query(
       `UPDATE recordatorio SET estado = 'cancelado' WHERE tarea_id = $1 AND estado = 'pendiente'`,
       [id],
     );
     await this.conexiones.pg.query(`UPDATE tarea SET estado = 'resuelta', recordar_en = NULL WHERE id = $1`, [id]);
+    await this.conexiones.pg.query(`UPDATE tienda SET estado = 'resuelta' WHERE tarea_hija_id = $1 AND estado <> 'resuelta'`, [id]);
   }
 
   async anotarEnHilo(
@@ -970,7 +1212,7 @@ export class TareasService {
                  FROM nota_archivo f WHERE f.nota_id = n.id),
                 '[]'::json
               ) AS imagenes
-       FROM nota_bitacora n WHERE n.tarea_id = $1 ORDER BY n.creado_en`,
+       FROM nota_bitacora n WHERE n.tarea_id = $1 AND n.tienda_id IS NULL ORDER BY n.creado_en`,
       [tareaId],
     );
     return resultado.rows;
@@ -1240,8 +1482,22 @@ export class TareasService {
         `INSERT INTO habilitado (clase, clave) VALUES ($1, $2) ON CONFLICT (clase, clave) DO NOTHING`,
         [clase, clave],
       );
+      if (clase === 'tarea') {
+        await this.conexiones.pg.query(
+          `INSERT INTO habilitado (clase, clave)
+           SELECT 'tarea', h.id::text FROM tarea h WHERE h.padre_id = $1::uuid
+           ON CONFLICT (clase, clave) DO NOTHING`,
+          [id],
+        );
+      }
     } else {
       await this.conexiones.pg.query(`DELETE FROM habilitado WHERE clase = $1 AND clave = $2`, [clase, clave]);
+      if (clase === 'tarea') {
+        await this.conexiones.pg.query(
+          `DELETE FROM habilitado WHERE clase = 'tarea' AND clave IN (SELECT id::text FROM tarea WHERE padre_id = $1::uuid)`,
+          [id],
+        );
+      }
     }
     return visible;
   }
@@ -1434,7 +1690,30 @@ function patronArea(area: string | null): string | null {
   if (!patron) throw new BadRequestException('Esa área no está en el encargo.');
   return patron;
 }
-type FilaTarea = Record<string, unknown> & { id: string; cot: string; estado?: string; recordar_en?: Date | string | null };
+type FilaTarea = Record<string, unknown> & { id: string; cot: string; estado?: string; ticket?: string | null; campana?: boolean; recordar_en?: Date | string | null };
+
+type TiendaGuardada = {
+  id: string;
+  orden: number | null;
+  cadena: string;
+  nombre: string;
+  contacto: string;
+  celular: string;
+  entrega_fecha: string | null;
+  entrega_hora: string;
+  status: string;
+  tamano: string;
+  direccion: string;
+  mapa: string;
+  estado: string;
+  codigo_equipo: string | null;
+  odoo_id: number | null;
+  odoo_nombre: string;
+  odoo_estado: string;
+  notas?: Array<{ id: string; tipo: string; texto: string; autor_nombre: string; creado_en: Date }>;
+};
+
+type ServicioGuardado = { odoo_id: number; nombre: string; estado: string; tienda_id: string | null };
 
 type NotaBitacora = {
   id: string;

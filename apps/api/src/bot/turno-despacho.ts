@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { AlmacenCorreo } from '../buzon/almacen';
 import type { Conexiones } from '../conexiones';
 import { turnoCorre } from '../tareas/barrido';
+import { joinUrgente, ordenUrgente } from '../tareas/prioridad';
 import {
   PAUSA_MS,
   citaVisible,
@@ -71,6 +72,15 @@ export class TurnoDespacho {
       `UPDATE turno_despacho SET telefono_dueno = NULL
        WHERE tarea_id = $1 AND estado = 'en_curso' AND telefono_dueno = $2`,
       [tareaId, telefono],
+    );
+  }
+
+  async abandonar(tareaId: string): Promise<void> {
+    await this.pg.query(
+      `UPDATE turno_despacho
+       SET estado = 'en_cola', telefono_dueno = NULL, ultimo_mensaje_en = NULL
+       WHERE tarea_id = $1 AND estado = 'en_curso'`,
+      [tareaId],
     );
   }
 
@@ -175,13 +185,20 @@ export class TurnoDespacho {
     return fila.rows[0]?.cot ?? null;
   }
 
-  async menu(): Promise<Array<{ id: string; cot: string; cliente: string | null }>> {
-    const filas = await this.pg.query<{ id: string; cot: string; cliente: string | null }>(
-      `SELECT id, cot, cliente
+  async menu(): Promise<Array<{ id: string; cot: string; cliente: string | null; lugar: string | null; campana: boolean; despacho_fecha: string | null; despacho_hora: string | null }>> {
+    const filas = await this.pg.query<{ id: string; cot: string; cliente: string | null; lugar: string | null; campana: boolean; despacho_fecha: string | null; despacho_hora: string | null }>(
+      `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
        FROM tarea
-       WHERE cot <> '10000000000' AND estado <> 'resuelta'
+       ${joinUrgente('tarea')}
+       WHERE tarea.cot <> '10000000000' AND tarea.estado <> 'resuelta'
+         AND tarea.campana = false
+         AND NOT EXISTS (
+           SELECT 1 FROM tienda x WHERE x.tarea_hija_id = tarea.id AND x.estado IN ('atendida', 'resuelta')
+         )
          AND EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text)
-       ORDER BY creado_en ASC
+       ORDER BY ${ordenUrgente('tarea')}
        LIMIT 15`,
     );
     return filas.rows;
@@ -233,6 +250,18 @@ export class TurnoDespacho {
     if (enCurso.rows[0]) return null;
     const destinos = await this.coordinadores();
     if (destinos.length === 0) return null;
+    const pausados = await this.pg.query<{ telefono: string }>(
+      `SELECT telefono FROM charla
+       WHERE telefono = ANY($1::text[])
+         AND (
+           COALESCE(pendiente->>'espera_menu', '') = 'true'
+           OR paso = 'despacho_menu'
+         )`,
+      [destinos.map((destino) => destino.telefono)],
+    );
+    const enPausa = new Set(pausados.rows.map((fila) => fila.telefono));
+    const conCharla = destinos.filter((destino) => destino.telefono === excepto || !enPausa.has(destino.telefono));
+    if (conCharla.length === 0) return null;
     const tarea = await this.siguiente();
     if (!tarea) return null;
     const cliente = await this.pg.connect();
@@ -265,22 +294,28 @@ export class TurnoDespacho {
     const anterior = pregunta ? await this.textoConfirmado(tarea.id) : '';
     const imagenes = pregunta ? await this.contarImagenes(tarea.id, ['confirmada']) : 0;
     const texto = pregunta
-      ? textoReconsultaDespacho(tarea.cot, pregunta, anterior, imagenes)
+      ? textoReconsultaDespacho(tarea.cot, pregunta, anterior, imagenes, tarea.lugar)
       : textoApertura(this.aviso(tarea));
-    const momentos = momentosDeEnvio(destinos.length, ahora, PAUSA_MS);
-    for (const [indice, destino] of destinos.entries()) {
-      await this.pg.query(
+    const avisos = conCharla.filter((destino) => destino.telefono !== excepto);
+    const momentos = momentosDeEnvio(avisos.length, ahora, PAUSA_MS);
+    const cuando = new Map(avisos.map((destino, indice) => [destino.telefono, momentos[indice].toISOString()]));
+    for (const destino of conCharla) {
+      const tomada = await this.pg.query(
         `INSERT INTO charla (telefono, paso, tarea_id, lista, pendiente, actualizado_en)
          VALUES ($1, 'despacho_oferta', $2, '[]'::jsonb, NULL, now())
          ON CONFLICT (telefono) DO UPDATE
-           SET paso = 'despacho_oferta', tarea_id = EXCLUDED.tarea_id, lista = '[]'::jsonb, pendiente = NULL, actualizado_en = now()`,
+           SET paso = 'despacho_oferta', tarea_id = EXCLUDED.tarea_id, lista = '[]'::jsonb, pendiente = NULL, actualizado_en = now()
+         WHERE COALESCE(charla.pendiente->>'espera_menu', '') <> 'true'
+           AND charla.paso <> 'despacho_menu'
+         RETURNING telefono`,
         [destino.telefono, tarea.id],
       );
-      if (destino.telefono === excepto) continue;
+      const envio = cuando.get(destino.telefono);
+      if (!tomada.rows[0] || !envio) continue;
       await this.pg.query(
         `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
          VALUES ($1, 'apertura_despacho', $2, $3, $4, 'pendiente', $5)`,
-        [randomUUID(), tarea.id, destino.telefono, texto, momentos[indice].toISOString()],
+        [randomUUID(), tarea.id, destino.telefono, texto, envio],
       );
     }
     return texto;
@@ -347,6 +382,7 @@ export class TurnoDespacho {
     id: string;
     cot: string;
     cliente: string | null;
+    lugar: string | null;
     autor: string;
     texto: string;
     imagenes: Array<{ id: string; nombre: string }>;
@@ -354,8 +390,8 @@ export class TurnoDespacho {
     consulta: string | null;
     validacion: string | null;
   } | null> {
-    const fila = await this.pg.query<{ id: string; cot: string; cliente: string | null; autor_nombre: string; texto: string; validacion: string | null }>(
-      `SELECT a.id, t.cot, t.cliente, a.autor_nombre, a.texto, a.validacion
+    const fila = await this.pg.query<{ id: string; cot: string; cliente: string | null; lugar: string | null; autor_nombre: string; texto: string; validacion: string | null }>(
+      `SELECT a.id, t.cot, t.cliente, t.lugar, a.autor_nombre, a.texto, a.validacion
        FROM asignacion_despacho a
        JOIN tarea t ON t.id = a.tarea_id
        WHERE a.tarea_id = $1 AND a.estado = 'confirmada'
@@ -378,6 +414,7 @@ export class TurnoDespacho {
       id: asignacion.id,
       cot: asignacion.cot,
       cliente: asignacion.cliente,
+      lugar: asignacion.lugar,
       autor: asignacion.autor_nombre,
       texto: asignacion.texto,
       imagenes: imagenes.rows,
@@ -571,8 +608,8 @@ export class TurnoDespacho {
   }
 
   private async publicarAviso(asignacionId: string): Promise<void> {
-    const fila = await this.pg.query<{ cot: string; cliente: string | null; autor_nombre: string; texto: string; tarea_id: string }>(
-      `SELECT t.cot, t.cliente, a.autor_nombre, a.texto, a.tarea_id
+    const fila = await this.pg.query<{ cot: string; cliente: string | null; lugar: string | null; autor_nombre: string; texto: string; tarea_id: string }>(
+      `SELECT t.cot, t.cliente, t.lugar, a.autor_nombre, a.texto, a.tarea_id
        FROM asignacion_despacho a
        JOIN tarea t ON t.id = a.tarea_id
        WHERE a.id = $1`,
@@ -604,7 +641,16 @@ export class TurnoDespacho {
       await this.pg.query(`UPDATE asignacion_despacho SET procesando_en = NULL WHERE id = $1`, [asignacionId]);
       return;
     }
-    const cuerpo = textoAvisoAsignacion(asignacion.cot, asignacion.cliente, asignacion.autor_nombre, asignacion.texto, imagenes.rows.length, lecturas, 'pendiente');
+    const cuerpo = textoAvisoAsignacion(
+      asignacion.cot,
+      asignacion.cliente,
+      asignacion.autor_nombre,
+      asignacion.texto,
+      imagenes.rows.length,
+      lecturas,
+      'pendiente',
+      asignacion.lugar,
+    );
     const momentos = momentosDeEnvio(destinos.rows.length, new Date(), PAUSA_MS);
     let avisados = 0;
     for (const [indice, destino] of destinos.rows.entries()) {
@@ -669,8 +715,16 @@ export class TurnoDespacho {
               to_char(t.cita_fecha, 'YYYY-MM-DD') AS cita_fecha, t.cita_hora, t.cantidad
        FROM tarea t
        LEFT JOIN turno_despacho u ON u.tarea_id = t.id AND u.estado IN ('en_cola', 'reconsulta')
+       ${joinUrgente('t')}
        WHERE t.cot <> '10000000000'
          AND t.estado <> 'resuelta'
+         AND t.campana = false
+         AND (
+           u.estado = 'reconsulta'
+           OR NOT EXISTS (
+             SELECT 1 FROM tienda x WHERE x.tarea_hija_id = t.id AND x.estado IN ('atendida', 'resuelta')
+           )
+         )
          AND EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = t.id::text)
          AND (
            NOT EXISTS (
@@ -683,7 +737,7 @@ export class TurnoDespacho {
            NOT EXISTS (SELECT 1 FROM turno_despacho x WHERE x.tarea_id = t.id)
            OR u.id IS NOT NULL
          )
-       ORDER BY CASE WHEN u.id IS NULL THEN 0 ELSE 1 END, COALESCE(u.abierto_en, t.creado_en), t.creado_en
+       ORDER BY ${ordenUrgente('t')}, CASE WHEN u.estado = 'reconsulta' THEN 0 ELSE 1 END
        LIMIT 1`,
     );
     return fila.rows[0] ?? null;

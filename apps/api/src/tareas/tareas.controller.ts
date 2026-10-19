@@ -150,6 +150,51 @@ export class TareasController {
     return this.fichaDe(id);
   }
 
+  @Post('tareas/:id/odoo/vincular')
+  async vincularOdoo(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { clase?: string; odooId?: number },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.vincularOdoo(id, cuerpo?.clase ?? '', Number(cuerpo?.odooId));
+    return this.fichaDe(id);
+  }
+
+  @Get('odoo/configuracion')
+  async configuracionOdoo(@Headers('authorization') autorizacion: string | undefined) {
+    await this.exigirSuperusuario(autorizacion);
+    return this.tareas.configuracionOdoo();
+  }
+
+  @Post('odoo/configuracion')
+  async guardarOdoo(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Body() cuerpo: { url?: string; db?: string; usuario?: string; clave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string },
+  ) {
+    await this.exigirSuperusuario(autorizacion);
+    return this.tareas.guardarOdoo(cuerpo ?? {});
+  }
+
+  @Post('odoo/probar')
+  async probarOdoo(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Body() cuerpo: { url?: string; db?: string; usuario?: string; clave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string },
+  ) {
+    await this.exigirSuperusuario(autorizacion);
+    return this.tareas.probarOdoo(cuerpo ?? {});
+  }
+
+  @Post('tareas/:id/odoo/actualizar')
+  async actualizarOdoo(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    const tarea = await this.tareas.actualizarOdoo(id);
+    if (!tarea) throw new NotFoundException('No está esa tarea.');
+    return tarea;
+  }
+
   @Get('tareas/:id')
   async ficha(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     const usuario = await this.exigir(autorizacion);
@@ -157,6 +202,39 @@ export class TareasController {
     const tarea = await this.tareas.ficha(id);
     if (!tarea) throw new NotFoundException('No está esa tarea.');
     return tarea;
+  }
+
+  @Post('tareas/:id/campana')
+  async campana(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.marcarCampana(id);
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/tiendas/:tiendaId/atender')
+  async atenderTienda(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('tiendaId') tiendaId: string,
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.atenderTienda(id, tiendaId);
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/tiendas/:tiendaId/realizar')
+  async realizarTienda(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('tiendaId') tiendaId: string,
+    @Body() cuerpo: { codigo?: string },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.realizarTienda(id, tiendaId, cuerpo?.codigo ?? '');
+    return this.fichaDe(id);
   }
 
   @Post('tareas/:id/tomar')
@@ -170,11 +248,11 @@ export class TareasController {
   async nota(
     @Headers('authorization') autorizacion: string | undefined,
     @Param('id') id: string,
-    @Body() cuerpo: { tipo?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string }; archivos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
+    @Body() cuerpo: { tipo?: string; texto?: string; tiendaId?: string; archivo?: { nombre?: string; mime?: string; contenido?: string }; archivos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
   ) {
     const usuario = await this.exigir(autorizacion);
     const lista = listaDe(cuerpo?.archivos, cuerpo?.archivo);
-    await this.tareas.anotar(id, usuario, cuerpo?.tipo ?? '', cuerpo?.texto ?? '', lista[0] ?? null, 'web', lista.slice(1));
+    await this.tareas.anotar(id, usuario, cuerpo?.tipo ?? '', cuerpo?.texto ?? '', lista[0] ?? null, 'web', lista.slice(1), cuerpo?.tiendaId ?? null);
     return this.fichaDe(id);
   }
 
@@ -328,6 +406,12 @@ export class TareasController {
   private async exigirSistema(autorizacion?: string) {
     const usuario = await this.exigir(autorizacion);
     if (!puedeOperarSistema(usuario.rol)) throw new ForbiddenException('No tienes permiso para esta operación.');
+    return usuario;
+  }
+
+  private async exigirSuperusuario(autorizacion?: string) {
+    const usuario = await this.exigir(autorizacion);
+    if (usuario.rol !== 'superusuario') throw new ForbiddenException('No tienes permiso para la conexión con Odoo.');
     return usuario;
   }
 }

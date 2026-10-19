@@ -619,6 +619,19 @@ button:disabled {
   white-space: nowrap;
 }
 
+.fecha-despacho {
+  margin-left: 8px;
+  font-weight: 650;
+}
+
+.fecha-despacho.pasada {
+  color: #8a341f;
+}
+
+.fecha-despacho.hoy {
+  color: #1f4d3a;
+}
+
 .lectura-panel {
   padding: 8px 20px 28px;
 }
@@ -1779,5 +1792,206 @@ button:disabled {
   .cuenta-campos,
   .cuentas-cuerpo {
     grid-template-columns: 1fr;
+  }
+}
+
+.fichas-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.fichas-tabs button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: #5c564c;
+  padding: 8px 4px;
+}
+
+.fichas-tabs button.activo {
+  border-bottom-color: #1f4d3a;
+  color: #1f4d3a;
+  font-weight: 650;
+}
+
+.odoo-hoja {
+  background: #fff;
+  border: 1px solid #e6e1d8;
+  border-radius: 8px;
+  margin: 0 0 20px;
+  padding: 16px;
+}
+
+.odoo-kicker {
+  margin: 0;
+  color: #5c564c;
+  font-size: 13px;
+}
+
+.odoo-cabeza h3 {
+  margin: 4px 0 12px;
+}
+
+.odoo-pasos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.odoo-pasos span {
+  border: 1px solid #e6e1d8;
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #5c564c;
+}
+
+.odoo-pasos span.actual {
+  background: #1f4d3a;
+  border-color: #1f4d3a;
+  color: #fff;
+}
+
+.odoo-cinta {
+  margin-left: auto;
+  background: #8d2f2f;
+  color: #fff;
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+
+.odoo-etapa {
+  margin: 0 0 12px;
+  font-weight: 650;
+}
+
+.odoo-cuerpo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 20px;
+  align-items: start;
+}
+
+.odoo-formulario {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 24px;
+}
+
+.odoo-formulario .odoo-nota,
+.odoo-formulario .odoo-lineas,
+.odoo-formulario .odoo-total,
+.odoo-formulario .meta {
+  grid-column: 1 / -1;
+}
+
+.odoo-nota {
+  white-space: pre-wrap;
+  background: #f7f4ee;
+  padding: 12px;
+}
+
+.odoo-lineas td span {
+  display: block;
+  color: #5c564c;
+}
+
+.odoo-total {
+  text-align: right;
+  font-weight: 650;
+}
+
+.odoo-chatter {
+  border-left: 1px solid #e6e1d8;
+  padding-left: 16px;
+}
+
+.odoo-chatter h4 {
+  margin: 0 0 12px;
+}
+
+.odoo-chatter ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.odoo-chatter li {
+  margin: 0 0 14px;
+}
+
+.odoo-chatter li div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.odoo-chatter time,
+.odoo-chatter p {
+  color: #5c564c;
+}
+
+.odoo-chatter p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.tiendas {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.tiendas li {
+  border: 1px solid #e6e1d8;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
+.tiendas header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.tienda-lista {
+  opacity: 0.75;
+}
+
+.odoo-copia {
+  margin-top: 20px;
+}
+
+.odoo-lineas {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+
+.odoo-lineas th,
+.odoo-lineas td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #e6e1d8;
+  vertical-align: top;
+}
+
+@media (max-width: 900px) {
+  .odoo-cuerpo,
+  .odoo-formulario {
+    grid-template-columns: 1fr;
+  }
+
+  .odoo-chatter {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid #e6e1d8;
+    padding-top: 16px;
   }
 }

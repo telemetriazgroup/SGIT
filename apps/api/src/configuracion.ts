@@ -25,6 +25,16 @@ export type Configuracion = {
     redirectUri: string;
     correo: string;
   } | null;
+  odoo: LecturaOdoo | null;
+};
+
+export type LecturaOdoo = {
+  url: string;
+  db: string;
+  usuario: string;
+  clave: string;
+  venta: { modelo: string; campo: string };
+  tarea: { modelo: string };
 };
 
 const OBLIGATORIAS = [
@@ -78,5 +88,28 @@ export function leerConfiguracion(env: NodeJS.ProcessEnv = process.env): Configu
             correo: (env.GMAIL_CORREO?.trim() || 'telemetria@zgroup.com.pe').toLowerCase(),
           }
         : null,
+    odoo: lecturaOdoo(env),
+  };
+}
+
+function lecturaOdoo(env: NodeJS.ProcessEnv): LecturaOdoo | null {
+  const url = env.ODOO_URL?.trim().replace(/\/$/, '') ?? '';
+  const db = env.ODOO_DB?.trim() ?? '';
+  const usuario = env.ODOO_USUARIO?.trim() ?? '';
+  const clave = env.ODOO_CLAVE?.trim() ?? '';
+  if (!url || !db || !usuario || !clave) return null;
+  const modeloVenta = env.ODOO_MODELO_VENTA?.trim() ?? '';
+  const campoCot = env.ODOO_CAMPO_COT?.trim() ?? '';
+  const modeloTarea = env.ODOO_MODELO_TICKET?.trim() ?? '';
+  return {
+    url,
+    db,
+    usuario,
+    clave,
+    venta: {
+      modelo: /^[a-z][a-z0-9_.]*\.[a-z0-9_.]+$/i.test(modeloVenta) ? modeloVenta : 'sale.order',
+      campo: /^[a-z_][a-z0-9_]*$/i.test(campoCot) ? campoCot : 'name',
+    },
+    tarea: { modelo: /^[a-z][a-z0-9_.]*\.[a-z0-9_.]+$/i.test(modeloTarea) ? modeloTarea : 'project.task' },
   };
 }

@@ -371,9 +371,9 @@ Recorrido de la fase 2 con el número de laboratorio:
 
 ## Sprint 7 — Lectura de Odoo
 
-**Inicio — 18 de octubre de 2026.** La búsqueda no se programa todavía. El acta del sprint 0 tiene vacíos el modelo y el campo de la venta, del ticket y de la tarea de servicio, y en el entorno no está la clave de `sgit.tecnico`. Esos nombres se anotan mirando la COT `10020263623` y el ticket `#2139` en staging. No se inventan.
+**Inicio — 18 de octubre de 2026.** La cotización `10020264043` es el pedido `sale.order` y el ticket `2365` es la tarea `project.task` de Servicio externo. SGIT copia pedido, líneas, notas, entrega y facturación. La conexión se guarda en la pantalla Odoo. Las tareas marcadas se vuelven a leer. SGIT no escribe en Odoo.
 
-**Entregable.** Al abrir la ficha se ve el estado de la venta de la COT y el del ticket, con la fecha de esa lectura. Si hay dos documentos, el operador elige. Si Odoo no responde, sigue viendo el último estado.
+**Entregable.** La ficha de una tarea marcada muestra la cotización y el servicio externo guardados, con la fecha de esa lectura. Si hay dos documentos, el operador elige. Si Odoo no responde, sigue viendo la última copia.
 
 **Historias.** H-30, H-31, H-32, H-33. Cierra la fase 3.
 
@@ -404,6 +404,8 @@ Doble del cliente en la suite automática, y un caso contra staging en la prueba
 **Queda fuera.** Crear la MO.
 
 **Sale cuando.** El área contrasta el estado comercial en la ficha y en Odoo para la COT de prueba, y coinciden.
+
+**Cierre — 18 de octubre de 2026.** La ficha de una tarea marcada guarda la cotización y el servicio externo. Si Odoo no responde, queda la última copia. El reloj sigue cada 3 minutos y relee la tarea cuando esa copia tiene más de 15 minutos. La pestaña Odoo muestra los cambios y la evolución, sin borrar los anteriores. En la tarea, Fechas lista la cita, las fechas leídas en Odoo y la reprogramación cuando el correo o Odoo cambian la entrega. En una campaña se asimilan todos los servicios externos. Si no es campaña y hay varios documentos, el operador elige cuál se queda. Las cotizaciones de producción contrastadas fueron `10020264043` y `10020263584`. Con esto se abre el sprint 8.
 
 ---
 
