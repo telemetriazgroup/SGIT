@@ -52,6 +52,6 @@ END $$;
 ALTER TABLE aviso ADD CONSTRAINT aviso_tipo_check CHECK (
   tipo IN (
     'tarea_nueva', 'reprogramacion', 'prueba', 'consulta_despacho', 'aviso_snooze',
-    'apertura_despacho', 'asignacion_despacho', 'consulta_lote', 'consulta_chip'
+    'apertura_despacho', 'asignacion_despacho', 'consulta_lote', 'consulta_chip', 'fabricacion'
   )
 );

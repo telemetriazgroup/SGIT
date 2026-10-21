@@ -35,6 +35,7 @@ export type LecturaOdoo = {
   clave: string;
   venta: { modelo: string; campo: string };
   tarea: { modelo: string };
+  sesion?: { usuario: string; clave: string };
 };
 
 const OBLIGATORIAS = [

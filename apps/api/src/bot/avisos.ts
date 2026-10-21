@@ -44,8 +44,8 @@ export function textoApertura(datos: DatosAviso): string {
     `Tenemos una solicitud de telemetría en la cotización ${cotVisible(datos.cot)}, del cliente ${datos.cliente ?? 'sin cliente'}.`,
     sitio ? `${sitio}.` : '',
     datos.cantidad && datos.cantidad > 1
-      ? `Tengo ${datos.cantidad} solicitudes de telemetría. Envíame la foto de la máquina y del contenedor del primer equipo.`
-      : 'Envíame el contenedor y la máquina asignados. Puedes escribir o mandar imágenes.',
+      ? `Tengo ${datos.cantidad} solicitudes de telemetría. Envíame las fotos de la máquina y del contenedor del primer equipo. Pueden ser varias juntas.`
+      : 'Envíame el contenedor y la máquina asignados. Puedes escribir o mandar varias fotos juntas.',
     'Escribe 1 o datos para ver la cotización.',
     'Escribe menu para ver las demás pendientes.',
   ].filter(Boolean).join('\n');
@@ -109,13 +109,14 @@ export function textoAvisoAsignacion(
     estado,
     'Escribe ok si sí.',
     lecturas.length > 0 ? 'O escribe el número de la lectura que quieres corregir.' : '',
+    imagenes > 0 ? 'Escribe procesar para leer las imágenes.' : '',
     'Escribe menu para volver a la cotización.',
   ].filter(Boolean).join('\n');
 }
 
 export function ackDespacho(imagenes: number, texto: string): string {
   return [
-    imagenes > 0 ? `Quedó la imagen ${imagenes}.` : 'Quedó anotado.',
+    imagenes > 1 ? `Quedaron ${imagenes} imágenes.` : imagenes === 1 ? 'Quedó la imagen.' : 'Quedó anotado.',
     negrita(texto),
     'Si no envías más datos en los próximos 15 segundos, te pregunto si es todo.',
     'Escribe ok cuando termines.',
@@ -133,7 +134,7 @@ export function sinValidarAviso(cot: string, lugar: string | null = null): strin
     `Pasaron 5 minutos sin respuesta en la cotización ${cotVisible(cot)}.`,
     sitio ? `${sitio}.` : '',
     'Quedó registrado lo que envió despacho y lo que leyó el sistema, sin validar.',
-    'Cuando entres a la cotización, la opción 9 muestra las lecturas para corregirlas.',
+    'Entra a Telemetrías, abre el hilo y en Área despacho revisa los últimos registros.',
   ].filter(Boolean).join('\n');
 }
 
@@ -146,7 +147,7 @@ export function textoReconsultaDespacho(cot: string, pregunta: string, anterior:
     'La asignación anterior fue:',
     negrita(anterior) || 'Sin texto.',
     imagenes > 0 ? `Imágenes: ${imagenes}` : '',
-    'Responde con texto o una imagen. Escribe ok cuando termines.',
+    'Responde con texto o con fotos. Pueden ser varias juntas. Escribe ok cuando termines.',
   ].filter(Boolean).join('\n');
 }
 
@@ -256,13 +257,56 @@ export function opcionesCot(elevado = false): string {
     '4. Último seguimiento',
     '5. Último incidente',
     '6. Resumen de registros',
-    '7. Volver al menú general',
   ];
-  if (elevado) lineas.push('8. Cerrar por regularización');
-  lineas.push('9. Respuesta de despacho');
-  lineas.push('10. Pedir chip a almacén');
-  lineas.push('11. Telemetrías');
+  if (elevado) {
+    lineas.push('7. Cerrar por regularización');
+    lineas.push('8. Telemetrías');
+    lineas.push('9. Volver al menú anterior');
+  } else {
+    lineas.push('7. Telemetrías');
+    lineas.push('8. Volver al menú anterior');
+  }
   return lineas.join('\n');
+}
+
+export function menuDeHilo(linea: string, contexto: string, falta: string): string {
+  return [linea, contexto, falta, '1. Área despacho', '2. Área almacén', '3. Esta telemetría no se instala', '4. Ya tiene telemetría. Regularizar o validar la instalación', '5. Orden de fabricación / instalación', '6. Volver al menú anterior'].filter(Boolean).join('\n');
+}
+
+export function menuOrden(titulo: string, cierre: string): string {
+  return [titulo, cierre, '1. Pedir insumo en orden de fabricación', '2. Agregar o modificar insumos, si está en borrador', '3. Confirmar orden de fabricación', '4. Ver PDF de orden de producción', '5. Imprimir PDF de orden de producción', '6. Reporte de instalación', '7. Volver al menú anterior'].filter(Boolean).join('\n');
+}
+
+export function menuInstalacion(titulo: string, modem: string): string {
+  return [titulo, modem, '1. Registrar imágenes de la instalación', '2. Agregar comentario', '3. Validar conexión Starcool', '4. Validar conexión Thermoking', '5. Validar conexión Genset', '6. Módulo 4G. IMEI de la instalación', '7. Volver al menú anterior'].filter(Boolean).join('\n');
+}
+
+export function menuAreaDespacho(titulo: string): string {
+  return [titulo, '1. Validar lo que envió despacho', '2. Pedir ahora el contenedor y la máquina', '3. Regularizar el contenedor. Escríbelo o manda la foto', '4. Regularizar la máquina. Escríbela o manda la foto', '5. Ver los últimos registros de despacho', '6. Volver al menú anterior'].join('\n');
+}
+
+export function menuAreaAlmacen(titulo: string): string {
+  return [titulo, '1. Ver lo que envió despacho', '2. Pedir chip a almacén', '3. Pedir módulo 4G', '4. Regularizar el chip. Escribe el IMEI o manda la foto', '5. Regularizar el módulo 4G. Escribe el SN o manda la foto', '6. Registrar entrega de solicitud a almacén', '7. Registrar recepción de insumos de almacén', '8. Ver estado de solicitud de insumos en almacén', '9. Volver al menú anterior'].join('\n');
+}
+
+export function menuSinInstalacion(titulo: string): string {
+  return [titulo, '¿Por qué no se instala?', '1. La máquina es Carrier o Daikin', '2. Control interno. Se priorizan los pedidos regulares', '3. No hay stock de telemetría o de chip', 'Escribe otra razón si es distinta.', 'Escribe menu para volver al hilo.'].join('\n');
+}
+
+export function menuValidarInstalacion(titulo: string): string {
+  return [titulo, '1. Regularizar el chip. Escribe el IMEI o manda la foto', '2. Regularizar el módulo 4G. Escribe el SN o manda la foto', '3. Asimilar orden de fabricación', '4. Registrar imágenes de la instalación / validación', '5. Validar conexión Starcool', '6. Validar conexión Thermoking', '7. Validar conexión Genset', '8. Volver al menú anterior'].join('\n');
+}
+
+export function preguntaHilosPendientes(pendientes: number): string {
+  if (pendientes <= 1) return 'Hay 1 hilo pendiente. Envíame el contenedor y la máquina.';
+  return `Hay ${pendientes} hilos pendientes. Envíame el contenedor y la máquina de cada uno.`;
+}
+
+export function textoColaHilos(pendientes: number, situacion: 'encolada' | 'en_curso' | 'sin_coordinador'): string {
+  const cuantos = pendientes === 1 ? '1 hilo pendiente' : `${pendientes} hilos pendientes`;
+  if (situacion === 'sin_coordinador') return `No hay un coordinador de despacho con WhatsApp. Quedó en la cola: ${cuantos} de contenedor y máquina.`;
+  if (situacion === 'en_curso') return `Despacho ya está en esta cotización. Le quedó anotado que hay ${cuantos} de contenedor y máquina.`;
+  return `Quedó en la cola de despacho. Cada 30 minutos se le pide el contenedor y la máquina. Hay ${cuantos} de esa información.`;
 }
 
 export function menuCot(referencia: string, elevado = false): string {

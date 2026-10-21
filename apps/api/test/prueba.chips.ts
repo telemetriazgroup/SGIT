@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { deflateRawSync, crc32 } from 'zlib';
 import { test } from 'node:test';
 import { filasDeExcel } from '../src/chips/excel';
-import { armarOrden, seriesDe } from '../src/chips/orden';
+import { armarOrden, marcaDeOrden, serieCoincide, serieChipDe, seriesDe } from '../src/chips/orden';
 import { clasificar } from '../src/chips/inventario';
 import { normalizarCelular, normalizarImei } from '../src/chips/normalizar';
 
@@ -104,6 +104,15 @@ test('el módem de una orden conserva su serie y no hereda la del chip', () => {
   assert.equal(seriesDe([11], nombres), '00501026082100008811');
   assert.equal(seriesDe([10], nombres), '919890232');
   assert.equal(seriesDe([], nombres), '');
+});
+
+test('asimilar una orden exige el mismo número de chip', () => {
+  const componentes = [{ producto: '[INDND4855] CHIP', serie: '919867926' }, { producto: 'USR-G786', serie: '00501026082100008811' }];
+  assert.equal(serieChipDe(componentes), '919867926');
+  assert.equal(serieCoincide('919867926', '919867926', '8951029071100014012'), true);
+  assert.equal(serieCoincide('919865346', '919867926', '8951029071100014012'), false);
+  assert.equal(serieCoincide('', '919867926', ''), false);
+  assert.equal(marcaDeOrden('2026-10-21 12:00:00', ['2026-10-20 10:00:00', '2026-10-21 11:00:00']), '2026-10-21 12:00:00|2026-10-21 11:00:00');
 });
 
 function xlsx(archivos: Record<string, string>): Buffer {

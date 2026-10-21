@@ -28,8 +28,12 @@ export async function buscar(
   campos: string[],
   limite: number,
   esperaMs = ESPERA_MS,
+  orden = 'id desc',
+  contexto?: Record<string, unknown>,
 ): Promise<Record<string, unknown>[]> {
   if (dominio.length === 0) return [];
+  const opciones: Record<string, unknown> = { fields: campos, limit: limite, order: orden };
+  if (contexto && Object.keys(contexto).length > 0) opciones.context = contexto;
   const filas = await rpc(config, 'object', 'execute_kw', [
     config.db,
     uid,
@@ -37,7 +41,7 @@ export async function buscar(
     modelo,
     'search_read',
     [dominio],
-    { fields: campos, limit: limite, order: 'id desc' },
+    opciones,
   ], esperaMs);
   if (!Array.isArray(filas)) return [];
   return filas.filter((fila): fila is Record<string, unknown> => Boolean(fila) && typeof fila === 'object');
@@ -49,6 +53,10 @@ export function presentes(meta: Record<string, MetaCampo>, pedidos: string[]): s
 
 export function limpiarCache(): void {
   cache.clear();
+}
+
+export async function llamar(config: LecturaOdoo, uid: number, modelo: string, metodo: string, args: unknown[], kwargs: Record<string, unknown> = {}): Promise<unknown> {
+  return rpc(config, 'object', 'execute_kw', [config.db, uid, config.clave, modelo, metodo, args, kwargs]);
 }
 
 async function rpc(config: LecturaOdoo, servicio: string, metodo: string, args: unknown[], esperaMs = ESPERA_MS): Promise<unknown> {

@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react';
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
 type TareaLista = {
   id: string;
@@ -68,6 +68,7 @@ type Tarea = TareaLista & {
   servicios?: ServicioCampana[];
   borrador?: { codigo: string; maquina: string; autor_nombre: string } | null;
   hilos?: HiloFicha[];
+  fabricaciones?: Array<{ hiloId: string; orden: string; estado: string; enlace: string; ejecutor: string }>;
 };
 
 type HiloFicha = {
@@ -78,9 +79,12 @@ type HiloFicha = {
   contenedor: string | null;
   maquina: string | null;
   despacho_texto: string | null;
+  chip_imei?: string | null;
   chip_celular: string | null;
   chip_estado?: 'disponible' | 'ocupado' | null;
   despacho_validado: boolean;
+  modem_serie?: string | null;
+  modem_imei?: string | null;
 };
 
 type CopiaOdoo = {
@@ -602,29 +606,59 @@ export function PanelTareas({
           <Campo nombre="Asignación de despacho" valor={ficha.asignacion ? [ficha.asignacion.texto || 'Sin texto.', ficha.asignacion.autor_nombre, ficha.asignacion.confirmada_en ? cuando(ficha.asignacion.confirmada_en) : '', prioridad ? etiquetaValidacion(ficha.asignacion.validacion) : ''].filter(Boolean).join(' · ') : null} />
           <Campo nombre="Consulta a despacho" valor={ficha.asignacion?.consulta ?? null} />
         </dl>
-        {ficha.asignacion?.imagenes && ficha.asignacion.imagenes.length > 0 ? (
-          <div className="nota-fotos">
-            {ficha.asignacion.imagenes.map((imagen) => (
-              <FotoAsignacion key={imagen.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} archivoId={imagen.id} nombre={imagen.nombre} />
-            ))}
-          </div>
-        ) : null}
-        <HilosCotizacion apiUrl={apiUrl} token={token} tareaId={ficha.id} hilos={ficha.hilos ?? []} cantidad={ficha.cantidad} editar={editar} alGuardar={setFicha} alFallar={setAviso} />
+        <Bitacora
+          apiUrl={apiUrl}
+          token={token}
+          ficha={ficha}
+          editar={editar}
+          anotar={anotar}
+          parte="acciones"
+          alGuardar={(tarea) => {
+            setFicha(tarea);
+            void cargar().catch((error: unknown) => setAviso(texto(error)));
+          }}
+          alFallar={setAviso}
+        />
+        <HilosCotizacion
+          apiUrl={apiUrl}
+          token={token}
+          tareaId={ficha.id}
+          hilos={ficha.hilos ?? []}
+          fabricaciones={ficha.fabricaciones ?? []}
+          notas={ficha.notas ?? []}
+          cantidad={ficha.cantidad}
+          editar={editar}
+          alGuardar={setFicha}
+          alFallar={setAviso}
+        />
+        <Bitacora
+          apiUrl={apiUrl}
+          token={token}
+          ficha={ficha}
+          editar={editar}
+          anotar={anotar}
+          parte="tiempo"
+          alGuardar={(tarea) => {
+            setFicha(tarea);
+            void cargar().catch((error: unknown) => setAviso(texto(error)));
+          }}
+          alFallar={setAviso}
+        />
         {prioridad && ficha.movimientos && ficha.movimientos.length > 0 ? (
-          <section>
-            <h3>Movimientos de despacho</h3>
-            <ol className="bitacora-tiempo">
-              {ficha.movimientos.map((movimiento) => (
-                <li key={movimiento.id}>
-                  <div className="bitacora-evento">
-                    <time>{cuando(movimiento.creado_en)}</time>
-                    <strong>{movimiento.actor}</strong>
-                  </div>
-                  <p>{movimiento.detalle}</p>
-                </li>
-              ))}
-            </ol>
-          </section>
+          <ListaVerMas
+            titulo="Movimientos de despacho y almacén"
+            items={[...ficha.movimientos].sort((a, b) => b.creado_en.localeCompare(a.creado_en))}
+            clave={(movimiento) => movimiento.id}
+            render={(movimiento) => (
+              <>
+                <div className="bitacora-evento">
+                  <time>{cuando(movimiento.creado_en)}</time>
+                  <strong>{movimiento.actor}</strong>
+                </div>
+                <p>{movimiento.detalle}</p>
+              </>
+            )}
+          />
         ) : null}
         {ficha.borrador ? (
           <div className="borrador-equipo">
@@ -645,18 +679,6 @@ export function PanelTareas({
         ) : null}
         {editar ? <Correccion apiUrl={apiUrl} token={token} ficha={ficha} alGuardar={setFicha} alFallar={setAviso} /> : null}
         <Seguimiento seguimiento={ficha.seguimiento} parte="encargo" />
-        <Bitacora
-          apiUrl={apiUrl}
-          token={token}
-          ficha={ficha}
-          editar={editar}
-          anotar={anotar}
-          alGuardar={(tarea) => {
-            setFicha(tarea);
-            void cargar().catch((error: unknown) => setAviso(texto(error)));
-          }}
-          alFallar={setAviso}
-        />
         <Fechas ficha={ficha} />
         <Situaciones situaciones={ficha.situaciones ?? []} />
         <Seguimiento seguimiento={ficha.seguimiento} parte="correos" />
@@ -1665,6 +1687,8 @@ function HilosCotizacion({
   token,
   tareaId,
   hilos,
+  fabricaciones,
+  notas,
   cantidad,
   editar,
   alGuardar,
@@ -1674,19 +1698,22 @@ function HilosCotizacion({
   token: string;
   tareaId: string;
   hilos: HiloFicha[];
+  fabricaciones: Array<{ hiloId: string; orden: string; estado: string; enlace: string; ejecutor: string }>;
+  notas: NotaBitacora[];
   cantidad: number | null;
   editar: boolean;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
   const [numero, setNumero] = useState(String(hilos.length || cantidad || ''));
+  const [reporte, setReporte] = useState('');
   return (
     <section>
       <h3>Telemetrías</h3>
       <p>{cantidad ? `La cotización trae ${cantidad}.` : 'La cotización no trae una cantidad.'} {hilos.length === 0 ? 'El técnico confirma el número en WhatsApp y se abre un hilo por telemetría.' : `${hilos.length} hilo${hilos.length === 1 ? '' : 's'}.`}</p>
       {editar ? (
         <form
-          className="herramientas"
+          className="cantidad-hilos"
           onSubmit={(evento) => {
             evento.preventDefault();
             void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos`, { method: 'POST', body: JSON.stringify({ cantidad: Number(numero) }) })
@@ -1715,15 +1742,78 @@ function HilosCotizacion({
                   <span>{hilo.estado === 'listo' ? 'Listo para la orden de fabricación' : falta.join(' · ')}</span>
                 </div>
                 <p>
-                  {[hilo.contenedor ? `Contenedor ${hilo.contenedor}` : 'Sin contenedor', hilo.maquina ? `Máquina ${hilo.maquina}` : 'Sin máquina', hilo.lleva_telemetria === false ? 'Sin instalación' : hilo.chip_estado === 'ocupado' ? `Chip ocupado ${hilo.chip_celular}` : hilo.chip_celular ? `Chip ${hilo.chip_celular}` : 'Chip sin pedir'].join(' · ')}
+                  {[
+                    hilo.contenedor ? `Contenedor ${hilo.contenedor}` : 'Sin contenedor',
+                    hilo.maquina ? `Máquina ${hilo.maquina}` : 'Sin máquina',
+                    hilo.lleva_telemetria === false
+                      ? 'Sin instalación'
+                      : hilo.chip_estado === 'ocupado'
+                        ? `Chip ocupado ${hilo.chip_celular ?? ''}`
+                        : hilo.chip_celular
+                          ? `Chip ${hilo.chip_celular}`
+                          : 'Chip sin pedir',
+                    hilo.chip_imei ? `IMEI chip ${hilo.chip_imei}` : '',
+                    hilo.modem_serie || hilo.modem_imei
+                      ? `Módulo 4G${hilo.modem_serie ? ` SN ${hilo.modem_serie}` : ''}${hilo.modem_imei ? ` · IMEI ${hilo.modem_imei}` : ''}`
+                      : 'Módulo 4G pendiente',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </p>
                 {hilo.despacho_texto ? <p>{hilo.despacho_texto}</p> : null}
-                {editar ? <CorregirHilo apiUrl={apiUrl} token={token} tareaId={tareaId} hilo={hilo} alGuardar={alGuardar} alFallar={alFallar} /> : null}
+                {fabricaciones.filter((item) => item.hiloId === hilo.id).map((item) => (
+                  <p key={item.enlace}>Orden {item.orden || 'sin número'} · {item.estado} · {item.ejecutor}.</p>
+                ))}
+                {editar ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const abierta = fabricaciones.find((item) => item.hiloId === hilo.id);
+                      if (abierta?.enlace) {
+                        window.open(abierta.enlace, '_blank', 'noopener');
+                        return;
+                      }
+                      void pedir<Tarea & { enlaceInsumos?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/insumos`, { method: 'POST', body: '{}' })
+                        .then((tarea) => {
+                          alGuardar(tarea);
+                          if (tarea.enlaceInsumos) window.open(tarea.enlaceInsumos, '_blank', 'noopener');
+                        })
+                        .catch((error: unknown) => alFallar(texto(error)));
+                    }}
+                  >
+                    {fabricaciones.some((item) => item.hiloId === hilo.id) ? 'Abrir materiales' : 'Pedir insumos'}
+                  </button>
+                ) : null}
+                {editar && fabricaciones.some((item) => item.hiloId === hilo.id) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReporte('');
+                      void pedir<{ texto: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/reporte`, { method: 'POST', body: '{}' })
+                        .then((respuesta) => setReporte(respuesta.texto))
+                        .catch((error: unknown) => alFallar(texto(error)));
+                    }}
+                  >
+                    Pedir reporte
+                  </button>
+                ) : null}
+                {editar ? (
+                  <CorregirHilo
+                    apiUrl={apiUrl}
+                    token={token}
+                    tareaId={tareaId}
+                    hilo={hilo}
+                    notas={notas}
+                    alGuardar={alGuardar}
+                    alFallar={alFallar}
+                  />
+                ) : null}
               </li>
             );
           })}
         </ol>
       ) : null}
+      {reporte ? <p>{reporte}</p> : null}
     </section>
   );
 }
@@ -1733,6 +1823,7 @@ function CorregirHilo({
   token,
   tareaId,
   hilo,
+  notas,
   alGuardar,
   alFallar,
 }: {
@@ -1740,36 +1831,206 @@ function CorregirHilo({
   token: string;
   tareaId: string;
   hilo: HiloFicha;
+  notas: NotaBitacora[];
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
   const [contenedor, setContenedor] = useState(hilo.contenedor ?? '');
   const [maquina, setMaquina] = useState(hilo.maquina ?? '');
-  const [imei, setImei] = useState('');
+  const [celularAlmacen, setCelularAlmacen] = useState(hilo.chip_celular ?? '');
+  const [modemImeiAlmacen, setModemImeiAlmacen] = useState(hilo.modem_imei ?? '');
+  const [modemSerieAlmacen, setModemSerieAlmacen] = useState(hilo.modem_serie ?? '');
+  const [celularTecnico, setCelularTecnico] = useState(hilo.chip_celular ?? '');
+  const [modemImeiTecnico, setModemImeiTecnico] = useState(hilo.modem_imei ?? '');
+  const [modemSerieTecnico, setModemSerieTecnico] = useState(hilo.modem_serie ?? '');
+  const [fotosInstalacion, setFotosInstalacion] = useState(false);
+  const [ampliaInstalacion, setAmpliaInstalacion] = useState<{ url: string; nombre: string; pie: string } | null>(null);
+  const notasInstalacion = useMemo(
+    () =>
+      notas.filter(
+        (nota) =>
+          !nota.archivado &&
+          new RegExp(`hilo\\s*${hilo.orden}\\b`, 'i').test(nota.texto) &&
+          /im[aá]genes de la instalaci[oó]n|instalaci[oó]n\./i.test(nota.texto),
+      ),
+    [notas, hilo.orden],
+  );
+
+  useEffect(() => {
+    setContenedor(hilo.contenedor ?? '');
+    setMaquina(hilo.maquina ?? '');
+    setCelularAlmacen(hilo.chip_celular ?? '');
+    setModemImeiAlmacen(hilo.modem_imei ?? '');
+    setModemSerieAlmacen(hilo.modem_serie ?? '');
+    setCelularTecnico(hilo.chip_celular ?? '');
+    setModemImeiTecnico(hilo.modem_imei ?? '');
+    setModemSerieTecnico(hilo.modem_serie ?? '');
+  }, [hilo.id, hilo.contenedor, hilo.maquina, hilo.chip_celular, hilo.modem_imei, hilo.modem_serie]);
+
+  function guardar(datos: Record<string, string | undefined>) {
+    void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}`, {
+      method: 'POST',
+      body: JSON.stringify(datos),
+    })
+      .then(alGuardar)
+      .catch((error: unknown) => alFallar(texto(error)));
+  }
+
   return (
-    <form
-      className="herramientas"
-      onSubmit={(evento) => {
-        evento.preventDefault();
-        void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}`, {
-          method: 'POST',
-          body: JSON.stringify({ contenedor, maquina, imei }),
-        })
-          .then(alGuardar)
-          .catch((error: unknown) => alFallar(texto(error)));
-      }}
-    >
-      <label htmlFor={`contenedor-${hilo.id}`}>Contenedor</label>
-      <input id={`contenedor-${hilo.id}`} value={contenedor} onChange={(evento) => setContenedor(evento.target.value)} />
-      <label htmlFor={`maquina-${hilo.id}`}>Máquina</label>
-      <input id={`maquina-${hilo.id}`} value={maquina} onChange={(evento) => setMaquina(evento.target.value)} />
-      <label htmlFor={`imei-${hilo.id}`}>IMEI del chip</label>
-      <input id={`imei-${hilo.id}`} value={imei} onChange={(evento) => setImei(evento.target.value)} placeholder="Solo si hay que cambiar el chip" />
-      <button type="submit">Guardar hilo</button>
-      <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="chip" etiqueta="Foto del chip" alGuardar={alGuardar} alFallar={alFallar} />
-      <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="contenedor" etiqueta="Foto del contenedor" alGuardar={alGuardar} alFallar={alFallar} />
-      <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="maquina" etiqueta="Foto de la máquina" alGuardar={alGuardar} alFallar={alFallar} />
-    </form>
+    <div className="zonas">
+      <form
+        className="zona-accion"
+        onSubmit={(evento) => {
+          evento.preventDefault();
+          guardar({ contenedor, maquina, zona: 'despacho' });
+        }}
+      >
+        <h4>Despacho</h4>
+        <p>Contenedor, máquina y sus fotos. Entran al inicio del registro.</p>
+        <label htmlFor={`contenedor-${hilo.id}`}>Contenedor</label>
+        <input id={`contenedor-${hilo.id}`} value={contenedor} onChange={(evento) => setContenedor(evento.target.value)} />
+        <label htmlFor={`maquina-${hilo.id}`}>Máquina</label>
+        <input id={`maquina-${hilo.id}`} value={maquina} onChange={(evento) => setMaquina(evento.target.value)} />
+        <button type="submit">Guardar equipo</button>
+        <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="contenedor" etiqueta="Foto del contenedor" alGuardar={alGuardar} alFallar={alFallar} />
+        <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="maquina" etiqueta="Foto de la máquina" alGuardar={alGuardar} alFallar={alFallar} />
+      </form>
+      <form
+        className="zona-accion"
+        onSubmit={(evento) => {
+          evento.preventDefault();
+          guardar({
+            celular: celularAlmacen,
+            modem_imei: modemImeiAlmacen,
+            modem_serie: modemSerieAlmacen,
+            zona: 'almacen',
+          });
+        }}
+      >
+        <h4>Almacén</h4>
+        <p>Número de chip y IMEI del módulo 4G. Quedan en el mismo registro del hilo.</p>
+        <label htmlFor={`chip-almacen-${hilo.id}`}>Número de chip (celular)</label>
+        <input
+          id={`chip-almacen-${hilo.id}`}
+          value={celularAlmacen}
+          onChange={(evento) => setCelularAlmacen(evento.target.value)}
+          placeholder="Ej. 919867926"
+          inputMode="numeric"
+        />
+        <label htmlFor={`modem-serie-almacen-${hilo.id}`}>SN módulo 4G</label>
+        <input
+          id={`modem-serie-almacen-${hilo.id}`}
+          value={modemSerieAlmacen}
+          onChange={(evento) => setModemSerieAlmacen(evento.target.value)}
+          placeholder="Opcional"
+        />
+        <label htmlFor={`modem-imei-almacen-${hilo.id}`}>IMEI módulo 4G</label>
+        <input
+          id={`modem-imei-almacen-${hilo.id}`}
+          value={modemImeiAlmacen}
+          onChange={(evento) => setModemImeiAlmacen(evento.target.value)}
+          placeholder="IMEI de la señal"
+          inputMode="numeric"
+        />
+        <button type="submit">Guardar chip y módulo</button>
+        <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="chip" zona="almacen" etiqueta="Foto del chip" alGuardar={alGuardar} alFallar={alFallar} />
+        <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="modem" zona="almacen" etiqueta="Foto del módulo 4G" alGuardar={alGuardar} alFallar={alFallar} />
+      </form>
+      <form
+        className="zona-accion"
+        onSubmit={(evento) => {
+          evento.preventDefault();
+          guardar({
+            celular: celularTecnico,
+            modem_imei: modemImeiTecnico,
+            modem_serie: modemSerieTecnico,
+            zona: 'tecnico',
+          });
+        }}
+      >
+        <h4>Técnico</h4>
+        <p>Valida o corrige el celular y el IMEI del módulo 4G. Si cambia algo, sube la foto. Queda en el seguimiento.</p>
+        <label htmlFor={`celular-tecnico-${hilo.id}`}>Número de celular</label>
+        <input
+          id={`celular-tecnico-${hilo.id}`}
+          value={celularTecnico}
+          onChange={(evento) => setCelularTecnico(evento.target.value)}
+          placeholder="Celular del chip"
+          inputMode="numeric"
+        />
+        <label htmlFor={`modem-serie-tecnico-${hilo.id}`}>SN módulo 4G</label>
+        <input
+          id={`modem-serie-tecnico-${hilo.id}`}
+          value={modemSerieTecnico}
+          onChange={(evento) => setModemSerieTecnico(evento.target.value)}
+          placeholder="Opcional"
+        />
+        <label htmlFor={`modem-imei-tecnico-${hilo.id}`}>IMEI módulo 4G</label>
+        <input
+          id={`modem-imei-tecnico-${hilo.id}`}
+          value={modemImeiTecnico}
+          onChange={(evento) => setModemImeiTecnico(evento.target.value)}
+          placeholder="IMEI de la señal"
+          inputMode="numeric"
+        />
+        <button type="submit">Guardar validación</button>
+        <p className="enlace-instalacion">
+          <button type="button" className="enlace" onClick={() => setFotosInstalacion(true)}>
+            Ver fotos de la instalación{notasInstalacion.length > 0 ? ` (${notasInstalacion.length})` : ''}
+          </button>
+        </p>
+        <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="chip" zona="tecnico" etiqueta="Foto del chip (si se modifica)" alGuardar={alGuardar} alFallar={alFallar} />
+        <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="modem" zona="tecnico" etiqueta="Foto del módulo 4G (si se modifica)" alGuardar={alGuardar} alFallar={alFallar} />
+      </form>
+      {fotosInstalacion ? (
+        <Cuadro
+          titulo={`Fotos de la instalación · Hilo ${hilo.orden}`}
+          ayuda={
+            notasInstalacion.length > 0
+              ? 'Imágenes que el técnico envió por WhatsApp o web para este hilo.'
+              : 'Todavía no hay fotos de instalación registradas en este hilo.'
+          }
+          alCerrar={() => setFotosInstalacion(false)}
+        >
+          {notasInstalacion.length > 0 ? (
+            <ol className="bitacora-tiempo">
+              {notasInstalacion.map((nota) => (
+                <li key={nota.id}>
+                  <div className="bitacora-evento">
+                    <time>{cuando(nota.creado_en)}</time>
+                    <strong>{nota.autor_nombre}</strong>
+                  </div>
+                  <p>{nota.texto}</p>
+                  <MiniaturasNota
+                    nota={nota}
+                    apiUrl={apiUrl}
+                    token={token}
+                    tareaId={tareaId}
+                    ocultar={false}
+                    alAbrir={setAmpliaInstalacion}
+                  />
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p>Sin fotos aún. El técnico las carga desde WhatsApp en “Registrar imágenes de la instalación”.</p>
+          )}
+          <div className="modal-acciones">
+            <button type="button" className="primario" onClick={() => setFotosInstalacion(false)}>
+              Cerrar
+            </button>
+          </div>
+        </Cuadro>
+      ) : null}
+      {ampliaInstalacion ? (
+        <FotoAmpliada
+          url={ampliaInstalacion.url}
+          nombre={ampliaInstalacion.nombre}
+          pie={ampliaInstalacion.pie}
+          alCerrar={() => setAmpliaInstalacion(null)}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -1779,6 +2040,7 @@ function FotoRegularizar({
   tareaId,
   hiloId,
   clase,
+  zona,
   etiqueta,
   alGuardar,
   alFallar,
@@ -1787,39 +2049,64 @@ function FotoRegularizar({
   token: string;
   tareaId: string;
   hiloId: string;
-  clase: 'chip' | 'contenedor' | 'maquina';
+  clase: 'chip' | 'contenedor' | 'maquina' | 'modem';
+  zona?: 'almacen' | 'tecnico';
   etiqueta: string;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
   const [archivo, setArchivo] = useState<File | null>(null);
+  const [vista, setVista] = useState<string | null>(null);
+  const idFoto = `foto-${clase}-${zona ?? 'x'}-${hiloId}`;
+  useEffect(() => {
+    if (!archivo) {
+      setVista(null);
+      return;
+    }
+    const url = URL.createObjectURL(archivo);
+    setVista(url);
+    return () => URL.revokeObjectURL(url);
+  }, [archivo]);
   return (
-    <>
-      <label htmlFor={`foto-${clase}-${hiloId}`}>{etiqueta}</label>
-      <input id={`foto-${clase}-${hiloId}`} type="file" accept="image/*" onChange={(evento) => setArchivo(evento.target.files?.[0] ?? null)} />
+    <div className="elegir-foto">
+      <label className="elegir" htmlFor={idFoto}>{etiqueta}</label>
+      <input
+        id={idFoto}
+        type="file"
+        accept="image/*"
+        onChange={(evento) => setArchivo(evento.target.files?.[0] ?? null)}
+      />
+      {vista ? <img className="mini-local" src={vista} alt={archivo?.name ?? etiqueta} /> : null}
       <button
         type="button"
+        disabled={!archivo}
         onClick={() => {
-          if (!archivo) {
-            alFallar('Elige la foto.');
-            return;
-          }
+          if (!archivo) return;
           const lector = new FileReader();
           lector.onload = () => {
             const contenido = String(lector.result).split(',')[1] ?? '';
             void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hiloId}/foto`, {
               method: 'POST',
-              body: JSON.stringify({ clase, nombre: archivo.name, mime: archivo.type || 'image/jpeg', contenido }),
+              body: JSON.stringify({
+                clase,
+                zona,
+                nombre: archivo.name,
+                mime: archivo.type || 'image/jpeg',
+                contenido,
+              }),
             })
-              .then(alGuardar)
+              .then((tarea) => {
+                setArchivo(null);
+                alGuardar(tarea);
+              })
               .catch((error: unknown) => alFallar(texto(error)));
           };
           lector.readAsDataURL(archivo);
         }}
       >
-        Regularizar {etiqueta.toLowerCase()}
+        Subir
       </button>
-    </>
+    </div>
   );
 }
 
@@ -1872,6 +2159,7 @@ function Bitacora({
   ficha,
   editar,
   anotar,
+  parte = 'todo',
   alGuardar,
   alFallar,
 }: {
@@ -1880,9 +2168,13 @@ function Bitacora({
   ficha: Tarea;
   editar: boolean;
   anotar: boolean;
+  /** acciones = botones; tiempo = línea de seguimiento; todo = ambos (compat). */
+  parte?: 'acciones' | 'tiempo' | 'todo';
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
+  const verAcciones = parte === 'acciones' || parte === 'todo';
+  const verTiempo = parte === 'tiempo' || parte === 'todo';
   const [modal, setModal] = useState<'seguimiento' | 'incidente' | 'cierre' | null>(null);
   const [textoNota, setTextoNota] = useState('');
   const [fotos, setFotos] = useState<File[]>([]);
@@ -1890,7 +2182,13 @@ function Bitacora({
   const [anulando, setAnulando] = useState<string | null>(null);
   const [editando, setEditando] = useState<string | null>(null);
   const [motivo, setMotivo] = useState('');
-  const notas = ficha.notas ?? [];
+  const [amplia, setAmplia] = useState<{ url: string; nombre: string; pie: string } | null>(null);
+  const notas = (ficha.notas ?? []).filter((nota) => editar || !nota.archivado);
+  const fotosDespacho = ficha.asignacion?.imagenes ?? [];
+  const eventos = [
+    ...notas.map((nota) => ({ id: nota.id, cuando: nota.creado_en, nota })),
+    ...(fotosDespacho.length > 0 ? [{ id: 'despacho-fotos', cuando: ficha.asignacion?.confirmada_en ?? '', nota: null }] : []),
+  ].sort((a, b) => a.cuando.localeCompare(b.cuando) || (a.nota ? 1 : -1));
 
   function abrir(tipo: 'seguimiento' | 'incidente' | 'cierre') {
     setTextoNota('');
@@ -1974,9 +2272,12 @@ function Bitacora({
 
   return (
     <section className="bitacora">
+      {verAcciones ? (
+      <>
       <div className="bitacora-cabeza">
-        <h3>Bitácora</h3>
-        <p>{ficha.responsable_nombre ? `La tomó ${ficha.responsable_nombre}.` : 'Nadie la ha tomado.'}</p>
+        <h3>Registro</h3>
+        <p>Primero las acciones del técnico; luego los hilos; al final el seguimiento.</p>
+        <p>{ficha.responsable_nombre ? `La tomó ${ficha.responsable_nombre}.` : 'Nadie la ha tomado. Al crear los hilos queda tomada automáticamente.'}</p>
         {editar ? <Transferir apiUrl={apiUrl} token={token} tareaId={ficha.id} alGuardar={alGuardar} alFallar={alFallar} /> : null}
         <p>{ficha.recordar_en ? `Vuelve a salir: ${cuando(ficha.recordar_en)}.` : 'Sin recordatorio pedido.'}</p>
       </div>
@@ -2007,46 +2308,97 @@ function Bitacora({
         ) : null}
       </div>
       ) : null}
-      {notas.filter((nota) => editar || !nota.archivado).length > 0 ? (
-        <ol className="bitacora-tiempo">
-          {notas.filter((nota) => editar || !nota.archivado).map((nota) => (
-            <li key={nota.id} className={nota.tipo}>
-              <div className="bitacora-evento">
-                <time>{cuando(nota.creado_en)}</time>
-                <strong>{etiquetaNota(nota.tipo)}{nota.canal === 'whatsapp' ? ' · WhatsApp' : ''}</strong>
-                <span>{nota.autor_nombre}</span>
-              </div>
-              <p>{nota.texto}</p>
-              {(nota.imagenes && nota.imagenes.length > 0
-                ? nota.imagenes
-                : nota.archivo_nombre
-                  ? [{ id: '', nombre: nota.archivo_nombre }]
-                  : []
-              ).map((imagen) => (
-                <FotoNota key={imagen.id || nota.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} notaId={nota.id} nombre={imagen.nombre} archivoId={imagen.id || undefined} />
-              ))}
-              {editar && nota.tipo !== 'anulacion' && nota.tipo !== 'cierre' && ficha.estado !== 'resuelta' ? (
-                <div className="bitacora-acciones">
-                  <button type="button" onClick={() => { setMotivo(''); setAnulando(nota.id); }}>Anular</button>
-                  <button type="button" onClick={() => { setEditando(nota.id); setTextoNota(nota.texto); }}>Editar</button>
-                  <button type="button" onClick={() => void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${nota.id}/archivar`, { method: 'POST', body: JSON.stringify({ archivado: !nota.archivado }) }).then(alGuardar).catch((error: unknown) => alFallar(texto(error)))}>
-                    {nota.archivado ? 'Restaurar' : 'Archivar'}
-                  </button>
+      </>
+      ) : null}
+      {verTiempo ? (
+        eventos.length > 0 ? (
+        <ListaVerMas
+          titulo="Seguimiento"
+          items={[...eventos].reverse()}
+          clave={(evento) => evento.id}
+          render={(evento) =>
+            evento.nota ? (
+              <>
+                <div className="bitacora-evento">
+                  <time>{cuando(evento.nota.creado_en)}</time>
+                  <strong>
+                    {etiquetaArea(areaDeNota(evento.nota))} · {etiquetaNota(evento.nota.tipo)}
+                    {evento.nota.canal === 'whatsapp' ? ' · WhatsApp' : ''}
+                  </strong>
+                  <span>{evento.nota.autor_nombre}</span>
                 </div>
-              ) : null}
-              {nota.archivado ? <p>Archivada. El técnico no la ve en WhatsApp ni en su ficha.</p> : null}
-              {editando === nota.id ? (
-                <form onSubmit={(evento) => void guardarEdicion(evento, nota.id)}>
-                  <textarea value={textoNota} onChange={(evento) => setTextoNota(evento.target.value)} rows={4} />
-                  <button type="submit" disabled={guardando}>Guardar texto</button>
-                </form>
-              ) : null}
-            </li>
-          ))}
-        </ol>
+                <p>{evento.nota.texto}</p>
+                <MiniaturasNota
+                  nota={evento.nota}
+                  apiUrl={apiUrl}
+                  token={token}
+                  tareaId={ficha.id}
+                  ocultar={fotosDespacho.length > 0 && evento.nota.texto.startsWith('Despacho registró')}
+                  alAbrir={setAmplia}
+                />
+                {editar && evento.nota.tipo !== 'anulacion' && evento.nota.tipo !== 'cierre' && ficha.estado !== 'resuelta' ? (
+                  <div className="bitacora-acciones">
+                    <button type="button" onClick={() => { setMotivo(''); setAnulando(evento.nota?.id ?? ''); }}>Anular</button>
+                    <button type="button" onClick={() => { setEditando(evento.nota?.id ?? null); setTextoNota(evento.nota?.texto ?? ''); }}>Editar</button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${evento.nota?.id}/archivar`, {
+                          method: 'POST',
+                          body: JSON.stringify({ archivado: !evento.nota?.archivado }),
+                        })
+                          .then(alGuardar)
+                          .catch((error: unknown) => alFallar(texto(error)))
+                      }
+                    >
+                      {evento.nota.archivado ? 'Restaurar' : 'Archivar'}
+                    </button>
+                  </div>
+                ) : null}
+                {evento.nota.archivado ? <p>Archivada. El técnico no la ve en WhatsApp ni en su ficha.</p> : null}
+                {editando === evento.nota.id ? (
+                  <form onSubmit={(eventoForm) => void guardarEdicion(eventoForm, evento.nota?.id ?? '')}>
+                    <textarea value={textoNota} onChange={(cambio) => setTextoNota(cambio.target.value)} rows={4} />
+                    <button type="submit" disabled={guardando}>Guardar texto</button>
+                  </form>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div className="bitacora-evento">
+                  <time>{ficha.asignacion?.confirmada_en ? cuando(ficha.asignacion.confirmada_en) : ''}</time>
+                  <strong>Despacho</strong>
+                  <span>{ficha.asignacion?.autor_nombre}</span>
+                </div>
+                <p>
+                  Fotos del contenedor y de la máquina.
+                  {ficha.asignacion?.texto?.trim() && ficha.asignacion.texto.trim() !== 'Sin texto.'
+                    ? ` ${ficha.asignacion.texto.trim()}`
+                    : ''}
+                </p>
+                <div className="miniaturas">
+                  {fotosDespacho.map((imagen) => (
+                    <FotoAsignacion
+                      key={imagen.id}
+                      apiUrl={apiUrl}
+                      token={token}
+                      tareaId={ficha.id}
+                      archivoId={imagen.id}
+                      nombre={imagen.nombre}
+                      pie="Despacho · contenedor y máquina"
+                      alAbrir={setAmplia}
+                    />
+                  ))}
+                </div>
+              </>
+            )
+          }
+          claseItem={(evento) => (evento.nota ? `${evento.nota.tipo} ${areaDeNota(evento.nota)}` : 'despacho')}
+        />
       ) : (
         <p className="bitacora-vacia">Todavía no hay notas del equipo.</p>
-      )}
+      )
+      ) : null}
       {modal ? (
         <Cuadro
           titulo={modal === 'cierre' ? 'Cerrar por regularización' : modal === 'seguimiento' ? 'Seguimiento' : 'Incidente'}
@@ -2086,6 +2438,109 @@ function Bitacora({
           </form>
         </Cuadro>
       ) : null}
+      {amplia ? <FotoAmpliada url={amplia.url} nombre={amplia.nombre} pie={amplia.pie} alCerrar={() => setAmplia(null)} /> : null}
+    </section>
+  );
+}
+
+const VER_MAS_INICIAL = 2;
+const VER_MAS_PAGINA = 8;
+
+/** Últimos 2 visibles; con «Ver más» pagina de 8 en 8 (más recientes primero). */
+function ListaVerMas<T>({
+  titulo,
+  items,
+  clave,
+  render,
+  claseItem,
+}: {
+  titulo: string;
+  items: T[];
+  clave: (item: T) => string;
+  render: (item: T) => ReactNode;
+  claseItem?: (item: T) => string;
+}) {
+  const [abierto, setAbierto] = useState(false);
+  const [pagina, setPagina] = useState(1);
+  const total = items.length;
+  const totalPaginas = Math.max(1, Math.ceil(total / VER_MAS_PAGINA));
+  const paginaSegura = Math.min(pagina, totalPaginas);
+  const visibles = !abierto
+    ? items.slice(0, VER_MAS_INICIAL)
+    : items.slice((paginaSegura - 1) * VER_MAS_PAGINA, paginaSegura * VER_MAS_PAGINA);
+  const hayMas = total > VER_MAS_INICIAL;
+
+  return (
+    <section className="lista-ver-mas">
+      <div className="lista-ver-mas-cabeza">
+        <h3>{titulo}</h3>
+        <p className="meta">
+          {total === 0
+            ? 'Sin registros.'
+            : abierto
+              ? `${total} en total · página ${paginaSegura} de ${totalPaginas}`
+              : `Últimos ${Math.min(VER_MAS_INICIAL, total)} de ${total}`}
+        </p>
+      </div>
+      {visibles.length > 0 ? (
+        <ol className="bitacora-tiempo">
+          {visibles.map((item) => (
+            <li key={clave(item)} className={claseItem?.(item)}>
+              {render(item)}
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="bitacora-vacia">Sin registros.</p>
+      )}
+      {hayMas ? (
+        <div className="lista-ver-mas-acciones">
+          {!abierto ? (
+            <button
+              type="button"
+              className="enlace"
+              onClick={() => {
+                setAbierto(true);
+                setPagina(1);
+              }}
+            >
+              Ver más
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="enlace"
+                disabled={paginaSegura <= 1}
+                onClick={() => setPagina((p) => Math.max(1, p - 1))}
+              >
+                Anterior
+              </button>
+              <span className="meta">
+                {paginaSegura} / {totalPaginas}
+              </span>
+              <button
+                type="button"
+                className="enlace"
+                disabled={paginaSegura >= totalPaginas}
+                onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
+              >
+                Siguiente
+              </button>
+              <button
+                type="button"
+                className="enlace"
+                onClick={() => {
+                  setAbierto(false);
+                  setPagina(1);
+                }}
+              >
+                Ver menos
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2115,12 +2570,46 @@ function Cuadro({ titulo, ayuda, alCerrar, children }: { titulo: string; ayuda: 
   );
 }
 
-function FotoNota({ apiUrl, token, tareaId, notaId, nombre, archivoId }: { apiUrl: string; token: string; tareaId: string; notaId: string; nombre: string; archivoId?: string }) {
+function MiniaturasNota({ nota, apiUrl, token, tareaId, ocultar, alAbrir }: { nota: NotaBitacora; apiUrl: string; token: string; tareaId: string; ocultar: boolean; alAbrir: (foto: { url: string; nombre: string; pie: string }) => void }) {
+  if (ocultar) return null;
+  const imagenes = nota.imagenes && nota.imagenes.length > 0
+    ? nota.imagenes
+    : nota.archivo_nombre
+      ? [{ id: '', nombre: nota.archivo_nombre }]
+      : [];
+  if (imagenes.length === 0) return null;
+  const pie = `${etiquetaArea(areaDeNota(nota))} · ${etiquetaNota(nota.tipo)}`;
+  return (
+    <div className="miniaturas">
+      {imagenes.map((imagen) => (
+        <FotoNota key={imagen.id || nota.id} apiUrl={apiUrl} token={token} tareaId={tareaId} notaId={nota.id} nombre={imagen.nombre} archivoId={imagen.id || undefined} pie={pie} alAbrir={alAbrir} />
+      ))}
+    </div>
+  );
+}
+
+function FotoNota({ apiUrl, token, tareaId, notaId, nombre, archivoId, pie, alAbrir }: { apiUrl: string; token: string; tareaId: string; notaId: string; nombre: string; archivoId?: string; pie?: string; alAbrir?: (foto: { url: string; nombre: string; pie: string }) => void }) {
+  const url = useFoto(`${archivoId ? `${apiUrl}/tareas/${tareaId}/notas/${notaId}/archivos/${archivoId}` : `${apiUrl}/tareas/${tareaId}/notas/${notaId}/archivo`}`, token);
+  const [propia, setPropia] = useState<{ url: string; nombre: string; pie: string } | null>(null);
+  const abrir = alAbrir ?? setPropia;
+  return (
+    <>
+      <Miniatura url={url} nombre={nombre} pie={pie ?? nombre} alAbrir={abrir} />
+      {!alAbrir && propia ? <FotoAmpliada url={propia.url} nombre={propia.nombre} pie={propia.pie} alCerrar={() => setPropia(null)} /> : null}
+    </>
+  );
+}
+
+function FotoAsignacion({ apiUrl, token, tareaId, archivoId, nombre, pie, alAbrir }: { apiUrl: string; token: string; tareaId: string; archivoId: string; nombre: string; pie: string; alAbrir: (foto: { url: string; nombre: string; pie: string }) => void }) {
+  const url = useFoto(`${apiUrl}/tareas/${tareaId}/asignacion/${archivoId}`, token);
+  return <Miniatura url={url} nombre={nombre} pie={pie} alAbrir={alAbrir} />;
+}
+
+function useFoto(ruta: string, token: string): string | null {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     let vigente = true;
     let objeto = '';
-    const ruta = archivoId ? `${apiUrl}/tareas/${tareaId}/notas/${notaId}/archivos/${archivoId}` : `${apiUrl}/tareas/${tareaId}/notas/${notaId}/archivo`;
     void fetch(ruta, { headers: { authorization: `Bearer ${token}` } })
       .then((respuesta) => (respuesta.ok ? respuesta.blob() : null))
       .then((blob) => {
@@ -2133,31 +2622,54 @@ function FotoNota({ apiUrl, token, tareaId, notaId, nombre, archivoId }: { apiUr
       vigente = false;
       if (objeto) URL.revokeObjectURL(objeto);
     };
-  }, [apiUrl, token, tareaId, notaId, archivoId]);
-  if (!url) return <span>{nombre}</span>;
-  return <img className="nota-foto" src={url} alt={nombre} />;
+  }, [ruta, token]);
+  return url;
 }
 
-function FotoAsignacion({ apiUrl, token, tareaId, archivoId, nombre }: { apiUrl: string; token: string; tareaId: string; archivoId: string; nombre: string }) {
-  const [url, setUrl] = useState<string | null>(null);
+function Miniatura({ url, nombre, pie, alAbrir }: { url: string | null; nombre: string; pie: string; alAbrir: (foto: { url: string; nombre: string; pie: string }) => void }) {
+  if (!url) return <span className="mini-espera">{nombre}</span>;
+  return (
+    <button type="button" className="mini" onClick={() => alAbrir({ url, nombre, pie })}>
+      <img src={url} alt={nombre} />
+    </button>
+  );
+}
+
+function FotoAmpliada({ url, nombre, pie, alCerrar }: { url: string; nombre: string; pie: string; alCerrar: () => void }) {
   useEffect(() => {
-    let vigente = true;
-    let objeto = '';
-    void fetch(`${apiUrl}/tareas/${tareaId}/asignacion/${archivoId}`, { headers: { authorization: `Bearer ${token}` } })
-      .then((respuesta) => (respuesta.ok ? respuesta.blob() : null))
-      .then((blob) => {
-        if (!blob || !vigente) return;
-        objeto = URL.createObjectURL(blob);
-        setUrl(objeto);
-      })
-      .catch(() => undefined);
-    return () => {
-      vigente = false;
-      if (objeto) URL.revokeObjectURL(objeto);
+    const previo = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const tecla = (evento: KeyboardEvent) => {
+      if (evento.key === 'Escape') alCerrar();
     };
-  }, [apiUrl, token, tareaId, archivoId]);
-  if (!url) return <span>{nombre}</span>;
-  return <img className="nota-foto" src={url} alt={nombre} />;
+    window.addEventListener('keydown', tecla);
+    return () => {
+      document.body.style.overflow = previo;
+      window.removeEventListener('keydown', tecla);
+    };
+  }, [alCerrar]);
+  return (
+    <div className="modal-fondo foto" onMouseDown={alCerrar}>
+      <div className="modal modal-foto" role="dialog" aria-modal="true" aria-label={nombre} onMouseDown={(evento) => evento.stopPropagation()}>
+        <img src={url} alt={nombre} />
+        <p>{pie}</p>
+        <button type="button" onClick={alCerrar}>Cerrar</button>
+      </div>
+    </div>
+  );
+}
+
+function areaDeNota(nota: NotaBitacora): 'despacho' | 'almacen' | 'tecnico' {
+  if (/^despacho|^regularización\. el técnico registró la (contenedor|máquina)/i.test(nota.texto)) return 'despacho';
+  if (/almacén/i.test(nota.texto)) return 'almacen';
+  if (/módulo 4g|modem|imei del chip|registró el chip|celular \d/i.test(nota.texto)) return 'tecnico';
+  return 'tecnico';
+}
+
+function etiquetaArea(area: 'despacho' | 'almacen' | 'tecnico'): string {
+  if (area === 'despacho') return 'Despacho';
+  if (area === 'almacen') return 'Almacén';
+  return 'Técnico';
 }
 
 function AccionesAsunto({

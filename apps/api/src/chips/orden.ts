@@ -98,6 +98,22 @@ function limpiar(valor: string): string {
   return valor.replace(/\s+/g, ' ').trim();
 }
 
+export function serieChipDe(componentes: Array<{ producto: string; serie: string }>): string {
+  return componentes.find((item) => /INDND4855|\bCHIP\b/i.test(item.producto))?.serie ?? '';
+}
+
+export function serieCoincide(serie: string, celular: string, imei: string): boolean {
+  const partes = serie.split(/[,;\s]+/).map((parte) => parte.replace(/\D/g, '')).filter(Boolean);
+  const cel = celular.replace(/\D/g, '');
+  const imeiLimpio = imei.replace(/\D/g, '');
+  return partes.some((parte) => (cel.length > 0 && parte === cel) || (imeiLimpio.length > 0 && parte === imeiLimpio));
+}
+
+export function marcaDeOrden(escritoEn: string, fechas: string[]): string {
+  const ultima = fechas.filter(Boolean).sort().at(-1) ?? '';
+  return `${escritoEn}|${ultima}`;
+}
+
 export function seriesDe(ids: unknown, nombres: Map<number, string>): string {
   if (!Array.isArray(ids)) return '';
   return ids

@@ -68,13 +68,15 @@ export type PublicaOdoo = {
   db: string;
   usuario: string;
   clavePuesta: boolean;
+  sesionUsuario: string;
+  sesionClavePuesta: boolean;
   modeloVenta: string;
   campoCot: string;
   modeloTarea: string;
   origen: 'pantalla' | 'entorno' | 'sin_conexion';
 };
 
-type FilaConfig = { url: string; db: string; usuario: string; clave: string; modelo_venta: string; campo_cot: string; modelo_tarea: string };
+type FilaConfig = { url: string; db: string; usuario: string; clave: string; modelo_venta: string; campo_cot: string; modelo_tarea: string; sesion_usuario: string; sesion_clave: string };
 type TareaOdoo = { id: string; cot?: string | null; ticket?: string | null; estado?: string | null };
 
 export class OdooServicio {
@@ -90,6 +92,8 @@ export class OdooServicio {
       db: fila?.db || '',
       usuario: fila?.usuario || '',
       clavePuesta: false,
+      sesionUsuario: fila?.sesion_usuario || '',
+      sesionClavePuesta: Boolean(fila?.sesion_clave),
       modeloVenta: 'sale.order',
       campoCot: 'name',
       modeloTarea: 'project.task',
@@ -97,7 +101,7 @@ export class OdooServicio {
     };
   }
 
-  async guardar(entrada: { url?: string; db?: string; usuario?: string; clave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string }): Promise<PublicaOdoo> {
+  async guardar(entrada: { url?: string; db?: string; usuario?: string; clave?: string; sesionUsuario?: string; sesionClave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string }): Promise<PublicaOdoo> {
     const previa = await this.fila();
     const entorno = leerConfiguracion().odoo;
     const clave = (entrada.clave ?? '').trim() || previa?.clave || entorno?.clave || '';
@@ -106,19 +110,22 @@ export class OdooServicio {
       db: entrada.db,
       usuario: entrada.usuario,
       clave,
+      sesionUsuario: entrada.sesionUsuario ?? previa?.sesion_usuario,
+      sesionClave: (entrada.sesionClave ?? '').trim() || previa?.sesion_clave,
       modeloVenta: entrada.modeloVenta,
       campoCot: entrada.campoCot,
       modeloTarea: entrada.modeloTarea,
     });
     if (!config) throw new BadRequestException('Faltan la dirección, la base, el usuario o la clave de API.');
     await this.conexiones.pg.query(
-      `INSERT INTO configuracion_odoo (id, url, db, usuario, clave, modelo_venta, campo_cot, modelo_tarea, actualizado_en)
-       VALUES (true, $1, $2, $3, $4, $5, $6, $7, now())
+      `INSERT INTO configuracion_odoo (id, url, db, usuario, clave, modelo_venta, campo_cot, modelo_tarea, sesion_usuario, sesion_clave, actualizado_en)
+       VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, now())
        ON CONFLICT (id) DO UPDATE
          SET url = EXCLUDED.url, db = EXCLUDED.db, usuario = EXCLUDED.usuario, clave = EXCLUDED.clave,
              modelo_venta = EXCLUDED.modelo_venta, campo_cot = EXCLUDED.campo_cot, modelo_tarea = EXCLUDED.modelo_tarea,
+             sesion_usuario = EXCLUDED.sesion_usuario, sesion_clave = EXCLUDED.sesion_clave,
              actualizado_en = now()`,
-      [config.url, config.db, config.usuario, config.clave, config.venta.modelo, config.venta.campo, config.tarea.modelo],
+      [config.url, config.db, config.usuario, config.clave, config.venta.modelo, config.venta.campo, config.tarea.modelo, config.sesion?.usuario ?? '', config.sesion?.clave ?? ''],
     );
     return publicaDe(config, 'pantalla');
   }
@@ -332,7 +339,7 @@ export class OdooServicio {
 
   private async fila(): Promise<FilaConfig | null> {
     const resultado = await this.conexiones.pg.query<FilaConfig>(
-      `SELECT url, db, usuario, clave, modelo_venta, campo_cot, modelo_tarea FROM configuracion_odoo WHERE id = true`,
+      `SELECT url, db, usuario, clave, modelo_venta, campo_cot, modelo_tarea, sesion_usuario, sesion_clave FROM configuracion_odoo WHERE id = true`,
     );
     return resultado.rows[0] ?? null;
   }
@@ -375,6 +382,36 @@ export class OdooServicio {
     return { lotes, lineas, aviso: null };
   }
 
+  async marcasDeOrdenes(ids: number[]): Promise<Map<number, string>> {
+    const unicos = [...new Set(ids.filter((id) => id > 0))];
+    const marcas = new Map<number, string>();
+    if (unicos.length === 0) return marcas;
+    const config = await this.config();
+    if (!config) return marcas;
+    const uid = await autenticar(config);
+    const meta = await camposDe(config, uid, 'mrp.production');
+    const ordenes = await buscar(config, uid, 'mrp.production', [['id', 'in', unicos]], presentes(meta, ['write_date']), unicos.length);
+    const mensajes = await buscar(
+      config,
+      uid,
+      'mail.message',
+      [['model', '=', 'mrp.production'], ['res_id', 'in', unicos]],
+      ['res_id', 'date'],
+      Math.min(unicos.length * 8, 200),
+      20_000,
+      'date desc',
+    );
+    const ultima = new Map<number, string>();
+    for (const mensaje of mensajes) {
+      const id = Number(mensaje.res_id);
+      const fecha = String(mensaje.date ?? '');
+      const previa = ultima.get(id) ?? '';
+      if (fecha > previa) ultima.set(id, fecha);
+    }
+    for (const orden of ordenes) marcas.set(Number(orden.id), `${String(orden.write_date ?? '')}|${ultima.get(Number(orden.id)) ?? ''}`);
+    return marcas;
+  }
+
   async ordenDe(nombre: string): Promise<{
     id: number;
     nombre: string;
@@ -387,6 +424,7 @@ export class OdooServicio {
     responsable: string;
     lista: string;
     serie: string;
+    escritoEn: string;
     componentes: Array<{ producto: string; porConsumir: number; consumido: number; unidad: string; desde: string; serie: string }>;
     notas: Array<{ fecha: string; autor: string; texto: string; imagenes: Array<{ nombre: string; mime: string; datos: Buffer }> }>;
   } | null> {
@@ -394,7 +432,7 @@ export class OdooServicio {
     if (!config) throw new BadRequestException('Odoo no está conectado.');
     const uid = await autenticar(config);
     const meta = await camposDe(config, uid, 'mrp.production');
-    const campos = presentes(meta, ['name', 'state', 'product_id', 'product_qty', 'qty_producing', 'date_start', 'date_finished', 'user_id', 'bom_id', 'lot_producing_id', 'move_raw_ids']);
+    const campos = presentes(meta, ['name', 'state', 'product_id', 'product_qty', 'qty_producing', 'date_start', 'date_finished', 'user_id', 'bom_id', 'lot_producing_id', 'move_raw_ids', 'write_date']);
     const filas = await buscar(config, uid, 'mrp.production', [['name', '=', nombre]], campos, 1);
     const orden = filas[0];
     if (!orden) return null;
@@ -425,6 +463,7 @@ export class OdooServicio {
       responsable: textoRelacion(orden.user_id),
       lista: textoRelacion(orden.bom_id),
       serie: textoRelacion(orden.lot_producing_id),
+      escritoEn: String(orden.write_date ?? ''),
       componentes: moves.map((move) => ({
         producto: textoRelacion(move.product_id),
         porConsumir: Number(move.product_uom_qty ?? 0),
@@ -672,12 +711,18 @@ export function armar(entrada: {
   modelo_venta?: string;
   campo_cot?: string;
   modelo_tarea?: string;
+  sesionUsuario?: string;
+  sesionClave?: string;
+  sesion_usuario?: string;
+  sesion_clave?: string;
 }): LecturaOdoo | null {
   const url = (entrada.url ?? '').trim().replace(/\/$/, '');
   const db = (entrada.db ?? '').trim();
   const usuario = (entrada.usuario ?? '').trim();
   const clave = (entrada.clave ?? '').trim();
   if (!url || !db || !usuario || !clave) return null;
+  const sesionUsuario = (entrada.sesionUsuario ?? entrada.sesion_usuario ?? '').trim();
+  const sesionClave = (entrada.sesionClave ?? entrada.sesion_clave ?? '').trim();
   return {
     url,
     db,
@@ -688,6 +733,7 @@ export function armar(entrada: {
       campo: campoValido(entrada.campoCot ?? entrada.campo_cot) || 'name',
     },
     tarea: { modelo: modeloValido(entrada.modeloTarea ?? entrada.modelo_tarea) || 'project.task' },
+    ...(sesionUsuario && sesionClave ? { sesion: { usuario: sesionUsuario, clave: sesionClave } } : {}),
   };
 }
 
@@ -698,6 +744,8 @@ function publicaDe(config: LecturaOdoo | FilaConfig, origen: 'pantalla' | 'entor
     db: leida?.db ?? '',
     usuario: leida?.usuario ?? '',
     clavePuesta: Boolean(leida?.clave),
+    sesionUsuario: leida?.sesion?.usuario ?? ('sesion_usuario' in config ? config.sesion_usuario : ''),
+    sesionClavePuesta: Boolean(leida?.sesion?.clave || ('sesion_clave' in config && config.sesion_clave)),
     modeloVenta: leida?.venta.modelo ?? 'sale.order',
     campoCot: leida?.venta.campo ?? 'name',
     modeloTarea: leida?.tarea.modelo ?? 'project.task',

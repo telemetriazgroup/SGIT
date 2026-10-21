@@ -13,7 +13,8 @@ import { OdooServicio, type LecturaTarea } from '../odoo/servicio';
 import { claveTienda, coincideTienda, tiendasDeHtml, tiendasDeTexto, type TiendaLeida } from './campana';
 import { vincularHijas } from './hijas';
 import { ajustarHilos, corregirEquipo, listarHilos } from './hilos';
-import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrarEquipo } from './regularizar';
+import { FabricacionServicio } from '../fabricacion/servicio';
+import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrarEquipo, registrarModem } from './regularizar';
 import { joinUrgente, ordenFecha, ordenUrgente } from './prioridad';
 
 export type ResultadoProceso = {
@@ -339,6 +340,7 @@ export class TareasService {
         asignacion: await this.asignacionConfirmada(tarea.id),
         movimientos: await this.movimientosDespacho(tarea.id),
         hilos: await listarHilos(this.conexiones.pg, tarea.id),
+        fabricaciones: await new FabricacionServicio(this.conexiones).deTarea(tarea.id),
         odoo: await this.odooDe(tarea),
         ...(await this.capaCampana(tarea)),
       };
@@ -365,6 +367,7 @@ export class TareasService {
       asignacion: await this.asignacionConfirmada(tarea.id),
       movimientos: await this.movimientosDespacho(tarea.id),
       hilos: await listarHilos(this.conexiones.pg, tarea.id),
+      fabricaciones: await new FabricacionServicio(this.conexiones).deTarea(tarea.id),
       odoo: await this.odooDe(tarea),
       ...(await this.capaCampana(tarea)),
     };
@@ -384,7 +387,7 @@ export class TareasService {
     return this.odoo.publica();
   }
 
-  guardarOdoo(entrada: { url?: string; db?: string; usuario?: string; clave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string }) {
+  guardarOdoo(entrada: { url?: string; db?: string; usuario?: string; clave?: string; sesionUsuario?: string; sesionClave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string }) {
     return this.odoo.guardar(entrada);
   }
 
@@ -968,52 +971,114 @@ export class TareasService {
     if ((resultado.rowCount ?? 0) === 0) throw new NotFoundException('Esa nota no se puede editar.');
   }
 
-  async fijarHilos(id: string, cantidad: number): Promise<void> {
+  async fijarHilos(id: string, cantidad: number, autor?: Autor): Promise<void> {
     try {
       await ajustarHilos(this.conexiones.pg, id, cantidad);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : 'No pude corregir los hilos.');
     }
+    if (autor) {
+      const tarea = await this.filaTarea(id);
+      if (!tarea.responsable_correo) {
+        await this.tomar(id, autor);
+      }
+    }
   }
 
-  async corregirHilo(id: string, hiloId: string, datos: { contenedor?: string; maquina?: string; imei?: string }, autor: { correo: string; nombre: string }): Promise<void> {
+  async corregirHilo(
+    id: string,
+    hiloId: string,
+    datos: {
+      contenedor?: string;
+      maquina?: string;
+      imei?: string;
+      celular?: string;
+      modem_serie?: string;
+      modem_imei?: string;
+      zona?: 'almacen' | 'tecnico' | 'despacho';
+    },
+    autor: { correo: string; nombre: string },
+  ): Promise<void> {
     const hilos = await listarHilos(this.conexiones.pg, id);
     if (!hilos.some((hilo) => hilo.id === hiloId)) throw new NotFoundException('Ese hilo no está en la cotización.');
+    const origen = datos.zona === 'almacen' ? 'almacén' : 'técnico';
     const imei = datos.imei?.replace(/\D/g, '') ?? '';
-    if (imei) {
+    const celular = datos.celular?.replace(/\D/g, '') ?? '';
+    const modemSerie = datos.modem_serie?.trim() ?? '';
+    const modemImei = datos.modem_imei?.replace(/\D/g, '') ?? '';
+    let hecho = false;
+
+    if (celular || imei) {
       const chip = await this.conexiones.pg.query<{ imei: string; celular: string; estado: string; telemetria: string }>(
-        `SELECT imei, celular, estado, telemetria FROM chip WHERE NOT archivado AND (imei = $1 OR imei LIKE '%' || $1)`,
-        [imei],
+        `SELECT imei, celular, estado, telemetria FROM chip
+         WHERE NOT archivado AND (
+           ($1 <> '' AND (imei = $1 OR imei LIKE '%' || $1))
+           OR ($2 <> '' AND (celular = $2 OR celular LIKE '%' || $2))
+         )
+         ORDER BY CASE
+           WHEN $1 <> '' AND imei = $1 THEN 0
+           WHEN $2 <> '' AND celular = $2 THEN 1
+           ELSE 2
+         END`,
+        [imei, celular],
       );
-      const unico = chip.rows.length === 1 ? chip.rows[0] : chip.rows.find((fila) => fila.imei === imei);
-      if (!unico) throw new BadRequestException('Ese IMEI no está en los chips cargados.');
-      await registrarChip(this.conexiones, hiloId, id, { ...unico, por: 'completo', pista: unico.imei }, autor, null, 'técnico', 'web');
+      const unico =
+        chip.rows.length === 1
+          ? chip.rows[0]
+          : chip.rows.find((fila) => (imei && fila.imei === imei) || (celular && fila.celular === celular));
+      if (!unico) {
+        throw new BadRequestException(
+          celular && !imei
+            ? 'Ese número de chip no está en el catálogo.'
+            : 'Ese IMEI o celular no está en los chips cargados.',
+        );
+      }
+      await registrarChip(this.conexiones, hiloId, id, { ...unico, por: 'completo', pista: unico.imei }, autor, null, origen, 'web');
+      hecho = true;
     }
+
+    if (modemSerie || modemImei) {
+      await registrarModem(this.conexiones, hiloId, id, { serie: modemSerie, imei: modemImei }, autor, null, origen, 'web');
+      hecho = true;
+    }
+
     if (datos.contenedor?.trim() || datos.maquina?.trim()) {
       await corregirEquipo(this.conexiones.pg, hiloId, { contenedor: datos.contenedor, maquina: datos.maquina });
+      hecho = true;
     }
-    if (!imei && !datos.contenedor?.trim() && !datos.maquina?.trim()) throw new BadRequestException('Escribe el contenedor, la máquina o el IMEI, o sube la foto.');
+
+    if (!hecho) {
+      throw new BadRequestException('Escribe el equipo, el chip, el módulo 4G o sube la foto.');
+    }
   }
 
   async regularizarFoto(
     id: string,
     hiloId: string,
     autor: { correo: string; nombre: string },
-    datos: { clase?: string; nombre?: string; mime?: string; contenido?: string },
+    datos: { clase?: string; nombre?: string; mime?: string; contenido?: string; zona?: string },
   ): Promise<void> {
     const hilos = await listarHilos(this.conexiones.pg, id);
     if (!hilos.some((hilo) => hilo.id === hiloId)) throw new NotFoundException('Ese hilo no está en la cotización.');
-    const clase = datos.clase === 'chip' || datos.clase === 'contenedor' || datos.clase === 'maquina' ? datos.clase : '';
-    if (!clase) throw new BadRequestException('Indica si la foto es del chip, del contenedor o de la máquina.');
+    const clase =
+      datos.clase === 'chip' || datos.clase === 'contenedor' || datos.clase === 'maquina' || datos.clase === 'modem'
+        ? datos.clase
+        : '';
+    if (!clase) throw new BadRequestException('Indica si la foto es del chip, del módulo, del contenedor o de la máquina.');
     const contenido = Buffer.from(datos.contenido ?? '', 'base64');
     if (contenido.length === 0 || contenido.length > 4 * 1024 * 1024) throw new BadRequestException('La foto pasa de 4 MB.');
     const foto = { nombre: datos.nombre?.trim() || 'foto.jpg', mime: datos.mime || 'image/jpeg', contenido };
+    const origen = datos.zona === 'almacen' ? 'almacén' : 'técnico';
     if (clase === 'chip') {
       const lectura = await leerFotoChip(this.conexiones, foto);
       if (!lectura) throw new BadRequestException('El lector no respondió. Manda la foto otra vez.');
       const chip = chipParaGuardar(lectura.hallados);
       if (!chip) throw new BadRequestException(lectura.paraWhatsapp);
-      await registrarChip(this.conexiones, hiloId, id, chip, autor, foto, 'técnico', 'web');
+      await registrarChip(this.conexiones, hiloId, id, chip, autor, foto, origen, 'web');
+      return;
+    }
+    if (clase === 'modem') {
+      await registrarModem(this.conexiones, hiloId, id, { serie: '', imei: '' }, autor, foto, origen, 'web');
       return;
     }
     const equipo = await leerFotoEquipo(foto);

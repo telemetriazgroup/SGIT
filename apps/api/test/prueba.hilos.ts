@@ -36,10 +36,16 @@ test('un hilo queda listo solo con despacho validado y, si se instala, con el ch
   const ocupado = { ...listo, chip_estado: 'ocupado' as const };
   assert.equal(hiloListo(ocupado).listo, false);
   assert.match(hiloListo(ocupado).falta.join(' '), /ocupado/);
-  assert.match(lineaHilo(ocupado), /chip ocupado/);
+  assert.match(lineaHilo(ocupado), /chip ocupado \*919867281\*/);
 });
 
 test('la línea del hilo dice qué falta para la orden de fabricación', () => {
   assert.match(lineaHilo({ ...base, orden: 2 }), /Hilo 2/);
   assert.match(lineaHilo({ ...base, orden: 2 }), /falta validar/);
+  const conEquipo = { ...base, despacho_validado: true, contenedor: 'ZGRU5333709', maquina: 'E0GM015342' };
+  assert.equal(hiloListo(conEquipo).listo, false);
+  assert.doesNotMatch(hiloListo(conEquipo).falta.join(' '), /se instala/);
+  assert.match(lineaHilo(conEquipo), /contenedor \*ZGRU5333709\*/);
+  assert.match(lineaHilo(conEquipo), /máquina \*E0GM015342\*/);
+  assert.doesNotMatch(lineaHilo(conEquipo), /se instala/);
 });

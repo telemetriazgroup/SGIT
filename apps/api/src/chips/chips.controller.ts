@@ -53,6 +53,12 @@ export class ChipsController {
     return this.chips.importar(Buffer.from(cuerpo.contenido, 'base64'), Boolean(cuerpo?.reemplazar));
   }
 
+  @Get('chips/:id/orden/imagenes')
+  async imagenes(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    await this.exigir(autorizacion);
+    return this.chips.imagenesDeOrden(id);
+  }
+
   @Get('chips/:id/orden')
   async orden(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     await this.exigir(autorizacion);

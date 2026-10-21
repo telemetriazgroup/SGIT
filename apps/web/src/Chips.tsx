@@ -420,7 +420,7 @@ type FotoNota = { id: string; nombre: string; mime: string; datos: string };
 
 function OrdenFabricacion({ apiUrl, token, chip, onCerrar }: { apiUrl: string; token: string; chip: Chip; onCerrar: () => void }) {
   const [orden, setOrdenVista] = useState<OrdenVista | null>(null);
-  const [aviso, setAviso] = useState('Leyendo la orden en Odoo…');
+  const [aviso, setAviso] = useState('Leyendo la orden guardada…');
   const [ocupado, setOcupado] = useState(true);
   const [foto, setFoto] = useState<number | null>(null);
 
@@ -430,11 +430,23 @@ function OrdenFabricacion({ apiUrl, token, chip, onCerrar }: { apiUrl: string; t
 
   async function cargar(forzar: boolean) {
     setOcupado(true);
-    setAviso(forzar ? 'Actualizando la orden…' : 'Leyendo la orden…');
+    setAviso(forzar ? 'Actualizando desde Odoo…' : 'Leyendo la orden guardada…');
     try {
       const datos = await pedir<OrdenVista>(apiUrl, token, `/chips/${chip.id}/orden`, forzar ? { method: 'POST', body: '{}' } : undefined);
       setOrdenVista(datos);
       setAviso('');
+      setOcupado(false);
+      const imagenes = await pedir<FotoNota[]>(apiUrl, token, `/chips/${chip.id}/orden/imagenes`).catch(() => []);
+      if (imagenes.length > 0) {
+        const porId = new Map(imagenes.map((imagen) => [imagen.id, imagen.datos]));
+        setOrdenVista({
+          ...datos,
+          notas: datos.notas.map((nota) => ({
+            ...nota,
+            imagenes: nota.imagenes.map((imagen) => ({ ...imagen, datos: porId.get(imagen.id) ?? imagen.datos })),
+          })),
+        });
+      }
     } catch (error: unknown) {
       setAviso(texto(error));
     } finally {
@@ -463,7 +475,7 @@ function OrdenFabricacion({ apiUrl, token, chip, onCerrar }: { apiUrl: string; t
             Volver
           </button>
           <button type="button" disabled={ocupado} onClick={() => void cargar(true)}>
-            Actualizar
+            Actualizar de Odoo
           </button>
         </div>
       </header>

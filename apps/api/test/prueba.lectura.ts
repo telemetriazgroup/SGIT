@@ -20,8 +20,10 @@ test('el aviso al técnico pide un ok y deja en negrita lo que escribió despach
   const texto = textoAvisoAsignacion('10020263584', 'CENCOSUD', 'Johan', 'Listo el contenedor', 2, ['1. Contenedor ZGRU6203905.']);
   assert.match(texto, /\*Listo el contenedor\*/);
   assert.match(texto, /Escribe ok si sí/);
+  assert.match(texto, /Escribe procesar para leer las imágenes/);
   assert.match(texto, /Estás en la cotización 10020263584/);
   assert.doesNotMatch(texto, /escribe 9/);
+  assert.doesNotMatch(textoAvisoAsignacion('10020263584', 'CENCOSUD', 'Johan', 'Sin foto', 0, []), /procesar/);
 });
 
 test('una tienda de campaña nombra la cotización, la cadena y la tienda', () => {

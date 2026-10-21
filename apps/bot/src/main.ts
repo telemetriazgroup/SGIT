@@ -24,7 +24,14 @@ const archivos = crearSumideroArchivo(directorioDeEstado());
 let pulso: NodeJS.Timeout | null = null;
 let salida: NodeJS.Timeout | null = null;
 const ESPERA_MS = 2000;
-const turno = new Map<string, number>();
+type PiezaEntrante = {
+  texto: string;
+  archivo: { nombre: string; mime: string; contenido: string } | null;
+  fallo: boolean;
+  mensaje: MensajeEntrante;
+};
+
+const rafaga = new Map<string, { piezas: PiezaEntrante[]; token: number }>();
 let cliente = crearCliente();
 let reiniciando = false;
 let ultimoReinicio = 0;
@@ -91,7 +98,10 @@ async function arrancar(): Promise<void> {
     process.exit(1);
   }
   const pedido = await api.pedirReinicio().catch(() => ({ reiniciar: false, olvidar: false }));
-  if (pedido.olvidar) await borrarCarpetaSesion();
+  if (pedido.olvidar) {
+    await api.publicar('desconectado').catch(() => undefined);
+    await borrarCarpetaSesion();
+  }
   pulso = setInterval(() => {
     void api.reclamar(yo).catch((error: unknown) => {
       console.error(`SGIT bot: no pude renovar el liderazgo. ${detalle(error)}`);
@@ -153,11 +163,12 @@ async function olvidar(): Promise<void> {
   await anotar('info', 'Cierro la sesión guardada en este equipo.');
   try {
     await api.publicar('desconectado');
-    await cliente.destroy();
+    await Promise.race([cliente.destroy().catch(() => undefined), esperar(8000)]);
   } catch (error) {
     await anotar('fallo', `No pude cerrar la ventana antes de borrar la sesión. ${detalle(error)}`);
   }
   await cerrarNavegadorDeSesion();
+  await esperar(500);
   await borrarCarpetaSesion();
   cliente = crearCliente();
   try {
@@ -295,29 +306,52 @@ type MensajeEntrante = {
 async function atender(mensaje: MensajeEntrante): Promise<void> {
   if (mensaje.fromMe || mensaje.from.endsWith('@g.us')) return;
   const clave = mensaje.from;
-  const mio = (turno.get(clave) ?? 0) + 1;
-  turno.set(clave, mio);
   const archivo = await bajarImagen(mensaje);
   const fallo = pareceImagen(mensaje) && !archivo;
+  const grupo = rafaga.get(clave) ?? { piezas: [], token: 0 };
+  grupo.piezas.push({ texto: mensaje.body ?? '', archivo, fallo, mensaje });
+  grupo.token += 1;
+  const token = grupo.token;
+  rafaga.set(clave, grupo);
   await esperar(ESPERA_MS);
-  if (turno.get(clave) !== mio) return;
-  if (fallo) {
-    await mensaje.reply('No pude leer la imagen. Envíala otra vez, o escribe no para seguir sin imagen.');
+  if (grupo.token !== token) return;
+  const piezas = grupo.piezas.splice(0);
+  rafaga.delete(clave);
+  const ultimo = piezas.at(-1)?.mensaje;
+  if (!ultimo) return;
+  const llegaron = piezas.map((pieza) => pieza.archivo).filter((item): item is { nombre: string; mime: string; contenido: string } => Boolean(item));
+  const { usados, fuera } = recortarArchivos(llegaron);
+  if (piezas.some((pieza) => pieza.fallo) && usados.length === 0) {
+    await ultimo.reply('No pude leer la imagen. Envíala otra vez, o escribe no para seguir sin imagen.');
     return;
   }
-  const telefono = await telefonoReal(mensaje);
-  const resultado = await api.entrar(telefono, mensaje.body ?? '', archivo);
-  if (turno.get(clave) !== mio) return;
+  const textos = piezas.map((pieza) => pieza.texto.trim()).filter(Boolean);
+  const escrito = usados.length > 0 ? textos.join('\n') : (textos.at(-1) ?? '');
+  const texto = fuera > 0 ? `${escrito}\nQuedaron fuera ${fuera} fotos de este envío. Mándalas otra vez.`.trim() : escrito;
+  const telefono = await telefonoReal(ultimo);
+  const resultado = await api.entrar(telefono, texto, usados[0] ?? null, usados.slice(1));
   if (resultado.archivo?.contenido) {
     const media = new MessageMedia(resultado.archivo.mime, resultado.archivo.contenido, resultado.archivo.nombre);
     try {
-      await cliente.sendMessage(mensaje.from, media, { caption: resultado.respuesta, sendSeen: false });
+      await cliente.sendMessage(ultimo.from, media, { caption: resultado.respuesta, sendSeen: false });
       return;
     } catch (error) {
       console.error(`SGIT bot: no pude enviar la imagen guardada. ${detalle(error)}`);
     }
   }
-  if (resultado.respuesta) await mensaje.reply(resultado.respuesta);
+  if (resultado.respuesta) await ultimo.reply(resultado.respuesta);
+}
+
+function recortarArchivos(archivos: Array<{ nombre: string; mime: string; contenido: string }>): { usados: Array<{ nombre: string; mime: string; contenido: string }>; fuera: number } {
+  const usados: Array<{ nombre: string; mime: string; contenido: string }> = [];
+  let bytes = 0;
+  for (const archivo of archivos) {
+    if (usados.length >= 6) break;
+    if (bytes + archivo.contenido.length > 5_500_000 && usados.length > 0) break;
+    usados.push(archivo);
+    bytes += archivo.contenido.length;
+  }
+  return { usados, fuera: archivos.length - usados.length };
 }
 
 function esperar(ms: number): Promise<void> {

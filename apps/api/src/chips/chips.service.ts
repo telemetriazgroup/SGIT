@@ -4,7 +4,7 @@ import type { Conexiones } from '../conexiones';
 import { OdooServicio } from '../odoo/servicio';
 import { filasDeExcel } from './excel';
 import { clasificar, type LineaSerie, type LoteSerie } from './inventario';
-import { armarOrden, type CopiaOrden } from './orden';
+import { armarOrden, marcaDeOrden, type CopiaOrden } from './orden';
 import { normalizarCelular, normalizarImei, textoPlano } from './normalizar';
 
 export type Chip = {
@@ -37,6 +37,36 @@ export type CargaChips = {
 };
 
 const TAMANO = 40;
+
+export class PulsoChips {
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private ocupado = false;
+
+  constructor(private readonly conexiones: Conexiones) {}
+
+  onModuleInit(): void {
+    this.timer = setInterval(() => {
+      void this.correr();
+    }, 180_000);
+  }
+
+  onModuleDestroy(): void {
+    if (this.timer) clearInterval(this.timer);
+  }
+
+  private async correr(): Promise<void> {
+    if (this.ocupado) return;
+    this.ocupado = true;
+    try {
+      await new ChipsService(this.conexiones).vigilarOrdenes();
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'falló la vigilancia de órdenes';
+      console.error(`Chips: ${mensaje}`);
+    } finally {
+      this.ocupado = false;
+    }
+  }
+}
 
 export class ChipsService {
   private readonly odoo: OdooServicio;
@@ -212,7 +242,7 @@ export class ChipsService {
     if (!chip.orden_mo) throw new BadRequestException('Ese chip no tiene una orden de fabricación.');
     if (!forzar) {
       const guardada = await this.ordenGuardada(chip.id);
-      if (guardada?.lotesPropios) return guardada;
+      if (guardada?.nombre) return guardada;
     }
     const leida = await this.odoo.ordenDe(chip.orden_mo);
     if (!leida) throw new NotFoundException('Odoo no tiene esa orden.');
@@ -249,14 +279,52 @@ export class ChipsService {
       leida.componentes,
       notas,
     );
+    const marca = marcaDeOrden(leida.escritoEn, leida.notas.map((nota) => nota.fecha));
     await this.conexiones.pg.query(
-      `INSERT INTO chip_orden (chip_id, odoo_id, nombre, copia, leido_en) VALUES ($1, $2, $3, $4::jsonb, now())
-       ON CONFLICT (chip_id) DO UPDATE SET odoo_id = EXCLUDED.odoo_id, nombre = EXCLUDED.nombre, copia = EXCLUDED.copia, leido_en = now()`,
-      [chip.id, leida.id, leida.nombre, JSON.stringify(copia)],
+      `INSERT INTO chip_orden (chip_id, odoo_id, nombre, copia, leido_en, marca) VALUES ($1, $2, $3, $4::jsonb, now(), $5)
+       ON CONFLICT (chip_id) DO UPDATE SET odoo_id = EXCLUDED.odoo_id, nombre = EXCLUDED.nombre, copia = EXCLUDED.copia, leido_en = now(), marca = EXCLUDED.marca`,
+      [chip.id, leida.id, leida.nombre, JSON.stringify(copia), marca],
     );
     const guardada = await this.ordenGuardada(chip.id);
     if (!guardada) throw new NotFoundException('No se pudo guardar la orden.');
     return guardada;
+  }
+
+  async imagenesDeOrden(id: string): Promise<Array<{ id: string; mime: string; datos: string }>> {
+    const imagenes = await this.conexiones.pg.query<{ id: string; mime: string; contenido: Buffer }>(
+      `SELECT id, mime, contenido FROM chip_orden_imagen WHERE chip_id = $1`,
+      [id],
+    );
+    return imagenes.rows.map((imagen) => ({ id: imagen.id, mime: imagen.mime, datos: bufferDe(imagen.contenido).toString('base64') }));
+  }
+
+  async vigilarOrdenes(): Promise<{ revisadas: number; actualizadas: number }> {
+    const filas = await this.conexiones.pg.query<{ chip_id: string; odoo_id: number; marca: string }>(
+      `SELECT chip_id, odoo_id, COALESCE(marca, '') AS marca FROM chip_orden WHERE odoo_id IS NOT NULL`,
+    );
+    if (filas.rows.length === 0) return { revisadas: 0, actualizadas: 0 };
+    let marcas: Map<number, string>;
+    try {
+      marcas = await this.odoo.marcasDeOrdenes(filas.rows.map((fila) => fila.odoo_id));
+    } catch {
+      return { revisadas: filas.rows.length, actualizadas: 0 };
+    }
+    let actualizadas = 0;
+    for (const fila of filas.rows) {
+      const marca = marcas.get(fila.odoo_id) ?? '';
+      if (!marca || marca === fila.marca) continue;
+      if (!fila.marca) {
+        await this.conexiones.pg.query(`UPDATE chip_orden SET marca = $2 WHERE chip_id = $1 AND marca = ''`, [fila.chip_id, marca]);
+        continue;
+      }
+      try {
+        await this.verOrden(fila.chip_id, true);
+        actualizadas += 1;
+      } catch {
+        continue;
+      }
+    }
+    return { revisadas: filas.rows.length, actualizadas };
   }
 
   private async ordenGuardada(chipId: string): Promise<(CopiaOrden & { trazas: TrazaOrden[]; leido_en: string | null }) | null> {
@@ -266,11 +334,6 @@ export class ChipsService {
     );
     const guardada = fila.rows[0];
     if (!guardada?.copia?.nombre) return null;
-    const imagenes = await this.conexiones.pg.query<{ id: string; mime: string; contenido: Buffer }>(
-      `SELECT id, mime, contenido FROM chip_orden_imagen WHERE chip_id = $1`,
-      [chipId],
-    );
-    const datos = new Map(imagenes.rows.map((imagen) => [imagen.id, bufferDe(imagen.contenido).toString('base64')]));
     const copia = guardada.copia;
     const trazas = await this.conexiones.pg.query<TrazaOrden>(
       `SELECT referencia, producto, desde, hacia, cantidad, cuando AS fecha FROM chip_movimiento WHERE chip_id = $1 ORDER BY cuando`,
@@ -278,10 +341,7 @@ export class ChipsService {
     );
     return {
       ...copia,
-      notas: (copia.notas ?? []).map((nota) => ({
-        ...nota,
-        imagenes: (nota.imagenes ?? []).map((imagen) => ({ ...imagen, datos: datos.get(imagen.id) ?? '' })),
-      })),
+      notas: copia.notas ?? [],
       trazas: trazas.rows.map((traza) => ({
         ...traza,
         producto: String(traza.producto ?? '').replace(/\s+/g, ' ').trim(),

@@ -1,0 +1,1 @@
+ALTER TABLE chip_orden ADD COLUMN IF NOT EXISTS marca text NOT NULL DEFAULT '';

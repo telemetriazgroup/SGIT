@@ -4,8 +4,11 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AlmacenCorreo } from '../buzon/almacen';
 import { vincularHijas } from '../tareas/hijas';
-import { corregirEquipo, crearHilos, guardarChip, hiloListo, lineaHilo, listarHilos, marcarInstalacion, textoEquipo, validarDespacho } from '../tareas/hilos';
+import { anotarSinInstalacion, corregirEquipo, crearHilos, guardarChip, hiloListo, lineaHilo, listarHilos, marcarInstalada, textoEquipo, validarDespacho } from '../tareas/hilos';
 import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrarEquipo } from '../tareas/regularizar';
+import { ChipsService } from '../chips/chips.service';
+import { serieChipDe, serieCoincide } from '../chips/orden';
+import { FabricacionServicio } from '../fabricacion/servicio';
 import { joinUrgente, ordenFecha, ordenUrgente } from '../tareas/prioridad';
 import { anotarConexion } from '../conexion/bitacora';
 import type { Conexiones } from '../conexiones';
@@ -18,9 +21,16 @@ import {
   imagenRecibida,
   imagenesJuntas,
   menuAsunto,
+  menuAreaAlmacen,
+  menuAreaDespacho,
   menuCot,
+  menuDeHilo,
   menuDecision,
+  menuInstalacion,
+  menuOrden,
   menuGeneral,
+  menuSinInstalacion,
+  menuValidarInstalacion,
   momentosDeEnvio,
   ackDespacho,
   negrita,
@@ -31,6 +41,8 @@ import {
   preguntaImagen,
   preguntaSiEsTodo,
   salioDeCot,
+  preguntaHilosPendientes,
+  textoColaHilos,
   textoReprogramacion,
   silencioDespacho,
   sinValidarAviso,
@@ -41,7 +53,8 @@ import {
   PREGUNTAS_DESPACHO,
 } from './avisos';
 import { cierreFabricacion, fragmentosDeTexto, identificarChips, imeisDeTexto, textoChip } from './lectura-chip';
-import { textoDeImagen } from './proceso-imagen';
+import { esImeiDeSenal, type EtiquetaModulo } from './lectura-modulo';
+import { leerEtiquetaModulo, textoDeImagen } from './proceso-imagen';
 import { TurnoDespacho } from './turno-despacho';
 
 type Autor = { correo: string; nombre: string };
@@ -91,7 +104,8 @@ type Paso =
   | 'chip_menu'
   | 'chip_foto'
   | 'hilos'
-  | 'hilo';
+  | 'hilo'
+  | 'fabricacion';
 type ImagenPendiente = { nombre: string; mime: string; contenido: string };
 type TipoNota = 'seguimiento' | 'incidente' | 'cierre';
 type Pendiente = {
@@ -109,7 +123,14 @@ type Pendiente = {
   espera_menu?: boolean;
   equipo?: number;
   hiloId?: string;
-  corrige?: 'imei' | 'contenedor' | 'maquina';
+  fabricacionId?: string;
+  zona?: 'hilo' | 'despacho' | 'almacen' | 'motivo' | 'validar' | 'orden' | 'confirmar' | 'instalacion' | 'fotos' | 'comentario' | 'modem' | 'entrega' | 'recepcion' | 'validacion';
+  corrige?: 'imei' | 'contenedor' | 'maquina' | 'modem';
+  fotosEn?: string;
+  notaId?: string;
+  candidatos?: string[];
+  imeis?: string[];
+  vuelve?: 'almacen' | 'instalacion' | 'validar';
 };
 type Charla = { paso: Paso; tarea_id: string | null; lista: string[]; pendiente: Pendiente | null };
 type ArchivoSalida = { nombre: string; mime: string; contenido: string };
@@ -184,6 +205,7 @@ const PASOS: Paso[] = [
   'chip_foto',
   'hilos',
   'hilo',
+  'fabricacion',
 ];
 
 const LEASE_MS = 30_000;
@@ -434,7 +456,38 @@ export class BotService {
     return resultado.rowCount ?? 0;
   }
 
+  private async cerrarFotosVencidas(ahora: Date): Promise<void> {
+    const vencidas = await this.conexiones.pg.query<{ telefono: string; tarea_id: string; hilo_id: string; zona: string }>(
+      `UPDATE charla
+       SET pendiente = (pendiente - 'fotosEn' - 'notaId') || jsonb_build_object('zona', CASE WHEN pendiente->>'zona' = 'fotos' THEN 'instalacion' WHEN pendiente->>'zona' = 'validacion' THEN 'validar' ELSE 'almacen' END),
+           actualizado_en = now()
+       WHERE paso = 'hilo'
+         AND pendiente->>'zona' IN ('fotos', 'entrega', 'recepcion', 'validacion')
+         AND pendiente->>'fotosEn' IS NOT NULL
+         AND (pendiente->>'fotosEn')::timestamptz <= $1::timestamptz - interval '15 seconds'
+       RETURNING telefono, tarea_id, pendiente->>'hiloId' AS hilo_id, pendiente->>'zona' AS zona`,
+      [ahora.toISOString()],
+    );
+    for (const fila of vencidas.rows) {
+      if (!fila.tarea_id || !fila.hilo_id) continue;
+      const cuerpo = fila.zona === 'instalacion'
+        ? menuInstalacion(
+          (await this.tituloHilo(fila.tarea_id, fila.hilo_id, 'REPORTE DE INSTALACIÓN')) ?? 'REPORTE DE INSTALACIÓN',
+          await this.textoModemHilo(await this.modemDelHilo(fila.tarea_id, fila.hilo_id)),
+        )
+        : fila.zona === 'validar'
+          ? menuValidarInstalacion((await this.tituloHilo(fila.tarea_id, fila.hilo_id, 'REPORTE DE INSTALACIÓN / REGULARIZACIÓN')) ?? 'REPORTE DE INSTALACIÓN / REGULARIZACIÓN')
+          : menuAreaAlmacen((await this.tituloHilo(fila.tarea_id, fila.hilo_id, 'ÁREA ALMACÉN')) ?? 'ÁREA ALMACÉN');
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
+         VALUES ($1, 'fabricacion', $2, $3, $4, 'pendiente', now())`,
+        [randomUUID(), fila.tarea_id, fila.telefono, cuerpo],
+      );
+    }
+  }
+
   async tomarAviso(ahora = new Date()): Promise<{ id: string; destino: string; cuerpo: string; imagenes: Array<{ nombre: string; mime: string; contenido: string }> } | null> {
+    await this.cerrarFotosVencidas(ahora);
     const sesion = await this.estado();
     if (sesion.estado !== 'listo' || sesion.fallo) return null;
     const ultimo = sesion.ultimoEnvioEn ? new Date(sesion.ultimoEnvioEn) : null;
@@ -588,6 +641,7 @@ export class BotService {
     texto: string,
     archivo: ArchivoNota | null,
     anotador: Anotador,
+    extras: ArchivoNota[] = [],
   ): Promise<RespuestaBot> {
     const numero = digitos(telefono);
     const textoRecibido = texto.trim() || (archivo ? 'Foto' : '');
@@ -601,8 +655,8 @@ export class BotService {
 
     const charla = await this.charla(numero);
     const limpio = texto.trim();
-    if (quien.rol === 'despacho') return this.atenderDespacho(numero, quien, limpio, charla, archivo);
-    if (quien.rol === 'almacen') return this.atenderAlmacen(numero, quien, limpio, archivo);
+    if (quien.rol === 'despacho') return this.atenderDespacho(numero, quien, limpio, charla, archivo, extras);
+    if (quien.rol === 'almacen') return this.atenderAlmacen(numero, quien, limpio, archivo, extras);
     if (charla.pendiente?.espera_menu) return this.abrirMenu(numero);
     if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(numero, charla);
     const paso = charla.paso;
@@ -618,7 +672,8 @@ export class BotService {
     }
     if (paso === 'cot' && charla.tarea_id) return this.enCot(numero, charla.tarea_id, limpio);
     if (paso === 'hilos' && charla.tarea_id) return this.enHilos(numero, charla, limpio);
-    if (paso === 'hilo' && charla.tarea_id) return this.enHilo(numero, charla, limpio, archivo);
+    if (paso === 'hilo' && charla.tarea_id) return this.enHilo(numero, charla, limpio, archivo, extras);
+    if (paso === 'fabricacion') return this.enFabricacion(numero, charla, limpio);
     if (paso === 'corroborar_lectura' && charla.tarea_id) return this.enCorroborar(numero, quien, charla, limpio);
     if (paso === 'respuesta_despacho' && charla.tarea_id) return this.enRespuestaDespacho(numero, charla, limpio);
     if (paso === 'consulta_despacho' && charla.tarea_id) return this.enConsultaDespacho(numero, charla.tarea_id, limpio);
@@ -675,6 +730,28 @@ export class BotService {
     return this.dejar(telefono, true, 'Escribe el número para entrar. Escribe menú para quedarte en el menú general.');
   }
 
+  private async volverAlHilo(telefono: string, tareaId: string, preferido: string | undefined, aviso: string): Promise<RespuestaBot> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const ordenes = await this.conexiones.pg.query<{ orden: number }>(
+      `SELECT DISTINCT COALESCE(f.orden_equipo, 1) AS orden
+       FROM asignacion_archivo f
+       JOIN asignacion_despacho a ON a.id = f.asignacion_id
+       WHERE a.tarea_id = $1 AND a.estado = 'confirmada' AND a.validacion = 'validada'
+         AND a.confirmada_en = (
+           SELECT MAX(confirmada_en) FROM asignacion_despacho WHERE tarea_id = $1 AND estado = 'confirmada'
+         )`,
+      [tareaId],
+    );
+    const porOrden = ordenes.rows.length === 1 ? hilos.find((hilo) => hilo.orden === ordenes.rows[0].orden) : null;
+    const elegido = hilos.find((hilo) => hilo.id === preferido) ?? porOrden ?? (hilos.length === 1 ? hilos[0] : null);
+    if (elegido) {
+      const menu = await this.menuHilo(telefono, tareaId, elegido.id);
+      return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
+    }
+    const lista = await this.abrirHilos(telefono, tareaId);
+    return { ...lista, respuesta: `${aviso}\n${lista.respuesta}` };
+  }
+
   private async abrirCorroboracion(telefono: string, tareaId: string, corte: 'aviso' | 'menu'): Promise<RespuestaBot> {
     const paquete = await this.turno().paquete(tareaId);
     if (!paquete) {
@@ -700,20 +777,26 @@ export class BotService {
     if (/^(menu|menú|volver)$/i.test(limpio)) return this.menuDeCot(telefono, tareaId);
     const turno = this.turno();
     if (charla.pendiente?.indice) {
+      if (/^0$/.test(limpio)) {
+        const seguido = await this.abrirCorroboracion(telefono, tareaId, charla.pendiente.corte === 'aviso' ? 'aviso' : 'menu');
+        return { ...seguido, respuesta: `Saliste sin cambiar esa lectura.\n${seguido.respuesta}` };
+      }
       const codigo = limpio.replace(/[\s\-_]+/g, '');
-      if (codigo.length < 4) {
-        return this.dejar(telefono, true, 'Escribe el código correcto. Ejemplo: ZGRU6203905');
+      if (codigo.length < 4 || /^procesar$/i.test(limpio)) {
+        return this.dejar(telefono, true, 'Escribe el código correcto. Ejemplo: ZGRU6203905\nEscribe 0 para salir sin cambiar.');
       }
       const resultado = await turno.corregir(tareaId, charla.pendiente.indice - 1, codigo, quien.nombre);
       const seguido = await this.abrirCorroboracion(telefono, tareaId, charla.pendiente.corte === 'aviso' ? 'aviso' : 'menu');
       return { ...seguido, respuesta: `${resultado}\n${seguido.respuesta}` };
     }
+    if (/^procesar$/i.test(limpio)) {
+      const aviso = await turno.procesarImagenes(tareaId);
+      const seguido = await this.abrirCorroboracion(telefono, tareaId, charla.pendiente?.corte === 'aviso' ? 'aviso' : 'menu');
+      return { ...seguido, respuesta: `${aviso}\n${seguido.respuesta}` };
+    }
     if (/^(ok|si|sí|correcto)$/i.test(limpio)) {
       const resultado = await turno.aceptarLecturas(tareaId, quien.nombre);
-      const ref = await this.referencia(tareaId);
-      const elevado = await this.esElevado(telefono);
-      await this.guardarCharla(telefono, 'cot', tareaId, [], null);
-      return this.dejar(telefono, true, [resultado, ref ? menuCot(ref.linea, elevado) : ''].filter(Boolean).join('\n'));
+      return this.volverAlHilo(telefono, tareaId, charla.pendiente?.hiloId, resultado);
     }
     const indice = Number(limpio);
     if (Number.isInteger(indice) && indice >= 1) {
@@ -721,7 +804,7 @@ export class BotService {
       const lectura = paquete?.lecturas[indice - 1];
       if (!paquete || !lectura) return this.dejar(telefono, true, 'Ese número no está en las lecturas. Escribe ok o el número que ves.');
       await this.guardarCharla(telefono, 'corroborar_lectura', tareaId, [], { corte: charla.pendiente?.corte, indice });
-      return this.dejar(telefono, true, `${lectura}\nEscribe el código correcto para esa imagen.`);
+      return this.dejar(telefono, true, `${lectura}\nEscribe el código correcto para esa imagen.\nEscribe 0 para salir sin cambiar.`);
     }
     return this.abrirCorroboracion(telefono, tareaId, charla.pendiente?.corte === 'aviso' ? 'aviso' : 'menu');
   }
@@ -821,20 +904,18 @@ export class BotService {
   }
 
   private async enCot(telefono: string, tareaId: string, limpio: string): Promise<RespuestaBot> {
+    const elevado = await this.esElevado(telefono);
     if (/^(1|datos|datos de la cotizacion|datos de la cotización)$/i.test(limpio)) return this.datosDeCot(telefono, tareaId);
     if (/^(2|seguimiento|registrar seguimiento)$/i.test(limpio)) return this.empezarRegistro(telefono, tareaId, 'seguimiento');
     if (/^(3|incidente|registrar incidente)$/i.test(limpio)) return this.empezarRegistro(telefono, tareaId, 'incidente');
     if (/^(4|ultimo seguimiento|último seguimiento)$/i.test(limpio)) return this.ultimo(telefono, tareaId, 'seguimiento');
     if (/^(5|ultimo incidente|último incidente)$/i.test(limpio)) return this.ultimo(telefono, tareaId, 'incidente');
     if (/^(6|resumen|resumen de registros)$/i.test(limpio)) return this.resumen(telefono, tareaId, 0);
-    if (/^(7|volver|salir|menu general|menú general)$/i.test(limpio)) return this.salirDeCot(telefono, tareaId);
-    if (/^(8|cerrar|cerrar por regularizacion|cerrar por regularización)$/i.test(limpio)) {
-      if (!(await this.esElevado(telefono))) return this.menuDeCot(telefono, tareaId);
-      return this.empezarCierre(telefono, { origen: 'tarea', tareaId });
-    }
-    if (/^(9|respuesta de despacho)$/i.test(limpio)) return this.abrirCorroboracion(telefono, tareaId, 'menu');
-    if (/^(10|pedir chip|chip|necesito telemetria|necesito telemetría)$/i.test(limpio)) return this.pedirChip(telefono, tareaId);
-    if (/^(11|telemetrias|telemetrías|hilos)$/i.test(limpio)) return this.abrirHilos(telefono, tareaId);
+    if (/^(menu|menú|salir)$/i.test(limpio)) return this.salirDeCot(telefono, tareaId);
+    if (elevado && /^(7|cerrar|cerrar por regularizacion|cerrar por regularización)$/i.test(limpio)) return this.empezarCierre(telefono, { origen: 'tarea', tareaId });
+    if ((elevado ? /^8$/ : /^7$/).test(limpio) || /^(telemetrias|telemetrías|hilos)$/i.test(limpio)) return this.abrirHilos(telefono, tareaId);
+    if ((elevado ? /^9$/ : /^8$/).test(limpio) || /^(volver|menu anterior|menú anterior)$/i.test(limpio)) return this.salirDeCot(telefono, tareaId);
+    if (/chip|almac[eé]n|despacho/i.test(limpio)) return this.dejar(telefono, true, `Eso se hace dentro de Telemetrías, en el hilo.\n${opcionesCot(elevado)}`);
     return this.menuDeCot(telefono, tareaId);
   }
 
@@ -1478,6 +1559,7 @@ export class BotService {
     limpio: string,
     charla: Charla,
     archivo: ArchivoNota | null,
+    extras: ArchivoNota[] = [],
   ): Promise<RespuestaBot> {
     const turno = this.turno();
     if (charla.pendiente?.espera_menu) return this.menuTurno(telefono, null);
@@ -1494,7 +1576,7 @@ export class BotService {
     if (/^(menu|menú)$/i.test(limpio) && !archivo) return this.menuTurno(telefono, charla.tarea_id);
     if (charla.paso === 'despacho_menu' && !archivo) return this.elegirTurno(telefono, charla, limpio);
     if (charla.paso === 'despacho_validar' && charla.tarea_id && !archivo) return this.validarTurno(telefono, charla.tarea_id, limpio);
-    if (this.enAsignacion(charla.paso) && charla.tarea_id) return this.recogerTurno(telefono, quien, charla, limpio, archivo);
+    if (this.enAsignacion(charla.paso) && charla.tarea_id) return this.recogerTurno(telefono, quien, charla, limpio, archivo, extras);
     const cot = numeroCot(limpio);
     if (cot) return this.abrirCotTurno(telefono, cot);
     if (!limpio || esSaludo(limpio)) return this.menuTurno(telefono, null);
@@ -1511,6 +1593,7 @@ export class BotService {
     charla: Charla,
     limpio: string,
     archivo: ArchivoNota | null,
+    extras: ArchivoNota[] = [],
   ): Promise<RespuestaBot> {
     const tareaId = charla.tarea_id;
     if (!tareaId) return this.menuTurno(telefono, null);
@@ -1522,15 +1605,23 @@ export class BotService {
       return this.dejar(telefono, true, `Esa cotización ya la está atendiendo ${dueno.otro}.`);
     }
     await turno.tocar(tareaId);
-    if (archivo) {
-      const rechazo = await turno.agregarImagen(tareaId, quien, archivo, equipo);
-      if (rechazo) return this.dejar(telefono, true, rechazo);
+    const fotos = [archivo, ...extras].filter((foto): foto is ArchivoNota => Boolean(foto));
+    if (fotos.length > 0) {
+      let guardadas = 0;
+      let rechazo = '';
+      for (const foto of fotos) {
+        const fallo = await turno.agregarImagen(tareaId, quien, foto, equipo);
+        if (fallo) rechazo = fallo;
+        else guardadas += 1;
+      }
+      if (guardadas === 0) return this.dejar(telefono, true, rechazo);
       if (limpio && !/^(ok|listo|es todo|ya|1|datos)$/i.test(limpio)) await turno.agregar(tareaId, quien, limpio, equipo);
       if (!/^(ok|listo|es todo|ya)$/i.test(limpio)) {
         const imagenes = await turno.contarImagenes(tareaId);
         const escrito = await turno.textoDe(tareaId);
         await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], { equipo });
-        return this.dejar(telefono, true, ackDespacho(imagenes, escrito));
+        const ack = ackDespacho(imagenes, escrito);
+        return this.dejar(telefono, true, rechazo ? `${rechazo}\n${ack}` : ack);
       }
     }
     if (/^(1|datos)$/i.test(limpio)) {
@@ -1539,7 +1630,7 @@ export class BotService {
       return this.dejar(telefono, true, resumen ?? 'Esa cotización ya no está.');
     }
     if (/^(ok|listo|es todo|ya)$/i.test(limpio)) return this.cerrarEquipo(telefono, tareaId, equipo);
-    if (!limpio) return this.dejar(telefono, true, 'Escribe el contenedor y la máquina, manda una imagen, o menu para ver otras pendientes.');
+    if (!limpio) return this.dejar(telefono, true, 'Escribe el contenedor y la máquina, manda las fotos. Pueden ser varias juntas, o menu para ver otras pendientes.');
     const junto = await turno.agregar(tareaId, quien, limpio, equipo);
     const imagenes = await turno.contarImagenes(tareaId);
     await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], { equipo });
@@ -1593,7 +1684,7 @@ export class BotService {
     if (/^otro$/i.test(limpio)) {
       await turno.descartar(tareaId);
       await this.guardarCharla(telefono, 'despacho_recogiendo', tareaId, [], null);
-      return this.dejar(telefono, true, 'Listo, lo dejamos de lado. Escribe de nuevo el contenedor y la máquina, o manda una imagen.');
+      return this.dejar(telefono, true, 'Listo, lo dejamos de lado. Escribe de nuevo el contenedor y la máquina, o manda las fotos.');
     }
     if (/^(ok|ya)$/i.test(limpio)) return this.cerrarTurno(telefono, tareaId);
     return this.dejar(telefono, true, 'Responde ok si quedó bien, u otro para redactarlo de nuevo.');
@@ -1958,8 +2049,14 @@ export class BotService {
         const mensaje = error instanceof Error ? error.message : 'No pude abrir los hilos.';
         return this.dejar(telefono, true, mensaje);
       }
-      const falta = creados.find((hilo) => !hilo.despacho_texto && !hilo.contenedor && !hilo.maquina);
-      const aviso = falta ? await this.pedirDespachoAhora(tareaId, `Confirma el contenedor y la máquina del equipo ${falta.orden}.`, falta.orden) : '';
+      const autor = await this.autorDe(telefono);
+      await this.conexiones.pg.query(
+        `UPDATE tarea SET responsable_correo = $2, responsable_nombre = $3
+         WHERE id = $1 AND (responsable_correo IS NULL OR responsable_correo = '')`,
+        [tareaId, autor.correo, autor.nombre],
+      );
+      const faltan = creados.filter((hilo) => !hilo.despacho_texto && !hilo.contenedor && !hilo.maquina);
+      const aviso = faltan.length ? textoColaHilos(faltan.length, await this.turno().encolarHilos(tareaId, faltan.length)) : '';
       const lista = await this.abrirHilos(telefono, tareaId);
       return aviso ? { ...lista, respuesta: `${aviso}\n${lista.respuesta}` } : lista;
     }
@@ -1973,79 +2070,820 @@ export class BotService {
     const hilo = hilos.find((item) => item.id === hiloId);
     if (!hilo) return this.abrirHilos(telefono, tareaId);
     const juicio = hiloListo(hilo);
-    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId });
-    return this.dejar(telefono, true, [
-      lineaHilo(hilo),
-      hilo.despacho_texto ? `Despacho escribió: ${hilo.despacho_texto}` : 'Despacho todavía no dejó texto de este equipo.',
-      juicio.listo ? 'Este hilo ya tiene lo necesario. La orden de fabricación es el siguiente módulo.' : `Para resolverlo: ${juicio.falta.join('; ')}.`,
-      '1. Validar lo que envió despacho',
-      '2. Pedir a despacho el código y el contenedor',
-      '3. Pedir chip a almacén. Si el anterior está ocupado, pide otro',
-      '4. Esta telemetría no se instala',
-      '5. Volver a los hilos',
-      '6. Regularizar el chip. Escribe el IMEI o manda la foto',
-      '7. Regularizar el contenedor. Escríbelo o manda la foto',
-      '8. Regularizar la máquina. Escríbela o manda la foto',
-      '9. Pedir otra imagen a almacén y a despacho',
-    ].join('\n'));
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'hilo' });
+    const ref = await this.referencia(tareaId);
+    const cierre = juicio.listo
+      ? 'Este hilo ya tiene lo necesario.'
+      : juicio.falta.length ? `Para resolverlo: ${juicio.falta.join('; ')}.` : '';
+    const contexto = hilo.contenedor && hilo.maquina
+      ? ''
+      : hilo.despacho_texto
+        ? `Despacho escribió: ${hilo.despacho_texto}`
+        : 'Despacho todavía no dejó texto de este equipo.';
+    return this.dejar(telefono, true, menuDeHilo(
+      `${ref?.linea ?? 'Cotización'}\n${lineaHilo(hilo)}`,
+      contexto,
+      cierre,
+    ));
   }
 
-  private async enHilo(telefono: string, charla: Charla, limpio: string, archivo: ArchivoNota | null = null): Promise<RespuestaBot> {
+  private async enHilo(telefono: string, charla: Charla, limpio: string, archivo: ArchivoNota | null = null, extras: ArchivoNota[] = []): Promise<RespuestaBot> {
     const tareaId = charla.tarea_id;
     const hiloId = charla.pendiente?.hiloId;
     if (!tareaId || !hiloId) return this.abrirMenu(telefono);
-    if (charla.pendiente?.corrige) return this.corregirHilo(telefono, tareaId, hiloId, charla.pendiente.corrige, limpio, archivo);
-    if (archivo) return this.dejar(telefono, true, 'Para regularizar una foto, elige 6 chip, 7 contenedor u 8 máquina, y luego mándala.');
-    if (/^(5|volver|menu|menú)$/i.test(limpio)) return this.abrirHilos(telefono, tareaId);
+    const zona = charla.pendiente?.zona ?? 'hilo';
+    if (charla.pendiente?.corrige) return this.corregirHilo(telefono, tareaId, hiloId, charla.pendiente.corrige, zona === 'orden' || zona === 'confirmar' || zona === 'instalacion' || zona === 'fotos' || zona === 'comentario' || zona === 'modem' || zona === 'entrega' || zona === 'recepcion' || zona === 'validacion' ? 'hilo' : zona, limpio, archivo, extras);
+    const imagenes = [archivo, ...extras].filter((item): item is ArchivoNota => Boolean(item));
+    if (zona === 'fotos') return this.enFotos(telefono, tareaId, hiloId, limpio, imagenes);
+    if (zona === 'entrega' || zona === 'recepcion' || zona === 'validacion') return this.enTramiteAlmacen(telefono, tareaId, hiloId, limpio, imagenes, zona);
+    if (zona === 'comentario') return this.enComentarioInstalacion(telefono, tareaId, hiloId, limpio);
+    if (zona === 'modem') return this.enModem(telefono, tareaId, hiloId, limpio, imagenes);
+    if (zona === 'confirmar') return this.enConfirmarOrden(telefono, tareaId, hiloId, limpio);
+    if (zona === 'orden') return this.enOrden(telefono, tareaId, hiloId, limpio);
+    if (zona === 'instalacion') return this.enInstalacion(telefono, tareaId, hiloId, limpio);
+    if (archivo) return this.dejar(telefono, true, 'Para una foto, entra al área y elige regularizar el contenedor, la máquina, el chip o el módulo 4G.');
+    if (zona === 'motivo') return this.enMotivo(telefono, tareaId, hiloId, limpio);
+    if (zona === 'validar') return this.enValidar(telefono, tareaId, hiloId, limpio);
+    if (zona === 'despacho') return this.enDespacho(telefono, tareaId, hiloId, limpio);
+    if (zona === 'almacen') return this.enAlmacen(telefono, tareaId, hiloId, limpio);
+    if (/^(6|volver|menu|menú)$/i.test(limpio)) return this.abrirHilos(telefono, tareaId);
     try {
-      if (/^1$/.test(limpio)) {
-        const hilo = await validarDespacho(this.conexiones.pg, hiloId);
-        return this.dejar(telefono, true, `${lineaHilo(hilo)}\n5. Volver a los hilos`);
-      }
-      if (/^2$/.test(limpio)) {
-        const hilos = await listarHilos(this.conexiones.pg, tareaId);
-        const hilo = hilos.find((item) => item.id === hiloId);
-        const aviso = await this.pedirDespachoAhora(tareaId, `Confirma el contenedor y la máquina del equipo ${hilo?.orden ?? ''}`.trim(), hilo?.orden ?? 1);
-        return this.dejar(telefono, true, `${aviso}\n5. Volver a los hilos`);
-      }
-      if (/^3$/.test(limpio)) {
-        await marcarInstalacion(this.conexiones.pg, hiloId, true);
-        return this.pedirChip(telefono, tareaId, hiloId);
-      }
-      if (/^4$/.test(limpio)) {
-        const hilo = await marcarInstalacion(this.conexiones.pg, hiloId, false);
-        return this.dejar(telefono, true, `${lineaHilo(hilo)}\n5. Volver a los hilos`);
-      }
-      if (/^6$/.test(limpio)) {
-        await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, corrige: 'imei' });
-        return this.dejar(telefono, true, 'Regularizar el chip. Escribe el IMEI o manda la foto de la tarjeta.\nSi está ocupado queda registrado y puedes pedir otro con 3.\nEscribe menu para volver al hilo.');
-      }
-      if (/^7$/.test(limpio)) {
-        await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, corrige: 'contenedor' });
-        return this.dejar(telefono, true, 'Regularizar el contenedor. Escríbelo o manda la foto.\nEscribe menu para volver al hilo.');
-      }
-      if (/^8$/.test(limpio)) {
-        await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, corrige: 'maquina' });
-        return this.dejar(telefono, true, 'Regularizar la máquina. Escríbela o manda la foto de la serie.\nEscribe menu para volver al hilo.');
-      }
-      if (/^9$/.test(limpio)) return this.pedirImagenConcluyente(telefono, tareaId, hiloId);
+      if (/^1$/.test(limpio)) return this.menuDespacho(telefono, tareaId, hiloId);
+      if (/^2$/.test(limpio)) return this.menuAlmacen(telefono, tareaId, hiloId);
+      if (/^3$/.test(limpio)) return this.menuMotivo(telefono, tareaId, hiloId);
+      if (/^4$/.test(limpio)) return this.menuValidar(telefono, tareaId, hiloId);
+      if (/^5$/.test(limpio)) return this.menuOrdenFabricacion(telefono, tareaId, hiloId);
     } catch (error) {
       const mensaje = error instanceof Error ? error.message : 'No pude actualizar el hilo.';
-      return this.dejar(telefono, true, `${mensaje}\n5. Volver a los hilos`);
+      return this.dejar(telefono, true, `${mensaje}\n6. Volver al menú anterior`);
     }
     return this.menuHilo(telefono, tareaId, hiloId);
   }
 
-  private async corregirHilo(telefono: string, tareaId: string, hiloId: string, corrige: 'imei' | 'contenedor' | 'maquina', limpio: string, archivo: ArchivoNota | null): Promise<RespuestaBot> {
-    if (/^(menu|menú)$/i.test(limpio) && !archivo) return this.menuHilo(telefono, tareaId, hiloId);
-    if (/^5$/.test(limpio) && !archivo) return this.abrirHilos(telefono, tareaId);
+  private async menuDespacho(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const titulo = await this.tituloHilo(tareaId, hiloId, 'ÁREA DESPACHO');
+    if (!titulo) return this.abrirHilos(telefono, tareaId);
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'despacho' });
+    return this.dejar(telefono, true, menuAreaDespacho(titulo));
+  }
+
+  private async menuAlmacen(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const titulo = await this.tituloHilo(tareaId, hiloId, 'ÁREA ALMACÉN');
+    if (!titulo) return this.abrirHilos(telefono, tareaId);
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'almacen' });
+    return this.dejar(telefono, true, menuAreaAlmacen(titulo));
+  }
+
+  private async menuMotivo(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const titulo = await this.tituloHilo(tareaId, hiloId, 'SIN INSTALACIÓN');
+    if (!titulo) return this.abrirHilos(telefono, tareaId);
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'motivo' });
+    return this.dejar(telefono, true, menuSinInstalacion(titulo));
+  }
+
+  private async menuValidar(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const titulo = await this.tituloHilo(tareaId, hiloId, 'REPORTE DE INSTALACIÓN / REGULARIZACIÓN');
+    if (!titulo) return this.abrirHilos(telefono, tareaId);
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'validar' });
+    return this.dejar(telefono, true, menuValidarInstalacion(titulo));
+  }
+
+  private async tituloHilo(tareaId: string, hiloId: string, area: string): Promise<string | null> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    if (!hilo) return null;
+    const ref = await this.referencia(tareaId);
+    return `${area} · ${lineaHilo(hilo)} · ${ref?.linea ?? 'Cotización'}`;
+  }
+
+  private async enDespacho(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^(6|volver|menu|menú)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
     try {
-      const quien = await this.conexiones.pg.query<{ correo: string; nombre: string }>(`SELECT correo, nombre FROM usuario WHERE telefono = $1`, [telefono]);
-      const autor = quien.rows[0] ?? { correo: '', nombre: 'Técnico' };
-      if (archivo) return this.regularizarFoto(telefono, tareaId, hiloId, corrige, autor, archivo);
+      if (/^1$/.test(limpio)) {
+        const hilo = await validarDespacho(this.conexiones.pg, hiloId);
+        const menu = await this.menuDespacho(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `${lineaHilo(hilo)}\n${menu.respuesta}` };
+      }
+      if (/^2$/.test(limpio)) {
+        const hilos = await listarHilos(this.conexiones.pg, tareaId);
+        const hilo = hilos.find((item) => item.id === hiloId);
+        const faltan = hilos.filter((item) => !item.despacho_texto && !item.contenedor && !item.maquina).length;
+        const pedido = [preguntaHilosPendientes(Math.max(faltan, 1)), `Confirma ahora el equipo ${hilo?.orden ?? 1}.`].join(' ');
+        const aviso = await this.pedirDespachoAhora(tareaId, pedido, hilo?.orden ?? 1);
+        const menu = await this.menuDespacho(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
+      }
+      if (/^3$/.test(limpio)) return this.pedirCorreccion(telefono, tareaId, hiloId, 'despacho', 'contenedor');
+      if (/^4$/.test(limpio)) return this.pedirCorreccion(telefono, tareaId, hiloId, 'despacho', 'maquina');
+      if (/^5$/.test(limpio)) return this.registrosDespacho(telefono, tareaId, hiloId, 'despacho');
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'No pude actualizar el hilo.';
+      const menu = await this.menuDespacho(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `${mensaje}\n${menu.respuesta}` };
+    }
+    return this.menuDespacho(telefono, tareaId, hiloId);
+  }
+
+  private async enAlmacen(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^(9|volver|menu|menú)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
+    if (/^1$/.test(limpio)) return this.registrosDespacho(telefono, tareaId, hiloId, 'almacen');
+    if (/^2$/.test(limpio)) return this.pedirChip(telefono, tareaId, hiloId);
+    if (/^3$/.test(limpio)) return this.pedirModulo(telefono, tareaId, hiloId);
+    if (/^4$/.test(limpio)) return this.pedirCorreccion(telefono, tareaId, hiloId, 'almacen', 'imei');
+    if (/^5$/.test(limpio)) return this.pedirCorreccion(telefono, tareaId, hiloId, 'almacen', 'modem');
+    if (/^6$/.test(limpio)) return this.pedirEntregaAlmacen(telefono, tareaId, hiloId);
+    if (/^7$/.test(limpio)) return this.pedirRecepcionAlmacen(telefono, tareaId, hiloId);
+    if (/^8$/.test(limpio)) return this.consultarRetiro(telefono, tareaId, hiloId);
+    return this.menuAlmacen(telefono, tareaId, hiloId);
+  }
+
+  private async enMotivo(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^(menu|menú|volver)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
+    const fijos: Record<string, string> = {
+      '1': 'La máquina es Carrier o Daikin.',
+      '2': 'Control interno. Se priorizan los pedidos regulares.',
+      '3': 'No hay stock de telemetría o de chip.',
+    };
+    const motivo = fijos[limpio] ?? (limpio.trim().length >= 4 ? limpio.trim() : '');
+    if (!motivo) return this.menuMotivo(telefono, tareaId, hiloId);
+    const hilo = await anotarSinInstalacion(this.conexiones.pg, hiloId);
+    const quien = await this.autorDe(telefono);
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre) VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5)`,
+      [randomUUID(), tareaId, `Hilo ${hilo.orden}. Esta telemetría no se instala.\n${motivo}`, quien.correo, quien.nombre],
+    );
+    const menu = await this.menuHilo(telefono, tareaId, hiloId);
+    return { ...menu, respuesta: `Quedó anotado: ${motivo}\n${menu.respuesta}` };
+  }
+
+  private async enValidar(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^(8|volver|menu|menú)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
+    if (/^1$/.test(limpio)) return this.pedirCorreccion(telefono, tareaId, hiloId, 'validar', 'imei');
+    if (/^2$/.test(limpio)) return this.pedirCorreccion(telefono, tareaId, hiloId, 'validar', 'modem');
+    if (/^3$/.test(limpio)) return this.asimilarOrden(telefono, tareaId, hiloId);
+    if (/^4$/.test(limpio)) {
+      await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'validacion' });
+      return this.dejar(telefono, true, 'Manda las fotos de la instalación que ya está en el equipo. Pueden ser varias juntas. Si quieres, escribe un comentario. Menu vuelve. Si no escribes, en 15 segundos vuelvo al menú.');
+    }
+    if (/^5$/.test(limpio)) return this.validacionEquipo(telefono, tareaId, hiloId, 'Starcool');
+    if (/^6$/.test(limpio)) return this.validacionEquipo(telefono, tareaId, hiloId, 'Thermoking');
+    if (/^7$/.test(limpio)) return this.validacionEquipo(telefono, tareaId, hiloId, 'Genset');
+    return this.menuValidar(telefono, tareaId, hiloId);
+  }
+
+  private async validacionEquipo(telefono: string, tareaId: string, hiloId: string, nombre: string): Promise<RespuestaBot> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    const menu = await this.menuValidar(telefono, tareaId, hiloId);
+    const aviso = this.avisoSenal(hilo?.modem_serie ?? '', hilo?.modem_imei ?? '', nombre, '2');
+    return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
+  }
+
+  private async asimilarOrden(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const menu = await this.menuValidar(telefono, tareaId, hiloId);
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    const celular = hilo?.chip_celular?.trim() ?? '';
+    const imei = hilo?.chip_imei?.trim() ?? '';
+    if (!celular && !imei) return { ...menu, respuesta: `Primero regulariza el chip con 1. Sin el número no se asimila la orden.\n${menu.respuesta}` };
+    const chip = await this.conexiones.pg.query<{ id: string; orden_mo: string }>(
+      `SELECT id, orden_mo FROM chip WHERE NOT archivado AND (($1 <> '' AND celular = $1) OR ($2 <> '' AND imei = $2)) ORDER BY CASE WHEN celular = $1 AND $1 <> '' THEN 0 ELSE 1 END LIMIT 1`,
+      [celular, imei],
+    );
+    const fila = chip.rows[0];
+    if (!fila?.orden_mo) return { ...menu, respuesta: `Ese chip no tiene una orden de fabricación guardada. No se escribieron notas.\n${menu.respuesta}` };
+    let orden: { nombre: string; componentes: Array<{ producto: string; serie: string }> };
+    try {
+      orden = await new ChipsService(this.conexiones).verOrden(fila.id, false);
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'No pude leer la orden.';
+      return { ...menu, respuesta: `${mensaje}\n${menu.respuesta}` };
+    }
+    const serie = serieChipDe(orden.componentes);
+    if (!serieCoincide(serie, celular, imei)) {
+      return { ...menu, respuesta: `El chip del hilo es ${celular || imei} y ${orden.nombre} tiene ${serie || 'otro número'}. No coincide, así que no se asimila ni se escriben las notas.\n${menu.respuesta}` };
+    }
+    const odoo = await this.conexiones.pg.query<{ odoo_id: number | null }>(`SELECT odoo_id FROM chip_orden WHERE chip_id = $1`, [fila.id]);
+    const odooId = odoo.rows[0]?.odoo_id ?? 0;
+    if (!odooId) return { ...menu, respuesta: `La orden ${orden.nombre} no tiene identificador de Odoo. No se escribieron notas.\n${menu.respuesta}` };
+    const texto = await new FabricacionServicio(this.conexiones).asimilar(hiloId, odooId, orden.nombre, await this.autorDe(telefono));
+    return { ...menu, respuesta: `${texto}\n${menu.respuesta}` };
+  }
+
+  private async pedirCorreccion(telefono: string, tareaId: string, hiloId: string, zona: 'despacho' | 'almacen' | 'validar', corrige: 'imei' | 'contenedor' | 'maquina' | 'modem'): Promise<RespuestaBot> {
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona, corrige });
+    const texto = corrige === 'contenedor'
+      ? 'Regularizar el contenedor. Escríbelo o manda la foto. Si ya había uno, este lo reemplaza.'
+      : corrige === 'maquina'
+        ? 'Regularizar la máquina. Escríbela o manda la foto de la serie. Si ya había una, esta la reemplaza.'
+        : corrige === 'imei'
+          ? 'Regularizar el chip. Escribe el IMEI o manda la foto de la tarjeta. Si está ocupado queda registrado.'
+          : 'Regularizar el módulo 4G. Escribe el SN, al menos 4 dígitos, o manda la foto de la etiqueta ZTRACK. Busco el módulo por el SN. El IMEI de la foto queda para validar la señal.';
+    return this.dejar(telefono, true, `${texto}\nEscribe menu para volver.`);
+  }
+
+  private menuDeZona(telefono: string, tareaId: string, hiloId: string, zona: 'hilo' | 'despacho' | 'almacen' | 'motivo' | 'validar'): Promise<RespuestaBot> {
+    if (zona === 'despacho') return this.menuDespacho(telefono, tareaId, hiloId);
+    if (zona === 'almacen') return this.menuAlmacen(telefono, tareaId, hiloId);
+    if (zona === 'validar') return this.menuValidar(telefono, tareaId, hiloId);
+    if (zona === 'motivo') return this.menuMotivo(telefono, tareaId, hiloId);
+    return this.menuHilo(telefono, tareaId, hiloId);
+  }
+
+  private async autorDe(telefono: string): Promise<{ correo: string; nombre: string }> {
+    const quien = await this.conexiones.pg.query<{ correo: string; nombre: string }>(`SELECT correo, nombre FROM usuario WHERE telefono = $1`, [telefono]);
+    return quien.rows[0] ?? { correo: '', nombre: 'Técnico' };
+  }
+
+  private async regularizarModem(
+    telefono: string,
+    tareaId: string,
+    hiloId: string,
+    zona: 'hilo' | 'despacho' | 'almacen' | 'motivo' | 'validar',
+    autor: { correo: string; nombre: string },
+    serie: string,
+    archivos: ArchivoNota[] = [],
+  ): Promise<RespuestaBot> {
+    if (archivos.length > 0) return this.leerEtiquetasModulo(telefono, tareaId, hiloId, zona, autor, archivos);
+    const limpia = serie.replace(/\D/g, '');
+    if (esImeiDeSenal(limpia)) return this.dejar(telefono, true, 'Ese número es el IMEI de la señal. El módulo se busca por el SN, el que empieza por 0050. Escríbelo o manda la foto de la etiqueta.');
+    if (limpia.length < 4) return this.dejar(telefono, true, 'Escribe al menos 4 dígitos del SN, o manda la foto. Menu vuelve.');
+    const hallados = await this.buscarModems(limpia);
+    if (hallados.length === 1) {
+      await this.ligarModem(tareaId, hiloId, hallados[0].serie, '', autor);
+      const menu = await this.menuDeZona(telefono, tareaId, hiloId, zona);
+      return { ...menu, respuesta: `Módulo 4G *${hallados[0].serie}* · ${hallados[0].estado === 'ocupado' ? 'OCUPADO' : 'DISPONIBLE'}. Quedó en el hilo. Falta el IMEI de la etiqueta para la señal.\n${menu.respuesta}` };
+    }
+    if (hallados.length === 0) return this.dejar(telefono, true, `No hay un módulo 4G con el SN ${limpia}. Escribe más dígitos, o manda la foto.`);
+    const vuelve = zona === 'almacen' ? 'almacen' : zona === 'validar' ? 'validar' : 'instalacion';
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'modem', vuelve, candidatos: hallados.map((item) => item.serie), imeis: hallados.map(() => '') });
+    return this.dejar(telefono, true, this.textoModems(hallados));
+  }
+
+  private async leerEtiquetasModulo(
+    telefono: string,
+    tareaId: string,
+    hiloId: string,
+    zona: 'hilo' | 'despacho' | 'almacen' | 'motivo' | 'validar',
+    autor: { correo: string; nombre: string },
+    archivos: ArchivoNota[],
+  ): Promise<RespuestaBot> {
+    let respondio = false;
+    const lecturas: EtiquetaModulo[] = [];
+    for (const archivo of archivos) {
+      const lectura = await leerEtiquetaModulo(archivo);
+      if (lectura.respondio) respondio = true;
+      if (lectura.etiqueta) lecturas.push(lectura.etiqueta);
+    }
+    if (!respondio) return this.dejar(telefono, true, 'El lector no respondió. Manda la foto de la etiqueta otra vez, o escribe el SN.');
+    if (lecturas.length === 0) return this.dejar(telefono, true, 'No leí el SN ni el IMEI. La etiqueta dice ZTRACK-V2, el SN empieza por 0050 y el IMEI por 86. Mándala otra vez, o escribe el SN.');
+    const parejas: Array<{ serie: string; estado: string; imei: string }> = [];
+    const faltan: EtiquetaModulo[] = [];
+    for (const lectura of lecturas) {
+      if (!lectura.sn) {
+        faltan.push(lectura);
+        continue;
+      }
+      const fila = await this.conexiones.pg.query<{ serie: string; estado: string }>(`SELECT serie, estado FROM modem WHERE serie = $1`, [lectura.sn]);
+      const modem = fila.rows[0];
+      if (!modem) faltan.push(lectura);
+      else if (!parejas.some((item) => item.serie === modem.serie)) parejas.push({ serie: modem.serie, estado: modem.estado, imei: lectura.imei });
+    }
+    const menu = zona === 'almacen'
+      ? await this.menuAlmacen(telefono, tareaId, hiloId)
+      : zona === 'validar'
+        ? await this.menuValidar(telefono, tareaId, hiloId)
+        : zona === 'despacho'
+          ? await this.menuDespacho(telefono, tareaId, hiloId)
+          : await this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    if (parejas.length === 1 && faltan.length === 0) {
+      await this.ligarModem(tareaId, hiloId, parejas[0].serie, parejas[0].imei, autor);
+      const senal = parejas[0].imei ? ` IMEI de la señal *${parejas[0].imei}*.` : ' Falta el IMEI de la etiqueta para la señal.';
+      return { ...menu, respuesta: `Módulo 4G *${parejas[0].serie}* · ${parejas[0].estado === 'ocupado' ? 'OCUPADO' : 'DISPONIBLE'}.${senal} Quedó en el hilo.\n${menu.respuesta}` };
+    }
+    if (parejas.length === 0) {
+      const lineas = lecturas.map((lectura) => this.lineaEtiqueta(lectura));
+      return this.dejar(telefono, true, ['Ese SN no está en los módulos cargados. No quedó ligado.', ...lineas, 'Escribe el SN o manda otra foto.'].join('\n'));
+    }
+    const vuelve = zona === 'almacen' ? 'almacen' : zona === 'validar' ? 'validar' : 'instalacion';
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'modem', vuelve, candidatos: parejas.map((item) => item.serie), imeis: parejas.map((item) => item.imei) });
+    const aviso = faltan.length ? `\n${faltan.map((lectura) => this.lineaEtiqueta(lectura)).join('\n')}\nEsos SN no están cargados.` : '';
+    return this.dejar(telefono, true, `${this.textoModems(parejas)}${aviso}`);
+  }
+
+  private lineaEtiqueta(lectura: EtiquetaModulo): string {
+    const sn = lectura.sn ? `SN *${lectura.sn}*` : 'sin SN';
+    const imei = lectura.imei ? `IMEI *${lectura.imei}*` : 'sin IMEI';
+    return `${sn}. ${imei}.`;
+  }
+
+  private async registrosDespacho(telefono: string, tareaId: string, hiloId: string, zona: 'despacho' | 'almacen' = 'despacho'): Promise<RespuestaBot> {
+    const filas = await this.conexiones.pg.query<{ texto: string; autor_nombre: string; creado_en: Date; clave: string | null; nombre: string | null; mime: string | null }>(
+      `SELECT a.texto, a.autor_nombre, COALESCE(a.confirmada_en, a.creado_en) AS creado_en, f.clave, f.nombre, f.mime
+       FROM asignacion_despacho a
+       LEFT JOIN asignacion_archivo f ON f.asignacion_id = a.id
+       WHERE a.tarea_id = $1 AND a.estado IN ('confirmada', 'aceptada', 'por_validar', 'recogiendo')
+       ORDER BY COALESCE(a.confirmada_en, a.creado_en) DESC, f.creado_en DESC
+       LIMIT 12`,
+      [tareaId],
+    );
+    const titulo = await this.tituloHilo(tareaId, hiloId, 'REGISTROS DE DESPACHO');
+    const lineas = filas.rows.length
+      ? filas.rows.map((fila, indice) => `${indice + 1}. ${horaLima(fila.creado_en)} · ${fila.autor_nombre} · ${fila.texto.trim() || 'Sin texto.'}${fila.nombre ? ` · imagen ${fila.nombre}` : ''}`)
+      : ['Despacho todavía no envió registros de esta cotización.'];
+    const reciente = filas.rows.find((fila) => fila.clave);
+    const archivo = reciente?.clave ? await this.archivoDeClave(reciente.clave, reciente.nombre, reciente.mime) : null;
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona });
+    const volver = zona === 'almacen' ? '9. Volver al menú anterior' : '6. Volver al menú anterior';
+    return this.dejar(telefono, true, [titulo ?? 'Registros de despacho', ...lineas, archivo ? 'Te mando la imagen más reciente.' : '', volver].filter(Boolean).join('\n'), archivo);
+  }
+
+  private async registrosAlmacen(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const filas = await this.conexiones.pg.query<{ texto: string; autor_nombre: string; creado_en: Date; archivo_clave: string | null; archivo_nombre: string | null; archivo_mime: string | null }>(
+      `SELECT texto, autor_nombre, creado_en, archivo_clave, archivo_nombre, archivo_mime
+       FROM nota_bitacora
+       WHERE tarea_id = $1 AND NOT archivado AND (texto ILIKE 'Almacén envió%' OR texto ILIKE 'Almacén mandó%' OR texto ILIKE 'Almacén identificó%')
+       ORDER BY creado_en DESC
+       LIMIT 8`,
+      [tareaId],
+    );
+    const titulo = await this.tituloHilo(tareaId, hiloId, 'REGISTROS DE ALMACÉN');
+    const lineas = filas.rows.length
+      ? filas.rows.map((fila, indice) => `${indice + 1}. ${horaLima(fila.creado_en)} · ${fila.autor_nombre} · ${fila.texto.split('\n')[0]}`)
+      : ['Almacén todavía no envió una foto para esta cotización.'];
+    const reciente = filas.rows.find((fila) => fila.archivo_clave);
+    const archivo = reciente?.archivo_clave ? await this.archivoDeClave(reciente.archivo_clave, reciente.archivo_nombre, reciente.archivo_mime) : null;
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'almacen' });
+    return this.dejar(telefono, true, [titulo ?? 'Registros de almacén', ...lineas, archivo ? 'Te mando la imagen más reciente.' : '', '6. Volver al menú anterior'].filter(Boolean).join('\n'), archivo);
+  }
+
+  private async archivoDeClave(clave: string, nombre: string | null, mime: string | null): Promise<ArchivoSalida | null> {
+    try {
+      const bytes = await new AlmacenCorreo(this.conexiones).leer(clave);
+      if (bytes.length === 0 || bytes.length > 4 * 1024 * 1024) return null;
+      return { nombre: nombre || 'foto', mime: mime || 'image/jpeg', contenido: bytes.toString('base64') };
+    } catch {
+      return null;
+    }
+  }
+
+  private async menuOrdenFabricacion(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const titulo = await this.tituloHilo(tareaId, hiloId, 'ORDEN DE FABRICACIÓN');
+    if (!titulo) return this.abrirHilos(telefono, tareaId);
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    const cierre = hilo && hiloListo(hilo).listo ? 'Este hilo ya tiene lo necesario.' : '';
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'orden' });
+    return this.dejar(telefono, true, menuOrden(titulo, cierre));
+  }
+
+  private async enOrden(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^(7|volver|menu|menú)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
+    const servicio = new FabricacionServicio(this.conexiones);
+    const vista = await servicio.vista(hiloId);
+    if (/^1$/.test(limpio)) {
+      if (vista) {
+        const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `Orden *${vista.nombre}*.\n${this.textoInsumos(vista.lineas)}\n${menu.respuesta}` };
+      }
+      try {
+        const pedido = await this.pedirInsumos(telefono, hiloId);
+        const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `${pedido.respuesta}\n${menu.respuesta}` };
+      } catch (error) {
+        const mensaje = error instanceof BadRequestException ? textoDeError(error) : 'No pude abrir la orden.';
+        const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `${mensaje}\n${menu.respuesta}` };
+      }
+    }
+    if (/^2$/.test(limpio)) {
+      if (!vista) {
+        const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `Primero pide el insumo con 1.\n${menu.respuesta}` };
+      }
+      if (!vista.borrador) {
+        const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `*No se puede modificar. La orden ${vista.nombre} ya no está en borrador.*\n${menu.respuesta}` };
+      }
+      const quien = await this.autorDe(telefono);
+      const texto = await servicio.reenviar((await this.idFabricacion(hiloId)) ?? '');
+      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `${texto || `Te dejo el enlace, ${quien.nombre}.`}\n${menu.respuesta}` };
+    }
+    if (/^3$/.test(limpio)) return this.ofrecerConfirmacion(telefono, tareaId, hiloId, vista);
+    if (/^4$/.test(limpio)) {
+      if (!vista || vista.borrador) {
+        const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `Falta confirmar la orden.\n${menu.respuesta}` };
+      }
+      const reporte = await this.pedirReporte(telefono, hiloId);
+      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `${reporte.respuesta}\n${menu.respuesta}` };
+    }
+    if (/^5$/.test(limpio)) {
+      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `Imprimir el PDF todavía no está implementado.\n${menu.respuesta}` };
+    }
+    if (/^6$/.test(limpio)) {
+      if (!vista || vista.borrador) {
+        const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `Falta confirmar la orden. No se abre el reporte de instalación.\n${menu.respuesta}` };
+      }
+      return this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    }
+    return this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+  }
+
+  private async ofrecerConfirmacion(telefono: string, tareaId: string, hiloId: string, vista: { nombre: string; estado: string; borrador: boolean; lineas: string[] } | null): Promise<RespuestaBot> {
+    if (!vista) {
+      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `Primero pide el insumo con 1.\n${menu.respuesta}` };
+    }
+    if (!vista.borrador) {
+      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `La orden *${vista.nombre}* ya está confirmada.\n${this.textoInsumos(vista.lineas)}\n${menu.respuesta}` };
+    }
+    if (vista.estado !== 'propuesta') {
+      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `Primero marca los materiales en el enlace. Con 2 te lo reenvío.\n${menu.respuesta}` };
+    }
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'confirmar' });
+    return this.dejar(telefono, true, `Orden *${vista.nombre}*.\n${this.textoInsumos(vista.lineas)}\nEstos quedan marcados como consumidos.\n¿Confirmas la orden? Escribe si para confirmar, o menu para salir.`);
+  }
+
+  private async enConfirmarOrden(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^(menu|menú|volver|no)$/i.test(limpio)) return this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+    if (!/^(si|sí|ok|confirmar|confirmo)$/i.test(limpio)) return this.dejar(telefono, true, 'Escribe si para confirmar la orden, o menu para salir.');
+    const id = await this.idFabricacion(hiloId);
+    const servicio = new FabricacionServicio(this.conexiones);
+    const confirmado = id ? await servicio.confirmar(id) : 'Esa orden ya no está.';
+    const reporte = /quedó confirmada/i.test(confirmado) ? await servicio.pedirReporte(hiloId) : '';
+    const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+    return { ...menu, respuesta: [confirmado, reporte, menu.respuesta].filter(Boolean).join('\n') };
+  }
+
+  private async menuReporteInstalacion(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const titulo = await this.tituloHilo(tareaId, hiloId, 'REPORTE DE INSTALACIÓN');
+    if (!titulo) return this.abrirHilos(telefono, tareaId);
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    const modem = await this.textoModemHilo({ serie: hilo?.modem_serie ?? '', imei: hilo?.modem_imei ?? '' });
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'instalacion' });
+    return this.dejar(telefono, true, menuInstalacion(titulo, modem));
+  }
+
+  private async enInstalacion(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^(7|volver|menu|menú)$/i.test(limpio)) return this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+    if (/^1$/.test(limpio)) {
+      await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'fotos' });
+      return this.dejar(telefono, true, 'Manda las fotos de la instalación. Pueden ser varias juntas. Después escribe ok, o un comentario. Si no escribes, en 15 segundos vuelvo al menú.');
+    }
+    if (/^2$/.test(limpio)) {
+      await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'comentario' });
+      return this.dejar(telefono, true, 'Escribe el comentario de la instalación. Menu vuelve sin guardar.');
+    }
+    if (/^[345]$/.test(limpio)) return this.validacionPendiente(telefono, tareaId, hiloId, limpio);
+    if (/^6$/.test(limpio)) return this.pedirModem(telefono, tareaId, hiloId, 'instalacion');
+    return this.menuReporteInstalacion(telefono, tareaId, hiloId);
+  }
+
+  private async enFotos(telefono: string, tareaId: string, hiloId: string, limpio: string, archivos: ArchivoNota[]): Promise<RespuestaBot> {
+    if (/^(menu|menú|volver)$/i.test(limpio) && archivos.length === 0) return this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    if (archivos.length > 0) {
+      const quienes = await this.autorDe(telefono);
+      const notaId = await this.guardarFotosInstalacion(tareaId, hiloId, quienes, archivos, (await this.charla(telefono)).pendiente?.notaId);
+      await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'fotos', fotosEn: new Date().toISOString(), notaId });
+      if (/^(ok|listo)$/i.test(limpio)) {
+        const menu = await this.menuReporteInstalacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `Recibí ${archivos.length} ${archivos.length === 1 ? 'foto' : 'fotos'}.\n${menu.respuesta}` };
+      }
+      if (limpio && !/^foto$/i.test(limpio)) {
+        await this.guardarComentarioInstalacion(tareaId, hiloId, quienes, limpio);
+        const menu = await this.menuReporteInstalacion(telefono, tareaId, hiloId);
+        return { ...menu, respuesta: `Recibí ${archivos.length} ${archivos.length === 1 ? 'foto' : 'fotos'} y el comentario.\n${menu.respuesta}` };
+      }
+      return this.dejar(telefono, true, `Recibí ${archivos.length} ${archivos.length === 1 ? 'foto' : 'fotos'}. Si mandas más, las junto. Escribe ok para volver, o un comentario. Si no escribes, en 15 segundos vuelvo al menú.`);
+    }
+    if (/^(ok|listo)$/i.test(limpio)) return this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    if (limpio.trim()) {
+      await this.guardarComentarioInstalacion(tareaId, hiloId, await this.autorDe(telefono), limpio);
+      const menu = await this.menuReporteInstalacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `Quedó el comentario.\n${menu.respuesta}` };
+    }
+    return this.dejar(telefono, true, 'Manda las fotos, escribe ok, o un comentario.');
+  }
+
+  private async enComentarioInstalacion(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^(menu|menú|volver)$/i.test(limpio) || !limpio.trim()) return this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    await this.guardarComentarioInstalacion(tareaId, hiloId, await this.autorDe(telefono), limpio);
+    const menu = await this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    return { ...menu, respuesta: `Quedó el comentario.\n${menu.respuesta}` };
+  }
+
+  private async validacionPendiente(telefono: string, tareaId: string, hiloId: string, opcion: string): Promise<RespuestaBot> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    const nombre = opcion === '3' ? 'Starcool' : opcion === '4' ? 'Thermoking' : 'Genset';
+    const menu = await this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    const aviso = this.avisoSenal(hilo?.modem_serie ?? '', hilo?.modem_imei ?? '', nombre, '6');
+    return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
+  }
+
+  private async pedirModem(telefono: string, tareaId: string, hiloId: string, vuelve: 'almacen' | 'instalacion'): Promise<RespuestaBot> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    const serie = hilo?.modem_serie?.trim() ?? '';
+    const imei = hilo?.modem_imei?.trim() ?? '';
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'modem', vuelve });
+    const puesto = serie ? `El hilo ya tiene el SN *${serie}*${imei ? ` y el IMEI *${imei}*` : ''}. Escribe otro SN para cambiarlo, o manda la foto.\n` : '';
+    return this.dejar(telefono, true, `${puesto}Escribe al menos 4 dígitos del SN, o manda la foto de la etiqueta. Te muestro hasta 8 módulos, con DISPONIBLE u OCUPADO. Menu vuelve.`);
+  }
+
+  private async enModem(telefono: string, tareaId: string, hiloId: string, limpio: string, archivos: ArchivoNota[] = []): Promise<RespuestaBot> {
+    const charla = await this.charla(telefono);
+    const vuelve = charla.pendiente?.vuelve ?? 'instalacion';
+    const salir = () => vuelve === 'almacen'
+      ? this.menuAlmacen(telefono, tareaId, hiloId)
+      : vuelve === 'validar'
+        ? this.menuValidar(telefono, tareaId, hiloId)
+        : this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    if (archivos.length > 0) {
+      const zona = vuelve === 'almacen' ? 'almacen' : vuelve === 'validar' ? 'validar' : 'hilo';
+      return this.regularizarModem(telefono, tareaId, hiloId, zona, await this.autorDe(telefono), '', archivos);
+    }
+    if (/^(menu|menú|volver)$/i.test(limpio)) return salir();
+    const candidatos = charla.pendiente?.candidatos ?? [];
+    const imeis = charla.pendiente?.imeis ?? [];
+    const numero = Number(limpio);
+    if (candidatos.length > 0 && Number.isInteger(numero) && numero >= 1 && numero <= candidatos.length && !archivos.length) {
+      const serie = candidatos[numero - 1];
+      const imei = imeis[numero - 1] ?? '';
+      await this.ligarModem(tareaId, hiloId, serie, imei, await this.autorDe(telefono));
+      const menu = await salir();
+      const senal = imei ? ` IMEI de la señal *${imei}*.` : '';
+      return { ...menu, respuesta: `Módulo 4G *${serie}* quedó en el hilo.${senal}\n${menu.respuesta}` };
+    }
+    const digitos = limpio.replace(/\D/g, '');
+    if (esImeiDeSenal(digitos)) return this.dejar(telefono, true, 'Ese número es el IMEI de la señal. Escribe el SN, el que empieza por 0050, o manda la foto.');
+    if (digitos.length < 4) return this.dejar(telefono, true, 'Escribe al menos 4 dígitos del SN, el número de la lista, o menu para volver.');
+    const hallados = await this.buscarModems(digitos);
+    if (hallados.length === 0) return this.dejar(telefono, true, `No hay un módulo 4G con el SN ${digitos}. Prueba con más dígitos, o manda la foto.`);
+    if (hallados.length === 1) {
+      await this.ligarModem(tareaId, hiloId, hallados[0].serie, '', await this.autorDe(telefono));
+      const menu = await salir();
+      return { ...menu, respuesta: `Módulo 4G *${hallados[0].serie}* · ${hallados[0].estado === 'ocupado' ? 'OCUPADO' : 'DISPONIBLE'}. Quedó en el hilo. Falta el IMEI de la etiqueta para la señal.\n${menu.respuesta}` };
+    }
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'modem', vuelve, candidatos: hallados.map((item) => item.serie), imeis: hallados.map(() => '') });
+    return this.dejar(telefono, true, this.textoModems(hallados));
+  }
+
+  private async pedirEntregaAlmacen(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'entrega' });
+    return this.dejar(telefono, true, 'Manda la foto de la solicitud firmada que entregaste a almacén. Si quieres, escribe un comentario junto o después. Menu vuelve. Si no escribes, en 15 segundos vuelvo al menú.');
+  }
+
+  private async pedirRecepcionAlmacen(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'recepcion' });
+    return this.dejar(telefono, true, 'Manda las fotos de los insumos que recibiste de almacén. Pueden ser varias juntas. Si quieres, escribe un comentario. Menu vuelve. Si no escribes, en 15 segundos vuelvo al menú.');
+  }
+
+  private async enTramiteAlmacen(telefono: string, tareaId: string, hiloId: string, limpio: string, archivos: ArchivoNota[], zona: 'entrega' | 'recepcion' | 'validacion'): Promise<RespuestaBot> {
+    const frase = zona === 'entrega' ? 'Entrega de la solicitud firmada a almacén.' : zona === 'recepcion' ? 'Recepción de insumos de almacén.' : 'Imágenes de la instalación que ya está en el equipo.';
+    const carpeta = zona === 'entrega' ? 'entrega-almacen' : zona === 'recepcion' ? 'recepcion-almacen' : 'instalacion';
+    const volver = () => zona === 'validacion' ? this.menuValidar(telefono, tareaId, hiloId) : this.menuAlmacen(telefono, tareaId, hiloId);
+    if (/^(menu|menú|volver)$/i.test(limpio) && archivos.length === 0) return volver();
+    const notaPrevia = (await this.charla(telefono)).pendiente?.notaId;
+    if (archivos.length > 0) {
+      const quienes = await this.autorDe(telefono);
+      const notaId = await this.guardarFotosInstalacion(tareaId, hiloId, quienes, archivos, notaPrevia, `Hilo ${await this.ordenHilo(tareaId, hiloId)}. ${frase}`, carpeta);
+      const comentario = limpio && !/^(ok|listo|foto)$/i.test(limpio) ? limpio : '';
+      if (comentario) await this.agregarComentarioNota(notaId, comentario);
+      if (comentario || /^(ok|listo)$/i.test(limpio)) {
+        const menu = await volver();
+        const recibido = zona === 'entrega' ? 'Quedó la foto de la solicitud firmada.' : `Recibí ${archivos.length} ${archivos.length === 1 ? 'foto' : 'fotos'}.`;
+        return { ...menu, respuesta: `${recibido}${comentario ? ' Quedó el comentario.' : ''}\n${menu.respuesta}` };
+      }
+      await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona, fotosEn: new Date().toISOString(), notaId });
+      const espera = zona === 'entrega'
+        ? 'Quedó la foto de la solicitud firmada. Escribe un comentario si hace falta, u ok para volver. Si no escribes, en 15 segundos vuelvo al menú.'
+        : `Recibí ${archivos.length} ${archivos.length === 1 ? 'foto' : 'fotos'}. Si mandas más, las junto. Escribe un comentario u ok. Si no escribes, en 15 segundos vuelvo al menú.`;
+      return this.dejar(telefono, true, espera);
+    }
+    if (/^(ok|listo)$/i.test(limpio)) {
+      if (!notaPrevia) return this.dejar(telefono, true, zona === 'entrega' ? 'Primero manda la foto de la solicitud firmada.' : 'Primero manda las fotos.');
+      return volver();
+    }
+    if (limpio.trim()) {
+      if (!notaPrevia) return this.dejar(telefono, true, 'Primero manda la foto. El comentario puede ir junto o después.');
+      await this.agregarComentarioNota(notaPrevia, limpio);
+      const menu = await volver();
+      return { ...menu, respuesta: `Quedó el comentario.\n${menu.respuesta}` };
+    }
+    return this.dejar(telefono, true, 'Manda la foto, un comentario, u ok.');
+  }
+
+  private async consultarRetiro(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const vista = await new FabricacionServicio(this.conexiones).vista(hiloId);
+    const menu = await this.menuAlmacen(telefono, tareaId, hiloId);
+    if (!vista) return { ...menu, respuesta: `Todavía no hay orden de fabricación. Pide el insumo antes de consultar el retiro.\n${menu.respuesta}` };
+    const quien = await this.autorDe(telefono);
+    const previa = await this.conexiones.pg.query<{ id: string }>(
+      `SELECT id FROM consulta_chip WHERE hilo_id = $1 AND clase = 'retiro' AND estado = 'pendiente' ORDER BY creado_en DESC LIMIT 1`,
+      [hiloId],
+    );
+    if (!previa.rows[0]) {
+      await this.conexiones.pg.query(
+        `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id, clase) VALUES ($1, $2, $3, $4, $5, 'retiro')`,
+        [randomUUID(), tareaId, telefono, quien.nombre, hiloId],
+      );
+    }
+    const almacenes = await this.conexiones.pg.query<{ telefono: string }>(
+      `SELECT telefono FROM usuario WHERE activo AND rol = 'almacen' AND telefono IS NOT NULL AND telefono <> ''`,
+    );
+    const pregunta = await this.textoRetiro(hiloId);
+    for (const destino of almacenes.rows) {
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes) VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
+        [randomUUID(), tareaId, destino.telefono, pregunta],
+      );
+    }
+    const aviso = almacenes.rows.length
+      ? `Consulté a almacén si los insumos de *${vista.nombre}* ya están listos para retirar.`
+      : 'No hay un usuario de almacén con WhatsApp para consultar el retiro.';
+    return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
+  }
+
+  private async pedirReporte(telefono: string, hiloId: string): Promise<RespuestaBot> {
+    const texto = await new FabricacionServicio(this.conexiones).pedirReporte(hiloId);
+    return this.dejar(telefono, true, texto);
+  }
+
+  private async pedirInsumos(telefono: string, hiloId: string): Promise<RespuestaBot> {
+    const quien = await this.conexiones.pg.query<{ correo: string; nombre: string }>(`SELECT correo, nombre FROM usuario WHERE telefono = $1`, [telefono]);
+    const pedido = await new FabricacionServicio(this.conexiones).pedir(hiloId, telefono, quien.rows[0] ?? { correo: '', nombre: 'Técnico' }, true);
+    return this.dejar(telefono, true, pedido.mensaje);
+  }
+
+  private textoInsumos(lineas: string[]): string {
+    return lineas.length ? lineas.join('\n') : 'No hay insumos marcados.';
+  }
+
+  private async modemDelHilo(tareaId: string, hiloId: string): Promise<{ serie: string; imei: string }> {
+    const hilo = (await listarHilos(this.conexiones.pg, tareaId)).find((item) => item.id === hiloId);
+    return { serie: hilo?.modem_serie?.trim() ?? '', imei: hilo?.modem_imei?.trim() ?? '' };
+  }
+
+  private avisoSenal(serie: string, imei: string, nombre: string, opcion: string): string {
+    const sn = serie.trim();
+    const senal = imei.trim();
+    if (senal) return `La validación de ${nombre} todavía no está implementada. Usará el IMEI *${senal}*${sn ? `. El SN es *${sn}*.` : ''}.`;
+    if (sn) return `El módulo está por el SN *${sn}*, pero falta el IMEI de la etiqueta. Manda la foto con ${opcion}.`;
+    return `Falta el IMEI del módulo 4G. Elige ${opcion} antes de validar ${nombre}.`;
+  }
+
+  private async textoModemHilo(modem: { serie: string; imei: string }): Promise<string> {
+    const serie = modem.serie.trim();
+    const imei = modem.imei.trim();
+    if (imei) return `Módulo 4G. SN *${serie || 'sin SN'}*. IMEI de la señal *${imei}*. Con 6 lo cambias.`;
+    if (serie) return `Módulo 4G. SN *${serie}*. Falta el IMEI de la etiqueta. Con 6 lo cambias.`;
+    return '';
+  }
+
+  private async idFabricacion(hiloId: string): Promise<string | null> {
+    const fila = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM fabricacion WHERE hilo_id = $1`, [hiloId]);
+    return fila.rows[0]?.id ?? null;
+  }
+
+  private async buscarModems(digitosModem: string): Promise<Array<{ serie: string; estado: string }>> {
+    const filas = await this.conexiones.pg.query<{ serie: string; estado: string }>(
+      `SELECT serie, estado FROM modem
+       WHERE serie LIKE $1 OR serie LIKE $2
+       ORDER BY CASE WHEN serie = $3 THEN 0 WHEN serie LIKE $1 THEN 1 ELSE 2 END, serie
+       LIMIT 8`,
+      [`${digitosModem}%`, `%${digitosModem}%`, digitosModem],
+    );
+    return filas.rows;
+  }
+
+  private textoModems(hallados: Array<{ serie: string; estado: string; imei?: string }>): string {
+    const lineas = hallados.map((item, indice) => `${indice + 1}. ${item.serie}${item.imei ? ` · IMEI ${item.imei}` : ''} · ${item.estado === 'ocupado' ? 'OCUPADO' : 'DISPONIBLE'}`);
+    const titulo = hallados.some((item) => item.imei)
+      ? 'Leí la etiqueta. Elige el SN. El IMEI queda para la señal. Menu vuelve.'
+      : 'Elige el número, o escribe más dígitos del SN. Menu vuelve.';
+    return [titulo, ...lineas].join('\n');
+  }
+
+  private async ligarModem(tareaId: string, hiloId: string, serie: string, imei: string, autor: { correo: string; nombre: string }): Promise<void> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const orden = hilos.find((item) => item.id === hiloId)?.orden ?? '';
+    await this.conexiones.pg.query(`UPDATE hilo_atencion SET modem_serie = $1, modem_imei = $2 WHERE id = $3`, [serie, imei, hiloId]);
+    const senal = imei ? ` IMEI ${imei}.` : '';
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre) VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5)`,
+      [randomUUID(), tareaId, `Hilo ${orden}. Módulo 4G SN ${serie}.${senal} Quedó en el hilo.`, autor.correo, autor.nombre],
+    );
+  }
+
+  private async ordenHilo(tareaId: string, hiloId: string): Promise<string> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    return String(hilos.find((item) => item.id === hiloId)?.orden ?? '');
+  }
+
+  private async agregarComentarioNota(notaId: string, texto: string): Promise<void> {
+    await this.conexiones.pg.query(`UPDATE nota_bitacora SET texto = texto || E'\n' || $2 WHERE id = $1`, [notaId, texto.trim()]);
+  }
+
+  private async textoRetiro(hiloId: string): Promise<string> {
+    const fila = await this.conexiones.pg.query<{ tarea_id: string; nombre: string }>(
+      `SELECT c.tarea_id, COALESCE(f.nombre, '') AS nombre
+       FROM consulta_chip c
+       LEFT JOIN fabricacion f ON f.hilo_id = c.hilo_id
+       WHERE c.hilo_id = $1 AND c.clase = 'retiro' AND c.estado = 'pendiente'
+       ORDER BY c.creado_en DESC LIMIT 1`,
+      [hiloId],
+    );
+    const consulta = fila.rows[0];
+    if (!consulta) return '';
+    const ref = await this.referencia(consulta.tarea_id);
+    const hilos = await listarHilos(this.conexiones.pg, consulta.tarea_id);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    const vista = await new FabricacionServicio(this.conexiones).vista(hiloId);
+    return [
+      ref?.linea ?? 'Cotización',
+      hilo ? lineaHilo(hilo) : '',
+      `¿Ya están listos para retirar los insumos de *${consulta.nombre || vista?.nombre || 'la orden'}*?`,
+      ...(vista?.lineas ?? []),
+      '1. Sí, ya está listo',
+      '2. Falta',
+    ].filter(Boolean).join('\n');
+  }
+
+  private async guardarFotosInstalacion(tareaId: string, hiloId: string, autor: { correo: string; nombre: string }, archivos: ArchivoNota[], notaId?: string, frase = '', carpeta = 'instalacion'): Promise<string> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const orden = hilos.find((item) => item.id === hiloId)?.orden ?? '';
+    const id = notaId || randomUUID();
+    if (!notaId) {
+      await this.conexiones.pg.query(
+        `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre) VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5)`,
+        [id, tareaId, frase || `Hilo ${orden}. Imágenes de la instalación.`, autor.correo, autor.nombre],
+      );
+    }
+    const almacen = new AlmacenCorreo(this.conexiones);
+    const puesto = await this.conexiones.pg.query<{ orden: number }>(`SELECT COALESCE(MAX(orden), -1) AS orden FROM nota_archivo WHERE nota_id = $1`, [id]);
+    let siguiente = Number(puesto.rows[0]?.orden ?? -1) + 1;
+    for (const archivo of archivos) {
+      const clave = `${carpeta}/${id}/${randomUUID()}`;
+      const mime = archivo.mime || 'image/jpeg';
+      await almacen.guardar(clave, archivo.contenido, mime);
+      await this.conexiones.pg.query(
+        `INSERT INTO nota_archivo (id, nota_id, clave, mime, nombre, orden) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [randomUUID(), id, clave, mime, archivo.nombre || 'foto', siguiente],
+      );
+      siguiente += 1;
+    }
+    return id;
+  }
+
+  private async guardarComentarioInstalacion(tareaId: string, hiloId: string, autor: { correo: string; nombre: string }, texto: string): Promise<void> {
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    const orden = hilos.find((item) => item.id === hiloId)?.orden ?? '';
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre) VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5)`,
+      [randomUUID(), tareaId, `Hilo ${orden}. Instalación.\n${texto.trim()}`, autor.correo, autor.nombre],
+    );
+  }
+
+  private async enFabricacion(telefono: string, charla: Charla, limpio: string): Promise<RespuestaBot> {
+    const fabricacionId = charla.pendiente?.fabricacionId;
+    const hiloId = charla.pendiente?.hiloId;
+    if (!fabricacionId) return this.abrirMenu(telefono);
+    if (/^(menu|menú)$/i.test(limpio) && charla.tarea_id && hiloId) return this.menuHilo(telefono, charla.tarea_id, hiloId);
+    const servicio = new FabricacionServicio(this.conexiones);
+    if (/^(ok|listo|confirmar|confirmo|si|sí)$/i.test(limpio)) return this.dejar(telefono, true, await servicio.confirmar(fabricacionId));
+    if (/^(enlace|link|corregir|modificar)$/i.test(limpio)) return this.dejar(telefono, true, await servicio.reenviar(fabricacionId));
+    if (/^reporte$/i.test(limpio) && hiloId) return this.dejar(telefono, true, await servicio.pedirReporte(hiloId));
+    return this.dejar(telefono, true, 'Escribe ok para confirmar la orden.\nEscribe enlace si quieres modificar los materiales.\nEscribe reporte para pedir el PDF.\nEscribe menu para volver al hilo.');
+  }
+
+  private async corregirHilo(
+    telefono: string,
+    tareaId: string,
+    hiloId: string,
+    corrige: 'imei' | 'contenedor' | 'maquina' | 'modem',
+    zona: 'hilo' | 'despacho' | 'almacen' | 'motivo' | 'validar',
+    limpio: string,
+    archivo: ArchivoNota | null,
+    extras: ArchivoNota[] = [],
+  ): Promise<RespuestaBot> {
+    const fotos = [archivo, ...extras].filter((foto): foto is ArchivoNota => Boolean(foto));
+    if (/^(menu|menú|volver|salir|0)$/i.test(limpio) && fotos.length === 0) return this.menuDeZona(telefono, tareaId, hiloId, zona);
+    try {
+      const autor = await this.autorDe(telefono);
+      if (fotos.length > 0) return this.regularizarFoto(telefono, tareaId, hiloId, corrige, zona, autor, fotos[0], fotos.slice(1));
+      if (corrige === 'modem') return this.regularizarModem(telefono, tareaId, hiloId, zona, autor, limpio);
       if (corrige === 'contenedor' || corrige === 'maquina') {
         const hilo = await corregirEquipo(this.conexiones.pg, hiloId, corrige === 'contenedor' ? { contenedor: limpio } : { maquina: limpio });
-        const menu = await this.menuHilo(telefono, tareaId, hiloId);
+        const menu = await this.menuDeZona(telefono, tareaId, hiloId, zona);
         return { ...menu, respuesta: `Regularización. ${lineaHilo(hilo)}\n${menu.respuesta}` };
       }
       const digitos = limpio.replace(/\D/g, '');
@@ -2057,14 +2895,14 @@ export class BotService {
       const chip = lectura.hallados[0];
       if (!chip) return this.dejar(telefono, true, 'Ese IMEI no está en los chips cargados. Escríbelo de nuevo o menu para volver.');
       await registrarChip(this.conexiones, hiloId, tareaId, chip, autor, null, 'técnico', 'whatsapp');
-      const menu = await this.menuHilo(telefono, tareaId, hiloId);
+      const menu = await this.menuDeZona(telefono, tareaId, hiloId, zona);
       const aviso = chip.estado === 'ocupado'
-        ? `Quedó registrado. IMEI ${chip.imei}. Celular ${chip.celular}. Está ocupado${chip.telemetria ? ` en ${chip.telemetria}` : ''}.\nNo se envía a una orden de fabricación. Pide otro chip con 3, o regulariza otra foto.`
+        ? `Quedó registrado. IMEI ${chip.imei}. Celular ${chip.celular}. Está ocupado${chip.telemetria ? ` en ${chip.telemetria}` : ''}.\nNo se envía a una orden de fabricación con un chip ocupado.`
         : `IMEI ${chip.imei}. Celular ${chip.celular}.`;
       return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
     } catch (error) {
       const mensaje = error instanceof Error ? error.message : 'No pude corregir el hilo.';
-      return this.dejar(telefono, true, `${mensaje}\nEscribe menu para volver al hilo.`);
+      return this.dejar(telefono, true, `${mensaje}\nEscribe menu para volver.`);
     }
   }
 
@@ -2072,21 +2910,27 @@ export class BotService {
     telefono: string,
     tareaId: string,
     hiloId: string,
-    corrige: 'imei' | 'contenedor' | 'maquina',
+    corrige: 'imei' | 'contenedor' | 'maquina' | 'modem',
+    zona: 'hilo' | 'despacho' | 'almacen' | 'motivo' | 'validar',
     autor: { correo: string; nombre: string },
     archivo: ArchivoNota,
+    extras: ArchivoNota[] = [],
   ): Promise<RespuestaBot> {
-    const rechazo = this.rechazoImagen(archivo);
-    if (rechazo) return this.dejar(telefono, true, rechazo);
+    const fotos = [archivo, ...extras];
+    for (const foto of fotos) {
+      const rechazo = this.rechazoImagen(foto);
+      if (rechazo) return this.dejar(telefono, true, rechazo);
+    }
+    if (corrige === 'modem') return this.regularizarModem(telefono, tareaId, hiloId, zona, autor, '', fotos);
     if (corrige === 'imei') {
       const lectura = await leerFotoChip(this.conexiones, archivo);
       if (!lectura) return this.dejar(telefono, true, 'El lector no respondió. Manda la foto otra vez.');
       const chip = chipParaGuardar(lectura.hallados);
       if (!chip) return this.dejar(telefono, true, `${lectura.paraWhatsapp}\nEscríbelo o manda otra foto.`);
       await registrarChip(this.conexiones, hiloId, tareaId, chip, autor, archivo, 'técnico', 'whatsapp');
-      const menu = await this.menuHilo(telefono, tareaId, hiloId);
+      const menu = await this.menuDeZona(telefono, tareaId, hiloId, zona);
       const aviso = chip.estado === 'ocupado'
-        ? `Quedó registrado. IMEI ${chip.imei}. Celular ${chip.celular}. Está ocupado${chip.telemetria ? ` en ${chip.telemetria}` : ''}.\nNo se envía a una orden de fabricación. Pide otro chip con 3, o regulariza otra foto.`
+        ? `Quedó registrado. IMEI ${chip.imei}. Celular ${chip.celular}. Está ocupado${chip.telemetria ? ` en ${chip.telemetria}` : ''}.\nNo se envía a una orden de fabricación con un chip ocupado.`
         : `IMEI ${chip.imei}. Celular ${chip.celular}.`;
       return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
     }
@@ -2095,38 +2939,11 @@ export class BotService {
     const espera = corrige === 'contenedor' ? 'contenedor' : 'serie';
     if (equipo.clase !== espera) {
       const visto = equipo.clase === 'contenedor' ? 'contenedor' : 'máquina';
-      return this.dejar(telefono, true, `Esa foto se leyó como ${visto} ${equipo.codigo}. Elige 7 o 8 según lo que sea, o escríbelo.`);
+      return this.dejar(telefono, true, `Esa foto se leyó como ${visto} ${equipo.codigo}. Elige contenedor o máquina según lo que sea, o escríbelo.`);
     }
     const hilo = await registrarEquipo(this.conexiones, hiloId, tareaId, corrige, equipo.codigo, autor, archivo, 'whatsapp');
-    const menu = await this.menuHilo(telefono, tareaId, hiloId);
+    const menu = await this.menuDeZona(telefono, tareaId, hiloId, zona);
     return { ...menu, respuesta: `Regularización. ${lineaHilo(hilo)}\n${menu.respuesta}` };
-  }
-
-  private async pedirImagenConcluyente(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
-    const frase = 'El área de desarrollo solicita otra imagen más concluyente.';
-    const hilos = await listarHilos(this.conexiones.pg, tareaId);
-    const hilo = hilos.find((item) => item.id === hiloId);
-    const orden = hilo?.orden ?? 1;
-    const ref = await this.referencia(tareaId);
-    const despacho = await this.pedirDespachoAhora(tareaId, `${frase} Manda otra foto del contenedor y de la máquina del equipo ${orden}.`, orden);
-    const quien = await this.conexiones.pg.query<{ nombre: string }>(`SELECT nombre FROM usuario WHERE telefono = $1`, [telefono]);
-    const consultaId = randomUUID();
-    await this.conexiones.pg.query(
-      `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id) VALUES ($1, $2, $3, $4, $5)`,
-      [consultaId, tareaId, telefono, quien.rows[0]?.nombre ?? 'Técnico', hiloId],
-    );
-    const almacenes = await this.conexiones.pg.query<{ telefono: string }>(
-      `SELECT telefono FROM usuario WHERE activo AND rol = 'almacen' AND telefono IS NOT NULL AND telefono <> ''`,
-    );
-    const cuerpo = `${ref?.linea ?? 'La cotización'}\n${frase}\nLa foto del chip del equipo ${orden} no alcanza. Manda otra imagen de la tarjeta o del chip.`;
-    for (const destino of almacenes.rows) {
-      await this.conexiones.pg.query(
-        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes) VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
-        [randomUUID(), tareaId, destino.telefono, cuerpo],
-      );
-    }
-    const almacen = almacenes.rows.length ? 'También se lo pedí a almacén.' : 'No hay un usuario de almacén con WhatsApp.';
-    return this.dejar(telefono, true, `${frase}\n${despacho}\n${almacen}\n5. Volver a los hilos`);
   }
 
   private async pedirDespachoAhora(tareaId: string, pregunta: string, equipo: number): Promise<string> {
@@ -2141,7 +2958,7 @@ export class BotService {
     if (!ref) return this.abrirMenu(telefono, `Esa cotización ya no está.\n${menuGeneral(await this.esElevado(telefono))}`);
     const quien = await this.conexiones.pg.query<{ nombre: string }>(`SELECT nombre FROM usuario WHERE telefono = $1`, [telefono]);
     const previa = await this.conexiones.pg.query<{ id: string }>(
-      `SELECT id FROM consulta_chip WHERE tarea_id = $1 AND tecnico_telefono = $2 AND estado = 'pendiente' ORDER BY creado_en DESC LIMIT 1`,
+      `SELECT id FROM consulta_chip WHERE tarea_id = $1 AND tecnico_telefono = $2 AND estado = 'pendiente' AND clase = 'chip' ORDER BY creado_en DESC LIMIT 1`,
       [tareaId, telefono],
     );
     const consultaId = previa.rows[0]?.id ?? randomUUID();
@@ -2163,14 +2980,40 @@ export class BotService {
         [randomUUID(), tareaId, destino.telefono, cuerpo],
       );
     }
+    if (hiloId) await marcarInstalada(this.conexiones.pg, hiloId);
     const aviso = almacenes.rows.length
-      ? 'Pedí el chip a almacén. Cuando manden la foto te digo el celular.'
-      : 'Anoté el pedido, pero no hay un usuario de almacén con WhatsApp para recibir la foto.';
+      ? 'Pedí el chip a almacén. Esta telemetría se instala. Cuando manden la foto te digo el celular.'
+      : 'Anoté el pedido y que esta telemetría se instala, pero no hay un usuario de almacén con WhatsApp para recibir la foto.';
     if (hiloId) {
-      const menu = await this.menuHilo(telefono, tareaId, hiloId);
+      const menu = await this.menuAlmacen(telefono, tareaId, hiloId);
       return { ...menu, respuesta: `${ref.linea}\n${aviso}\n${menu.respuesta}` };
     }
     return this.dejar(telefono, true, `${ref.linea}\n${aviso}\n${opcionesCot(await this.esElevado(telefono))}`);
+  }
+
+  private async pedirModulo(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const ref = await this.referencia(tareaId);
+    if (!ref) return this.abrirMenu(telefono, `Esa cotización ya no está.\n${menuGeneral(await this.esElevado(telefono))}`);
+    const quien = await this.autorDe(telefono);
+    await this.conexiones.pg.query(
+      `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id, clase) VALUES ($1, $2, $3, $4, $5, 'modem')`,
+      [randomUUID(), tareaId, telefono, quien.nombre, hiloId],
+    );
+    const almacenes = await this.conexiones.pg.query<{ telefono: string }>(
+      `SELECT telefono FROM usuario WHERE activo AND rol = 'almacen' AND telefono IS NOT NULL AND telefono <> ''`,
+    );
+    const cuerpo = `${ref.linea}\nPedido de módulo 4G. Manda las fotos de la etiqueta ZTRACK. Pueden ser varias juntas. Ahí se lee el SN y el IMEI.`;
+    for (const destino of almacenes.rows) {
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes) VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
+        [randomUUID(), tareaId, destino.telefono, cuerpo],
+      );
+    }
+    const aviso = almacenes.rows.length
+      ? 'Pedí el módulo 4G a almacén. No hace falta para pedir insumos.'
+      : 'Anoté el pedido del módulo 4G, pero no hay un usuario de almacén con WhatsApp.';
+    const menu = await this.menuAlmacen(telefono, tareaId, hiloId);
+    return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
   }
 
   private async atenderAlmacen(
@@ -2178,11 +3021,43 @@ export class BotService {
     quien: { correo: string; nombre: string },
     limpio: string,
     archivo: ArchivoNota | null,
+    extras: ArchivoNota[] = [],
   ): Promise<RespuestaBot> {
-    if (archivo) return this.leerChip(telefono, quien, archivo);
-    if (/^salir$/i.test(limpio)) return this.menuChips(telefono, 'El pedido sigue abierto. Manda la foto cuando la tengas.');
+    const fotos = [archivo, ...extras].filter((foto): foto is ArchivoNota => Boolean(foto));
+    if (fotos.length > 0) return this.leerChip(telefono, quien, fotos);
+    const retiro = await this.responderRetiro(quien, limpio);
+    if (retiro) return this.menuChips(telefono, retiro);
+    if (/^salir$/i.test(limpio)) return this.menuChips(telefono, 'El pedido sigue abierto. Manda las fotos cuando las tengas.');
     if (/^(menu|menú)$/i.test(limpio) || !limpio) return this.menuChips(telefono);
-    return this.menuChips(telefono, 'No hace falta escribir un número. Manda la foto de la tarjeta o del chip.');
+    return this.menuChips(telefono, 'No hace falta escribir un número. Manda las fotos del chip o del módulo 4G. Pueden ser varias juntas.');
+  }
+
+  private async responderRetiro(quien: { correo: string; nombre: string }, limpio: string): Promise<string> {
+    const listo = /^(1|si|sí|listo)$/i.test(limpio);
+    const falta = /^(2|falta)\b/i.test(limpio);
+    const extra = limpio.replace(/^(2|falta)\b[:\s.-]*/i, '').replace(/^falta\b[:\s.-]*/i, '').trim();
+    if (!listo && !falta) return '';
+    const abierta = await this.conexiones.pg.query<{ id: string; tarea_id: string; tecnico_telefono: string; hilo_id: string | null }>(
+      `SELECT id, tarea_id, tecnico_telefono, hilo_id FROM consulta_chip WHERE estado = 'pendiente' AND clase = 'retiro' ORDER BY creado_en DESC LIMIT 1`,
+    );
+    const consulta = abierta.rows[0];
+    if (!consulta) return 'Esa consulta de retiro ya fue respondida.';
+    const detalle = listo ? 'Sí, ya está listo para retirar.' : (extra ? `Falta. ${extra}` : 'Falta.');
+    const nombre = consulta.hilo_id ? (await new FabricacionServicio(this.conexiones).vista(consulta.hilo_id))?.nombre ?? '' : '';
+    await this.conexiones.pg.query(
+      `UPDATE consulta_chip SET estado = 'leido', detalle = $2, leido_en = now() WHERE id = $1`,
+      [consulta.id, detalle],
+    );
+    const orden = consulta.hilo_id ? await this.ordenHilo(consulta.tarea_id, consulta.hilo_id) : '';
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre) VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5)`,
+      [randomUUID(), consulta.tarea_id, `Hilo ${orden}. Almacén respondió el retiro de ${nombre || 'la orden'}.\n${detalle}`, quien.correo, quien.nombre],
+    );
+    await this.conexiones.pg.query(
+      `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes) VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
+      [randomUUID(), consulta.tarea_id, consulta.tecnico_telefono, `Almacén respondió${nombre ? ` por *${nombre}*` : ''}.\n${detalle}`],
+    );
+    return `Quedó avisado al técnico: ${detalle}`;
   }
 
   private async menuChips(telefono: string, previo = ''): Promise<RespuestaBot> {
@@ -2194,53 +3069,74 @@ export class BotService {
 
   private async textoPedidosChip(): Promise<string> {
     const pendientes = await this.chipsPendientes();
-    if (pendientes.length === 0) return 'No hay pedidos de chip. Cuando un técnico pida telemetría, te llega aquí.';
+    const retiros = await this.conexiones.pg.query<{ hilo_id: string | null }>(
+      `SELECT hilo_id FROM consulta_chip WHERE estado = 'pendiente' AND clase = 'retiro' ORDER BY creado_en DESC LIMIT 1`,
+    );
+    const retiro = retiros.rows[0]?.hilo_id ? await this.textoRetiro(retiros.rows[0].hilo_id) : '';
+    if (pendientes.length === 0 && !retiro) return 'No hay pedidos de chip ni de módulo 4G. Cuando un técnico pida telemetría, te llega aquí.';
+    if (pendientes.length === 0) return retiro;
     const lineas = [];
     for (const [indice, consulta] of pendientes.entries()) {
       const ref = await this.referencia(consulta.tarea_id);
-      lineas.push(`${indice + 1}. ${ref?.linea ?? 'Cotización'} · ${consulta.tecnico_nombre}`);
+      const pieza = consulta.clase === 'modem' ? 'Módulo 4G' : 'Chip';
+      lineas.push(`${indice + 1}. ${pieza} · ${ref?.linea ?? 'Cotización'} · ${consulta.tecnico_nombre}`);
     }
-    return ['Pedidos de chip:', ...lineas, 'Manda la foto de la tarjeta o del chip. No hace falta escribir un número.'].join('\n');
+    const pie = retiro
+      ? 'Responde 1 si ya está listo, o 2 si falta. La foto sigue siendo del chip o del módulo.'
+      : 'Manda las fotos del chip o del módulo 4G. Pueden ser varias juntas. No hace falta escribir un número.';
+    return [retiro, 'Pedidos de almacén:', ...lineas, pie].filter(Boolean).join('\n');
   }
 
-  private async chipsPendientes(): Promise<Array<{ id: string; tarea_id: string; tecnico_nombre: string; tecnico_telefono: string; hilo_id: string | null }>> {
-    const filas = await this.conexiones.pg.query<{ id: string; tarea_id: string; tecnico_nombre: string; tecnico_telefono: string; hilo_id: string | null }>(
-      `SELECT id, tarea_id, tecnico_nombre, tecnico_telefono, hilo_id FROM consulta_chip WHERE estado = 'pendiente' ORDER BY creado_en DESC LIMIT 10`,
+  private async chipsPendientes(): Promise<Array<{ id: string; tarea_id: string; tecnico_nombre: string; tecnico_telefono: string; hilo_id: string | null; clase: string }>> {
+    const filas = await this.conexiones.pg.query<{ id: string; tarea_id: string; tecnico_nombre: string; tecnico_telefono: string; hilo_id: string | null; clase: string }>(
+      `SELECT id, tarea_id, tecnico_nombre, tecnico_telefono, hilo_id, clase FROM consulta_chip WHERE estado = 'pendiente' AND clase <> 'retiro' ORDER BY creado_en DESC LIMIT 10`,
     );
     return filas.rows;
   }
 
-  private async leerChip(telefono: string, quien: { correo: string; nombre: string }, archivo: ArchivoNota): Promise<RespuestaBot> {
+  private async leerChip(telefono: string, quien: { correo: string; nombre: string }, archivos: ArchivoNota[]): Promise<RespuestaBot> {
     const pendientes = await this.chipsPendientes();
     const consulta = pendientes[0];
-    if (!consulta) return this.dejar(telefono, true, 'No hay un pedido de chip abierto. La foto no se procesó.');
+    if (!consulta) return this.dejar(telefono, true, 'No hay un pedido abierto. La foto no se procesó.');
+    if (consulta.clase === 'modem') return this.leerModulo(telefono, quien, consulta, archivos);
+    for (const archivo of archivos) {
+      const rechazo = this.rechazoImagen(archivo);
+      if (rechazo) return this.dejar(telefono, true, rechazo);
+    }
     const ref = await this.referencia(consulta.tarea_id);
-    const leido = await textoDeImagen(archivo);
-    if (leido == null) return this.dejar(telefono, true, `${ref?.linea ?? 'Esa cotización'}\nGuardé la foto, pero el lector no respondió. Mándala otra vez.`);
-    const candidatos = imeisDeTexto(leido);
-    const fragmentos = fragmentosDeTexto(leido);
+    const textos: string[] = [];
+    for (const archivo of archivos) {
+      const leido = await textoDeImagen(archivo);
+      if (leido) textos.push(leido);
+    }
+    const varias = archivos.length > 1;
+    if (textos.length === 0) {
+      return this.dejar(telefono, true, `${ref?.linea ?? 'Esa cotización'}\nGuardé ${varias ? 'las fotos' : 'la foto'}, pero el lector no respondió. ${varias ? 'Mándalas' : 'Mándala'} otra vez.`);
+    }
+    const junto = textos.join('\n');
+    const candidatos = imeisDeTexto(junto);
+    const fragmentos = fragmentosDeTexto(junto);
     const catalogo = await this.conexiones.pg.query<{ imei: string; celular: string; estado: string; telemetria: string }>(
       `SELECT imei, celular, estado, telemetria FROM chip WHERE NOT archivado`,
     );
     const resultado = identificarChips(candidatos, catalogo.rows, fragmentos);
     const primero = chipParaGuardar(resultado.hallados);
     if (consulta.hilo_id && primero) await guardarChip(this.conexiones.pg, consulta.hilo_id, primero.imei, primero.celular, primero.estado);
-    const esTarjeta = /alai|alaisecure|suma m[oó]vil|8951\d{10,}/i.test(leido);
+    const esTarjeta = /alai|alaisecure|suma m[oó]vil|8951\d{10,}/i.test(junto);
     const completo = `${esTarjeta ? 'La foto es una tarjeta de chip.\n' : ''}${textoChip(resultado.hallados, resultado.desconocidos)}`;
     const paraWhatsapp = resultado.hallados.length === 0 && resultado.desconocidos.length === 0
-      ? 'No pude leer un IMEI en la foto. No hay coincidencia.'
+      ? `No pude leer un IMEI en ${varias ? 'las fotos' : 'la foto'}. No hay coincidencia.`
       : `${esTarjeta ? 'La foto es una tarjeta de chip.\n' : ''}${textoChip(resultado.hallados, resultado.desconocidos, true)}`;
-    const detalle = candidatos.length === 0 && resultado.hallados.length === 0 ? 'No pude leer un IMEI en la foto. No hay coincidencia.' : completo;
+    const detalle = candidatos.length === 0 && resultado.hallados.length === 0 ? `No pude leer un IMEI en ${varias ? 'las fotos' : 'la foto'}. No hay coincidencia.` : completo;
     const cierre = cierreFabricacion(resultado.hallados);
+    const envio = varias ? 'las fotos' : 'la foto';
     const paraTecnico = resultado.hallados.length
       ? `${ref?.linea ?? 'Tu cotización'}\nAlmacén identificó el chip.\n${paraWhatsapp}\n${cierre}`
-      : `${ref?.linea ?? 'Tu cotización'}\nAlmacén mandó la foto del chip y no hay coincidencia.\n${paraWhatsapp}`;
+      : `${ref?.linea ?? 'Tu cotización'}\nAlmacén mandó ${envio} del chip y no hay coincidencia.\n${paraWhatsapp}`;
     const notaId = randomUUID();
     const avisoId = randomUUID();
-    const clave = `chips/${consulta.id}/${notaId}`;
-    const nombre = archivo.nombre || 'chip.jpg';
-    const mime = archivo.mime || 'image/jpeg';
-    await new AlmacenCorreo(this.conexiones).guardar(clave, archivo.contenido, mime);
+    const guardadas = await this.guardarFotosAviso(archivos, `chips/${consulta.id}/${notaId}`);
+    const primera = guardadas[0];
     await this.conexiones.pg.query(
       `UPDATE consulta_chip
        SET estado = 'leido', imei = $2, celular = $3, detalle = $4, leido_en = now()
@@ -2250,23 +3146,117 @@ export class BotService {
     await this.conexiones.pg.query(
       `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime)
        VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5, $6, $7, $8)`,
-      [notaId, consulta.tarea_id, `Almacén envió la foto del chip.\n${detalle}`, quien.correo, quien.nombre, clave, nombre, mime],
+      [notaId, consulta.tarea_id, `Almacén envió ${envio} del chip.\n${detalle}`, quien.correo, quien.nombre, primera.clave, primera.nombre, primera.mime],
     );
+    await this.anexarFotosNota(notaId, guardadas);
     await this.conexiones.pg.query(
       `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
        VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
       [avisoId, consulta.tarea_id, consulta.tecnico_telefono, paraTecnico],
     );
-    await this.conexiones.pg.query(
-      `INSERT INTO aviso_adjunto (id, aviso_id, clave, mime, nombre, orden) VALUES ($1, $2, $3, $4, $5, 0)`,
-      [randomUUID(), avisoId, clave, mime, nombre],
-    );
+    await this.anexarFotosAviso(avisoId, guardadas);
     await this.guardarCharla(telefono, 'chip_menu', null, [], null);
     return this.dejar(telefono, true, 'Imagen procesada.');
   }
 
+  private async leerModulo(
+    telefono: string,
+    quien: { correo: string; nombre: string },
+    consulta: { id: string; tarea_id: string; tecnico_telefono: string; hilo_id: string | null },
+    archivos: ArchivoNota[],
+  ): Promise<RespuestaBot> {
+    for (const archivo of archivos) {
+      const rechazo = this.rechazoImagen(archivo);
+      if (rechazo) return this.dejar(telefono, true, rechazo);
+    }
+    let respondio = false;
+    const lecturas: EtiquetaModulo[] = [];
+    for (const archivo of archivos) {
+      const lectura = await leerEtiquetaModulo(archivo);
+      if (lectura.respondio) respondio = true;
+      if (lectura.etiqueta) lecturas.push(lectura.etiqueta);
+    }
+    if (!respondio) return this.dejar(telefono, true, 'El lector no respondió. Manda la foto de la etiqueta otra vez.');
+    if (lecturas.length === 0) return this.dejar(telefono, true, 'No leí el SN ni el IMEI. Manda la etiqueta ZTRACK otra vez.');
+    const ref = await this.referencia(consulta.tarea_id);
+    const parejas: Array<{ serie: string; estado: string; imei: string }> = [];
+    const faltan: EtiquetaModulo[] = [];
+    for (const lectura of lecturas) {
+      if (!lectura.sn) {
+        faltan.push(lectura);
+        continue;
+      }
+      const fila = await this.conexiones.pg.query<{ serie: string; estado: string }>(`SELECT serie, estado FROM modem WHERE serie = $1`, [lectura.sn]);
+      const modem = fila.rows[0];
+      if (!modem) faltan.push(lectura);
+      else if (!parejas.some((item) => item.serie === modem.serie)) parejas.push({ serie: modem.serie, estado: modem.estado, imei: lectura.imei });
+    }
+    if (consulta.hilo_id && parejas.length === 1 && faltan.length === 0) {
+      await this.ligarModem(consulta.tarea_id, consulta.hilo_id, parejas[0].serie, parejas[0].imei, quien);
+    }
+    const lineas = [
+      ...parejas.map((item) => `SN *${item.serie}* · ${item.estado === 'ocupado' ? 'OCUPADO' : 'DISPONIBLE'}${item.imei ? ` · IMEI *${item.imei}*` : ''}`),
+      ...faltan.map((lectura) => `${this.lineaEtiqueta(lectura)} No está en los módulos cargados.`),
+    ];
+    const ligado = consulta.hilo_id && parejas.length === 1 && faltan.length === 0 ? 'Quedó en el hilo.' : 'Elige el módulo en Regularizar el módulo 4G.';
+    const detalle = ['Almacén mandó la etiqueta del módulo 4G.', ...lineas, ligado].join('\n');
+    const notaId = randomUUID();
+    const guardadas = await this.guardarFotosAviso(archivos, `modulos/${consulta.id}/${notaId}`);
+    const primera = guardadas[0];
+    await this.conexiones.pg.query(
+      `UPDATE consulta_chip SET estado = 'leido', detalle = $2, leido_en = now() WHERE id = $1`,
+      [consulta.id, detalle],
+    );
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, archivo_clave, archivo_nombre, archivo_mime)
+       VALUES ($1, $2, 'seguimiento', 'whatsapp', $3, $4, $5, $6, $7, $8)`,
+      [notaId, consulta.tarea_id, detalle, quien.correo, quien.nombre, primera.clave, primera.nombre, primera.mime],
+    );
+    await this.anexarFotosNota(notaId, guardadas);
+    const avisoId = randomUUID();
+    await this.conexiones.pg.query(
+      `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
+       VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
+      [avisoId, consulta.tarea_id, consulta.tecnico_telefono, `${ref?.linea ?? 'Tu cotización'}\n${detalle}`],
+    );
+    await this.anexarFotosAviso(avisoId, guardadas);
+    await this.guardarCharla(telefono, 'chip_menu', null, [], null);
+    return this.dejar(telefono, true, 'Imagen procesada.');
+  }
+
+  private async guardarFotosAviso(archivos: ArchivoNota[], prefijo: string): Promise<Array<{ clave: string; mime: string; nombre: string }>> {
+    const almacen = new AlmacenCorreo(this.conexiones);
+    const guardadas: Array<{ clave: string; mime: string; nombre: string }> = [];
+    for (const [indice, archivo] of archivos.entries()) {
+      const clave = indice === 0 ? prefijo : `${prefijo}/${randomUUID()}`;
+      const mime = archivo.mime || 'image/jpeg';
+      const nombre = archivo.nombre || 'foto.jpg';
+      await almacen.guardar(clave, archivo.contenido, mime);
+      guardadas.push({ clave, mime, nombre });
+    }
+    return guardadas;
+  }
+
+  private async anexarFotosNota(notaId: string, fotos: Array<{ clave: string; mime: string; nombre: string }>): Promise<void> {
+    for (const [orden, foto] of fotos.entries()) {
+      await this.conexiones.pg.query(
+        `INSERT INTO nota_archivo (id, nota_id, clave, mime, nombre, orden) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [randomUUID(), notaId, foto.clave, foto.mime, foto.nombre, orden],
+      );
+    }
+  }
+
+  private async anexarFotosAviso(avisoId: string, fotos: Array<{ clave: string; mime: string; nombre: string }>): Promise<void> {
+    for (const [orden, foto] of fotos.entries()) {
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso_adjunto (id, aviso_id, clave, mime, nombre, orden) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [randomUUID(), avisoId, foto.clave, foto.mime, foto.nombre, orden],
+      );
+    }
+  }
+
   private linea(tarea: { cot: string; cliente: string | null; lugar?: string | null; campana?: boolean; despacho_fecha?: string | null; despacho_hora?: string | null; cita_fecha?: string | null; cita_hora?: string | null }, despacho = false): string {
-    const cot = tarea.cot.split('#')[0].split('+').join(' · ');
+    const cot = `*${tarea.cot.split('#')[0].split('+').join(' · ').replace(/\*/g, '')}*`;
     const quien = tarea.cliente?.trim() || tarea.lugar?.trim() || 'sin cliente';
     const fecha = ` · ${textoFecha(tarea.despacho_fecha ?? tarea.cita_fecha, tarea.despacho_hora ?? tarea.cita_hora)}`;
     if (tarea.cot.includes('#')) {

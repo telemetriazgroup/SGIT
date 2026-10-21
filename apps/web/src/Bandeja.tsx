@@ -5,7 +5,9 @@ import { MiCuenta, PanelEquipo } from './Equipo';
 import { Logo } from './Logo';
 import { PanelChips } from './Chips';
 import { PanelModems } from './Modems';
+import { PanelLector } from './Lector';
 import { PanelOdoo } from './Odoo';
+import { PanelRespaldo } from './Respaldo';
 import { PanelDiccionario, PanelTareas } from './Tareas';
 
 type Avance = {
@@ -124,7 +126,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [paginas, setPaginas] = useState(1);
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'odoo' | 'chips' | 'modems' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'chips' | 'modems' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
   const [redactando, setRedactando] = useState(false);
   const [notaProceso, setNotaProceso] = useState<string | null>(null);
   const [tareaAbierta, setTareaAbierta] = useState<string | null>(null);
@@ -473,12 +475,22 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
               Odoo
             </button>
           ) : null}
+          {sesion.usuario.rol === 'superusuario' ? (
+            <button type="button" className={vista === 'respaldo' ? 'activo' : ''} onClick={() => { setVista('respaldo'); setHilo(null); }}>
+              Respaldo
+            </button>
+          ) : null}
+          {sesion.usuario.rol === 'superusuario' ? (
+            <button type="button" className={vista === 'lector' ? 'activo' : ''} onClick={() => { setVista('lector'); setHilo(null); }}>
+              Lector
+            </button>
+          ) : null}
           <button type="button" className={vista === 'cuenta' ? 'activo' : ''} onClick={() => { setVista('cuenta'); setHilo(null); }}>
             Mi cuenta
           </button>
         </nav>
         <section className="panel">
-          {sistema ? (
+          {sistema && (vista === 'recibidos' || vista === 'enviados') ? (
           <div className="herramientas">
             {hilo ? (
               <button type="button" onClick={volver}>
@@ -550,6 +562,10 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             <PanelModems apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'odoo' ? (
             <PanelOdoo apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'respaldo' ? (
+            <PanelRespaldo apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'lector' ? (
+            <PanelLector apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'cuenta' ? (
             <MiCuenta apiUrl={apiUrl} token={sesion.token} alCambiarNombre={onNombre} />
           ) : vista === 'diccionario' ? (

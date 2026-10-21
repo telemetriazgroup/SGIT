@@ -1,3 +1,27 @@
+import { etiquetaDeModulo, type EtiquetaModulo } from './lectura-modulo';
+
+let urlFijada: string | null = null;
+let lectorUrl: (() => Promise<string>) | null = null;
+
+export function registrarLectorImagen(lector: () => Promise<string>): void {
+  lectorUrl = lector;
+}
+
+export function fijarUrlImagen(url: string): void {
+  urlFijada = url.trim().replace(/\/$/, '');
+}
+
+async function base(): Promise<string> {
+  if (urlFijada === null && lectorUrl) {
+    try {
+      urlFijada = (await lectorUrl()).trim().replace(/\/$/, '');
+    } catch {
+      urlFijada = '';
+    }
+  }
+  return (urlFijada || process.env.PROCESO_IMAGEN_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+}
+
 export type ClaseCodigo = 'contenedor' | 'serie' | 'otro';
 
 export type PropuestaImagen = {
@@ -53,13 +77,13 @@ export function lineaLectura(orden: number, clase: ClaseCodigo, codigo: string |
 }
 
 export async function proponerImagen(archivo: { nombre: string; mime: string; contenido: Buffer }): Promise<PropuestaImagen | null> {
-  const base = (process.env.PROCESO_IMAGEN_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+  const origen = await base();
   const cuerpo = new FormData();
   cuerpo.append('file', new Blob([new Uint8Array(archivo.contenido)], { type: archivo.mime }), archivo.nombre || 'foto.jpg');
   const control = new AbortController();
   const reloj = setTimeout(() => control.abort(), 25_000);
   try {
-    const respuesta = await fetch(`${base}/api/imagenes`, { method: 'POST', body: cuerpo, signal: control.signal });
+    const respuesta = await fetch(`${origen}/api/imagenes`, { method: 'POST', body: cuerpo, signal: control.signal });
     if (!respuesta.ok) return null;
     const dato = (await respuesta.json()) as {
       imagen_id?: string;
@@ -78,12 +102,36 @@ export async function proponerImagen(archivo: { nombre: string; mime: string; co
   }
 }
 
+export async function leerEtiquetaModulo(archivo: { nombre: string; mime: string; contenido: Buffer }): Promise<{ respondio: boolean; etiqueta: EtiquetaModulo | null }> {
+  const origen = await base();
+  const oficial = await enviarImagen(origen, '/api/ocr?caso=modulo', archivo, 45_000);
+  if (oficial) {
+    const directa = etiquetaDeRespuesta(oficial);
+    if (directa) return { respondio: true, etiqueta: directa };
+    const texto = textoLectorChip(oficial);
+    return { respondio: true, etiqueta: etiquetaDeModulo(texto) };
+  }
+  const piloto = await enviarImagen(origen, '/api/piloto/analizar', archivo, 40_000);
+  if (!piloto) return { respondio: false, etiqueta: null };
+  return { respondio: true, etiqueta: etiquetaDeModulo(textoPiloto(piloto)) };
+}
+
+function etiquetaDeRespuesta(dato: unknown): EtiquetaModulo | null {
+  if (!dato || typeof dato !== 'object') return null;
+  const fila = dato as { sn?: unknown; imei?: unknown; modelo?: unknown; codigo?: unknown; numeros?: unknown };
+  const sn = typeof fila.sn === 'string' ? fila.sn : typeof fila.codigo === 'string' && fila.codigo.startsWith('005010') ? fila.codigo : '';
+  const imei = typeof fila.imei === 'string' ? fila.imei : '';
+  const modelo = typeof fila.modelo === 'string' ? fila.modelo : '';
+  if (!sn && !imei) return null;
+  return { sn, imei, modelo };
+}
+
 export async function textoDeImagen(archivo: { nombre: string; mime: string; contenido: Buffer }): Promise<string | null> {
-  const base = (process.env.PROCESO_IMAGEN_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
-  const oficial = await enviarImagen(base, '/api/ocr?caso=chip', archivo, 45_000);
+  const origen = await base();
+  const oficial = await enviarImagen(origen, '/api/ocr?caso=chip', archivo, 45_000);
   const leido = oficial ? textoLectorChip(oficial) : '';
   if (leido.trim()) return leido;
-  const piloto = await enviarImagen(base, '/api/piloto/analizar', archivo, 40_000);
+  const piloto = await enviarImagen(origen, '/api/piloto/analizar', archivo, 40_000);
   const respaldo = piloto ? textoPiloto(piloto) : '';
   if (respaldo.trim()) return respaldo;
   return null;
@@ -134,11 +182,11 @@ function textosDe(valor: unknown): string[] {
 }
 
 export async function confirmarImagen(imagenId: string, codigo: string, tipo: string): Promise<boolean> {
-  const base = (process.env.PROCESO_IMAGEN_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+  const origen = await base();
   const control = new AbortController();
   const reloj = setTimeout(() => control.abort(), 15_000);
   try {
-    const respuesta = await fetch(`${base}/api/registros`, {
+    const respuesta = await fetch(`${origen}/api/registros`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ imagen_id: imagenId, codigo, tipo }),

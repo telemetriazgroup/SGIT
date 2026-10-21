@@ -171,7 +171,7 @@ export class TareasController {
   @Post('odoo/configuracion')
   async guardarOdoo(
     @Headers('authorization') autorizacion: string | undefined,
-    @Body() cuerpo: { url?: string; db?: string; usuario?: string; clave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string },
+    @Body() cuerpo: { url?: string; db?: string; usuario?: string; clave?: string; sesionUsuario?: string; sesionClave?: string; modeloVenta?: string; campoCot?: string; modeloTarea?: string },
   ) {
     await this.exigirSuperusuario(autorizacion);
     return this.tareas.guardarOdoo(cuerpo ?? {});
@@ -221,7 +221,7 @@ export class TareasController {
   ) {
     const usuario = await this.exigirEdicion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
-    await this.tareas.fijarHilos(id, Number(cuerpo?.cantidad));
+    await this.tareas.fijarHilos(id, Number(cuerpo?.cantidad), usuario);
     return this.fichaDe(id);
   }
 
@@ -230,7 +230,16 @@ export class TareasController {
     @Headers('authorization') autorizacion: string | undefined,
     @Param('id') id: string,
     @Param('hiloId') hiloId: string,
-    @Body() cuerpo: { contenedor?: string; maquina?: string; imei?: string },
+    @Body()
+    cuerpo: {
+      contenedor?: string;
+      maquina?: string;
+      imei?: string;
+      celular?: string;
+      modem_serie?: string;
+      modem_imei?: string;
+      zona?: 'almacen' | 'tecnico' | 'despacho';
+    },
   ) {
     const usuario = await this.exigirEdicion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
@@ -243,7 +252,7 @@ export class TareasController {
     @Headers('authorization') autorizacion: string | undefined,
     @Param('id') id: string,
     @Param('hiloId') hiloId: string,
-    @Body() cuerpo: { clase?: string; nombre?: string; mime?: string; contenido?: string },
+    @Body() cuerpo: { clase?: string; nombre?: string; mime?: string; contenido?: string; zona?: string },
   ) {
     const usuario = await this.exigirEdicion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);

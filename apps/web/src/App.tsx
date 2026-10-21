@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { SesionPublica } from '@sgit/shared';
 import { Bandeja } from './Bandeja';
 import { Ingreso } from './Ingreso';
+import { Materiales } from './Materiales';
 import { leerSesionGuardada, olvidarSesion, guardarSesion } from './sesion';
 import { urlDelApi } from './url-api';
 
@@ -25,6 +26,9 @@ export function App() {
       vigente = false;
     };
   }, [apiUrl, sesion]);
+
+  const materiales = new URLSearchParams(window.location.search).get('materiales');
+  if (materiales && apiUrl) return <Materiales apiUrl={apiUrl} token={materiales} />;
 
   if (sesion && apiUrl) {
     return (

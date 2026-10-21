@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { Conexiones } from '../conexiones';
 import { IdentidadModule } from '../identidad/identidad.module';
 import { ChipsController } from './chips.controller';
-import { ChipsService } from './chips.service';
+import { ChipsService, PulsoChips } from './chips.service';
 
 @Module({
   imports: [IdentidadModule],
@@ -12,6 +12,11 @@ import { ChipsService } from './chips.service';
       provide: ChipsService,
       inject: [Conexiones],
       useFactory: (conexiones: Conexiones) => new ChipsService(conexiones),
+    },
+    {
+      provide: PulsoChips,
+      inject: [Conexiones],
+      useFactory: (conexiones: Conexiones) => new PulsoChips(conexiones),
     },
   ],
 })

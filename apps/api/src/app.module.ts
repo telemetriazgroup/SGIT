@@ -9,9 +9,12 @@ import { PrepararBase } from './preparar-base';
 import { SaludModule } from './salud/salud.module';
 import { ChipsModule } from './chips/chips.module';
 import { ModemsModule } from './modems/modems.module';
+import { FabricacionModule } from './fabricacion/fabricacion.module';
+import { LectorModule } from './lector/lector.module';
+import { RespaldoModule } from './respaldo/respaldo.module';
 
 @Module({
-  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule, ChipsModule, ModemsModule],
+  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule, ChipsModule, ModemsModule, FabricacionModule, RespaldoModule, LectorModule],
   providers: [
     {
       provide: PrepararBase,

@@ -11,6 +11,8 @@ export type HiloAtencion = {
   chip_celular: string | null;
   chip_estado: 'disponible' | 'ocupado' | null;
   despacho_validado: boolean;
+  modem_serie?: string | null;
+  modem_imei?: string | null;
 };
 
 type Consulta = {
@@ -19,31 +21,44 @@ type Consulta = {
 
 export function textoEquipo(total: number | null, equipo: number): string {
   const cantidad = total && total > 1 ? total : 1;
-  if (cantidad === 1) return 'Escribe el contenedor y la máquina, o manda la foto.';
+  if (cantidad === 1) return 'Escribe el contenedor y la máquina, o manda las fotos. Pueden ser varias juntas.';
   const puesto = equipo <= 1 ? 'primer equipo' : `equipo ${equipo}`;
-  return `Tengo ${cantidad} solicitudes de telemetría. Envíame la foto de la máquina y del contenedor del ${puesto}.`;
+  return `Tengo ${cantidad} solicitudes de telemetría. Envíame las fotos de la máquina y del contenedor del ${puesto}. Pueden ser varias juntas.`;
 }
 
 export function hiloListo(hilo: Pick<HiloAtencion, 'despacho_validado' | 'lleva_telemetria' | 'chip_celular' | 'chip_estado'>): { listo: boolean; falta: string[] } {
   const falta: string[] = [];
   if (!hilo.despacho_validado) falta.push('falta validar lo que envió despacho');
-  if (hilo.lleva_telemetria == null) falta.push('falta decir si esta telemetría se instala');
   if (hilo.lleva_telemetria === true && hilo.chip_estado === 'ocupado') falta.push('el chip está ocupado; pide otro o regulariza la foto');
   else if (hilo.lleva_telemetria === true && !hilo.chip_celular) falta.push('falta el chip de almacén');
-  return { listo: falta.length === 0, falta };
+  const decidido = hilo.lleva_telemetria === false || (hilo.lleva_telemetria === true && Boolean(hilo.chip_celular) && hilo.chip_estado !== 'ocupado');
+  return { listo: falta.length === 0 && decidido, falta };
+}
+
+function realce(valor: string): string {
+  return `*${valor.replace(/\*/g, '')}*`;
 }
 
 export function lineaHilo(hilo: HiloAtencion): string {
   const juicio = hiloListo(hilo);
-  const equipo = [hilo.contenedor ? `contenedor ${hilo.contenedor}` : '', hilo.maquina ? `máquina ${hilo.maquina}` : ''].filter(Boolean).join(' · ');
-  const chip = hilo.lleva_telemetria === false ? 'sin instalación' : hilo.chip_estado === 'ocupado' ? `chip ocupado ${hilo.chip_celular}` : hilo.chip_celular ? `chip ${hilo.chip_celular}` : 'chip pendiente';
+  const equipo = [hilo.contenedor ? `contenedor ${realce(hilo.contenedor)}` : '', hilo.maquina ? `máquina ${realce(hilo.maquina)}` : ''].filter(Boolean).join(' · ');
+  const chip = hilo.lleva_telemetria === false
+    ? 'sin instalación'
+    : hilo.chip_estado === 'ocupado'
+      ? `chip ocupado ${hilo.chip_celular ? realce(hilo.chip_celular) : ''}`.trim()
+      : hilo.chip_celular
+        ? `chip ${realce(hilo.chip_celular)}`
+        : 'chip pendiente';
   const estado = juicio.listo ? 'listo para la orden de fabricación' : juicio.falta.join('; ');
-  return `Hilo ${hilo.orden} · ${equipo || 'sin datos de despacho'} · ${chip} · ${estado}`;
+  const serie = hilo.modem_serie?.trim() ?? '';
+  const imei = hilo.modem_imei?.trim() ?? '';
+  const modem = serie ? `módulo ${realce(serie)}${imei ? ` · IMEI ${realce(imei)}` : ''}` : '';
+  return [`Hilo ${hilo.orden}`, equipo || 'sin datos de despacho', chip, modem, estado].filter(Boolean).join(' · ');
 }
 
 export async function listarHilos(pg: Consulta, tareaId: string): Promise<HiloAtencion[]> {
   const filas = await pg.query<HiloAtencion>(
-    `SELECT id, tarea_id, orden, estado, lleva_telemetria, contenedor, maquina, despacho_texto, chip_imei, chip_celular, chip_estado, despacho_validado
+    `SELECT id, tarea_id, orden, estado, lleva_telemetria, contenedor, maquina, despacho_texto, chip_imei, chip_celular, chip_estado, despacho_validado, modem_serie, modem_imei
      FROM hilo_atencion WHERE tarea_id = $1 ORDER BY orden`,
     [tareaId],
   );
@@ -156,6 +171,20 @@ export async function validarDespacho(pg: Consulta, hiloId: string): Promise<Hil
   return refrescar(pg, hiloId);
 }
 
+export async function anotarSinInstalacion(pg: Consulta, hiloId: string): Promise<HiloAtencion> {
+  const hilo = await uno(pg, hiloId);
+  if (!hilo) throw new Error('Ese hilo ya no está.');
+  await pg.query(`UPDATE hilo_atencion SET lleva_telemetria = false WHERE id = $1`, [hiloId]);
+  return refrescar(pg, hiloId);
+}
+
+export async function marcarInstalada(pg: Consulta, hiloId: string): Promise<HiloAtencion> {
+  const hilo = await uno(pg, hiloId);
+  if (!hilo) throw new Error('Ese hilo ya no está.');
+  await pg.query(`UPDATE hilo_atencion SET lleva_telemetria = true WHERE id = $1`, [hiloId]);
+  return refrescar(pg, hiloId);
+}
+
 export async function marcarInstalacion(pg: Consulta, hiloId: string, instala: boolean): Promise<HiloAtencion> {
   const hilo = await uno(pg, hiloId);
   if (!hilo) throw new Error('Ese hilo ya no está.');
@@ -173,9 +202,23 @@ export async function guardarChip(pg: Consulta, hiloId: string, imei: string, ce
   return refrescar(pg, hiloId);
 }
 
+export async function guardarModem(pg: Consulta, hiloId: string, serie: string, imei: string): Promise<HiloAtencion> {
+  const sn = serie.trim();
+  const senal = imei.replace(/\D/g, '');
+  if (!sn && !senal) throw new Error('Escribe el SN o el IMEI del módulo 4G.');
+  await pg.query(
+    `UPDATE hilo_atencion
+     SET modem_serie = CASE WHEN $2 <> '' THEN $2 ELSE modem_serie END,
+         modem_imei = CASE WHEN $3 <> '' THEN $3 ELSE modem_imei END
+     WHERE id = $1`,
+    [hiloId, sn, senal],
+  );
+  return refrescar(pg, hiloId);
+}
+
 async function uno(pg: Consulta, id: string): Promise<HiloAtencion | null> {
   const filas = await pg.query<HiloAtencion>(
-    `SELECT id, tarea_id, orden, estado, lleva_telemetria, contenedor, maquina, despacho_texto, chip_imei, chip_celular, chip_estado, despacho_validado
+    `SELECT id, tarea_id, orden, estado, lleva_telemetria, contenedor, maquina, despacho_texto, chip_imei, chip_celular, chip_estado, despacho_validado, modem_serie, modem_imei
      FROM hilo_atencion WHERE id = $1`,
     [id],
   );

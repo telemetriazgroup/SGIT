@@ -473,35 +473,34 @@ La cantidad de hilos se corrige en la ficha, en Telemetrías, entre 1 y 20. Subi
 
 **Inicio — 19 de octubre de 2026.** Se abre desde un hilo listo. Un chip ocupado no entra.
 
-**Entregable.** En un hilo listo el operador elige la lista de materiales, ajusta cantidades, crea la fabricación en Odoo staging y descarga el PDF para firmar. Pulsar dos veces deja una sola MO. El hilo ocupa el lugar de la atención.
+**Entregable.** Desde un hilo listo se abre la orden de fabricación del producto `[GPNDND0002] CT TRACK REEFER (HARDWARE)`. Primero se toma el borrador más antiguo de ese producto que no tenga ref. cotización ni Lot/Serial Numbers. Solo si no hay ninguno se crea una orden nueva. La ref. cotización es la COT y el ejecutor sale del técnico: Marcelo, Edwin o Vásquez; si no es ninguno, Eusebio Avellaneda. Si Odoo responde que ya hay 80 órdenes y no quedó un borrador libre, queda un incidente. El técnico recibe un enlace: el chip y el USR-G786 vienen marcados, puede quitar materiales y cambiar cantidades, y la serie del módem puede ir vacía para que Odoo la elija. Al decir que está seguro, WhatsApp muestra el resumen. Escribe ok para confirmar la orden en Odoo, o enlace para volver a elegir. Un hilo no abre dos órdenes.
 
-**Historias.** H-41, H-42.
-
-**Proceso.** Fabricación.
+**Proceso.** Fabricación. `prueba.fabricacion`.
 
 ### Pruebas — `prueba.fabricacion`
 
 | Caso | Resultado |
 | --- | --- |
-| El operador deja 2 unidades de un ítem que en la lista venía con 1 | Odoo recibe 2 |
-| La creación responde bien | La atención guarda `odooMoId` y pasa a `materiales_en_solicitud` |
-| Segunda confirmación con la misma atención | El mismo `odooMoId`. En staging hay un solo documento |
-| Odoo rechaza la primera llamada | La atención sigue en solicitud de materiales, con el error visible, y no hay id |
-| La primera llamada creó la MO y se perdió la respuesta | El reintento recupera ese documento y no crea otro |
-| PDF | Se genera con COT, atención y las líneas confirmadas |
-| Intento de una segunda MO con la primera todavía activa | Se rechaza |
+| El técnico se llama Marcelo, Edwin o Vásquez | El ejecutor es el empleado correspondiente |
+| El técnico o el admin no es ninguno de ellos | El ejecutor es Avellaneda Moya Eusebio |
+| Hay un borrador de GPNDND0002 sin cotización ni serie | Se toma ese, el más antiguo, y no se crea otra orden |
+| No hay un borrador así | Se crea una orden nueva |
+| Odoo dice que llegó al límite de 80 y no hay borrador libre | Queda un incidente |
+| El borrador ya tiene cotización, IMEI, GSM o cualquier Lot/Serial | No se reutiliza |
+| La lista se abre | El chip `INDND4855` y el módem `INDND7509` vienen marcados; el resto no |
+| El módem no lleva serie | El resumen dice que Odoo elige la serie |
 
 ### Prueba guiada
 
-1. Elegir la lista de instalación de telemetría en staging.
-2. Cambiar una cantidad y crear.
-3. Abrir el PDF y el documento en Odoo: mismas líneas.
-4. Pulsar crear otra vez: Odoo no muestra un duplicado.
-5. Forzar un error de permiso o de producto y ver el mensaje en la atención, que sigue abierta.
+1. En un hilo con chip ocupado, Pedir insumos avisa que no está listo y no toca Odoo.
+2. En un hilo listo, la opción 10 o Pedir insumos abre o reutiliza el borrador y manda el enlace.
+3. En el enlace se marcan materiales, se cambia la cantidad y, si hace falta, la serie del módem.
+4. Estoy seguro deja la propuesta y WhatsApp muestra el resumen.
+5. Enlace vuelve a abrir la lista. Ok confirma la orden en Odoo.
 
-**Queda fuera.** Fotos de firma y de almacén. Esas fotos son el sprint 10; sin ellas la atención no avanza a instalación.
+**Queda fuera.** El PDF para firmar y las fotos de almacén. Eso sigue para el sprint 10.
 
-**Sale cuando.** Almacén de staging tiene una MO real originada desde SGIT y el PDF se puede imprimir.
+**Sale cuando.** Un hilo listo deja una orden confirmada en Odoo, con la COT, el ejecutor y solo los materiales que el técnico pidió.
 
 ---
 

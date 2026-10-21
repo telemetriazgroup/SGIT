@@ -1,0 +1,1 @@
+ALTER TABLE consulta_chip ADD COLUMN IF NOT EXISTS clase text NOT NULL DEFAULT 'chip';

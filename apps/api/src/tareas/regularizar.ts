@@ -3,7 +3,7 @@ import { AlmacenCorreo } from '../buzon/almacen';
 import type { Conexiones } from '../conexiones';
 import { cierreFabricacion, fragmentosDeTexto, identificarChips, imeisDeTexto, textoChip, type ChipHallado } from '../bot/lectura-chip';
 import { asumirZgru, claseDe, proponerImagen, textoDeImagen, type ClaseCodigo } from '../bot/proceso-imagen';
-import { corregirEquipo, guardarChip, type HiloAtencion } from './hilos';
+import { corregirEquipo, guardarChip, guardarModem, type HiloAtencion } from './hilos';
 
 export type FotoRegularizar = { nombre: string; mime: string; contenido: Buffer };
 export type AutorRegularizar = { correo: string; nombre: string };
@@ -68,6 +68,42 @@ export async function registrarEquipo(
   const hilo = await corregirEquipo(conexiones.pg, hiloId, clase === 'contenedor' ? { contenedor: codigo } : { maquina: codigo });
   const nombre = clase === 'contenedor' ? 'contenedor' : 'máquina';
   await anotar(conexiones, tareaId, autor, `Regularización. El técnico registró la ${nombre} ${codigo}.`, foto, canal);
+  return hilo;
+}
+
+export async function registrarModem(
+  conexiones: Conexiones,
+  hiloId: string,
+  tareaId: string,
+  datos: { serie?: string; imei?: string },
+  autor: AutorRegularizar,
+  foto: FotoRegularizar | null,
+  origen: 'almacén' | 'técnico',
+  canal: 'web' | 'whatsapp',
+): Promise<HiloAtencion> {
+  const filas = await conexiones.pg.query<HiloAtencion>(
+    `SELECT id, tarea_id, orden, estado, lleva_telemetria, contenedor, maquina, despacho_texto, chip_imei, chip_celular, chip_estado, despacho_validado, modem_serie, modem_imei
+     FROM hilo_atencion WHERE id = $1`,
+    [hiloId],
+  );
+  const actual = filas.rows[0];
+  if (!actual) throw new Error('Ese hilo ya no está.');
+  const serieNueva = (datos.serie ?? '').trim();
+  const imeiNuevo = (datos.imei ?? '').replace(/\D/g, '');
+  const hilo =
+    serieNueva || imeiNuevo
+      ? await guardarModem(conexiones.pg, hiloId, serieNueva, imeiNuevo)
+      : actual;
+  const serie = (hilo.modem_serie ?? '').trim();
+  const imei = (hilo.modem_imei ?? '').trim();
+  const senal = imei ? ` IMEI ${imei}.` : '';
+  const quien = origen === 'técnico' ? 'El técnico' : 'Almacén';
+  const detalle =
+    serieNueva || imeiNuevo
+      ? `Hilo ${hilo.orden}. ${quien} registró el módulo 4G${serie ? ` SN ${serie}` : ''}.${senal} Quedó en el hilo.`
+      : `Hilo ${hilo.orden}. ${quien} adjuntó la foto del módulo 4G${serie || imei ? ` (${[serie && `SN ${serie}`, imei && `IMEI ${imei}`].filter(Boolean).join(' · ')})` : ''}.`;
+  if (!serieNueva && !imeiNuevo && !foto) throw new Error('Escribe el SN o el IMEI del módulo 4G, o sube la foto.');
+  await anotar(conexiones, tareaId, autor, detalle, foto, canal);
   return hilo;
 }
 

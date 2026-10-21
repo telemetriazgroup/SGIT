@@ -179,14 +179,18 @@ export class BotController {
   @Post('bot/entrar')
   async entrar(
     @Headers('x-bot-clave') clave: string | undefined,
-    @Body() cuerpo: { telefono?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string } },
+    @Body() cuerpo: { telefono?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string }; archivos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
   ) {
     this.exigirBot(clave);
     if (!cuerpo?.telefono?.trim()) throw new BadRequestException('Indica el teléfono.');
     const archivo = cuerpo.archivo?.contenido
       ? { nombre: cuerpo.archivo.nombre ?? 'foto', mime: cuerpo.archivo.mime ?? '', contenido: Buffer.from(cuerpo.archivo.contenido, 'base64') }
       : null;
-    return this.bot.recibir(cuerpo.telefono, cuerpo.texto ?? '', archivo, this.tareas);
+    const extras = (cuerpo.archivos ?? [])
+      .filter((item) => item.contenido)
+      .slice(0, 5)
+      .map((item) => ({ nombre: item.nombre ?? 'foto', mime: item.mime ?? '', contenido: Buffer.from(item.contenido ?? '', 'base64') }));
+    return this.bot.recibir(cuerpo.telefono, cuerpo.texto ?? '', archivo, this.tareas, extras);
   }
 
   private async exigir(autorizacion?: string) {

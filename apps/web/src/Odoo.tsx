@@ -5,6 +5,8 @@ type ConfiguracionOdoo = {
   db: string;
   usuario: string;
   clavePuesta: boolean;
+  sesionUsuario: string;
+  sesionClavePuesta: boolean;
   modeloVenta: string;
   campoCot: string;
   modeloTarea: string;
@@ -17,6 +19,9 @@ export function PanelOdoo({ apiUrl, token }: { apiUrl: string; token: string }) 
   const [usuario, setUsuario] = useState('');
   const [clave, setClave] = useState('');
   const [clavePuesta, setClavePuesta] = useState(false);
+  const [sesionUsuario, setSesionUsuario] = useState('');
+  const [sesionClave, setSesionClave] = useState('');
+  const [sesionClavePuesta, setSesionClavePuesta] = useState(false);
   const [modeloVenta, setModeloVenta] = useState('sale.order');
   const [campoCot, setCampoCot] = useState('name');
   const [modeloTarea, setModeloTarea] = useState('project.task');
@@ -36,6 +41,9 @@ export function PanelOdoo({ apiUrl, token }: { apiUrl: string; token: string }) 
     setUsuario(config.usuario);
     setClave('');
     setClavePuesta(config.clavePuesta);
+    setSesionUsuario(config.sesionUsuario || '');
+    setSesionClave('');
+    setSesionClavePuesta(config.sesionClavePuesta);
     setModeloVenta(config.modeloVenta || 'sale.order');
     setCampoCot(config.campoCot || 'name');
     setModeloTarea(config.modeloTarea || 'project.task');
@@ -43,7 +51,7 @@ export function PanelOdoo({ apiUrl, token }: { apiUrl: string; token: string }) 
   }
 
   function cuerpo() {
-    return { url, db, usuario, clave, modeloVenta, campoCot, modeloTarea };
+    return { url, db, usuario, clave, sesionUsuario, sesionClave, modeloVenta, campoCot, modeloTarea };
   }
 
   async function guardar(evento: FormEvent) {
@@ -114,6 +122,22 @@ export function PanelOdoo({ apiUrl, token }: { apiUrl: string; token: string }) 
         <label htmlFor="odoo-tarea">
           Servicio externo
           <input id="odoo-tarea" value={modeloTarea} onChange={(evento) => setModeloTarea(evento.target.value)} />
+        </label>
+        <p className="bajada ancho">Para bajar el reporte PDF hace falta un usuario con clave normal. La clave de API no abre ese archivo. Si la clave ya está guardada, déjala en blanco.</p>
+        <label htmlFor="odoo-sesion-usuario">
+          Usuario del reporte
+          <input id="odoo-sesion-usuario" value={sesionUsuario} onChange={(evento) => setSesionUsuario(evento.target.value)} autoComplete="off" />
+        </label>
+        <label htmlFor="odoo-sesion-clave">
+          Clave del reporte
+          <input
+            id="odoo-sesion-clave"
+            type="password"
+            value={sesionClave}
+            placeholder={sesionClavePuesta ? 'Dejar en blanco para conservar' : ''}
+            onChange={(evento) => setSesionClave(evento.target.value)}
+            autoComplete="new-password"
+          />
         </label>
         <p className="bajada">El pedido es sale.order y el servicio externo es project.task, como en la cotización y en el ticket. Si Odoo no los cambió, déjalos así.</p>
         <div className="bitacora-acciones">

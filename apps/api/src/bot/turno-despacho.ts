@@ -10,6 +10,7 @@ import {
   momentosDeEnvio,
   textoApertura,
   textoAvisoAsignacion,
+  preguntaHilosPendientes,
   textoFichaDespacho,
   textoReconsultaDespacho,
   type DatosAviso,
@@ -474,11 +475,32 @@ export class TurnoDespacho {
     };
   }
 
+  async procesarImagenes(tareaId: string): Promise<string> {
+    const paquete = await this.paquete(tareaId);
+    if (!paquete) return 'Despacho todavía no respondió esta cotización.';
+    if (paquete.imagenes.length === 0) return 'Esta respuesta no tiene imágenes.';
+    const imagenes = await this.pg.query<{ id: string; clave: string; mime: string; nombre: string; codigo_ocr: string | null; codigo_firme: string | null; tipo_ocr: string | null }>(
+      `SELECT id, clave, mime, nombre, codigo_ocr, codigo_firme, tipo_ocr FROM asignacion_archivo WHERE asignacion_id = $1 ORDER BY creado_en`,
+      [paquete.id],
+    );
+    const pendientes = imagenes.rows.filter((imagen) => !imagen.codigo_ocr?.trim() && !imagen.codigo_firme?.trim());
+    if (pendientes.length === 0) return 'Esas imágenes ya tienen lectura. Escribe el número si quieres corregir una.';
+    await this.leerCodigos(imagenes.rows);
+    const luego = await this.pg.query<{ codigo_ocr: string | null; codigo_firme: string | null }>(
+      `SELECT codigo_ocr, codigo_firme FROM asignacion_archivo WHERE id = ANY($1::uuid[])`,
+      [pendientes.map((imagen) => imagen.id)],
+    );
+    const siguen = luego.rows.filter((imagen) => !imagen.codigo_ocr?.trim() && !imagen.codigo_firme?.trim()).length;
+    if (siguen === pendientes.length) return 'El lector no devolvió códigos. Escribe procesar para intentarlo otra vez.';
+    if (siguen > 0) return `Procesé las imágenes. ${siguen} siguen sin código legible.`;
+    return 'Procesé las imágenes.';
+  }
+
   async aceptarLecturas(tareaId: string, actor: string): Promise<string> {
     const paquete = await this.paquete(tareaId);
     if (!paquete) return 'Despacho todavía no respondió esta cotización.';
-    const imagenes = await this.pg.query<{ id: string; codigo_ocr: string | null; codigo_firme: string | null; tipo_ocr: string | null }>(
-      `SELECT id, codigo_ocr, codigo_firme, tipo_ocr FROM asignacion_archivo WHERE asignacion_id = $1 ORDER BY creado_en`,
+    const imagenes = await this.pg.query<{ id: string; codigo_ocr: string | null; codigo_firme: string | null; tipo_ocr: string | null; orden: number }>(
+      `SELECT id, codigo_ocr, codigo_firme, tipo_ocr, COALESCE(orden_equipo, 1) AS orden FROM asignacion_archivo WHERE asignacion_id = $1 ORDER BY creado_en`,
       [paquete.id],
     );
     for (const imagen of imagenes.rows) {
@@ -489,8 +511,7 @@ export class TurnoDespacho {
       if (firme !== imagen.codigo_firme) {
         await this.pg.query(`UPDATE asignacion_archivo SET codigo_firme = $2 WHERE id = $1`, [imagen.id, firme]);
       }
-      if (clase === 'contenedor') await this.pg.query(`UPDATE tarea SET codigo_equipo = $2 WHERE id = $1`, [tareaId, firme]);
-      if (clase === 'serie') await this.pg.query(`UPDATE tarea SET maquina_equipo = $2 WHERE id = $1`, [tareaId, firme]);
+      await this.ponerEnHilo(tareaId, imagen.orden, clase, firme);
     }
     await this.pg.query(
       `UPDATE asignacion_despacho SET validacion = 'validada', validada_en = now() WHERE id = $1`,
@@ -519,8 +540,8 @@ export class TurnoDespacho {
   }
 
   async corregir(tareaId: string, indice: number, codigo: string, actor = 'técnico'): Promise<string> {
-    const fila = await this.pg.query<{ id: string; codigo_ocr: string | null; tipo_ocr: string | null; imagen_externa: string | null }>(
-      `SELECT f.id, f.codigo_ocr, f.tipo_ocr, f.imagen_externa
+    const fila = await this.pg.query<{ id: string; codigo_ocr: string | null; tipo_ocr: string | null; imagen_externa: string | null; orden: number }>(
+      `SELECT f.id, f.codigo_ocr, f.tipo_ocr, f.imagen_externa, COALESCE(f.orden_equipo, 1) AS orden
        FROM asignacion_archivo f
        JOIN asignacion_despacho a ON a.id = f.asignacion_id
        WHERE a.tarea_id = $1 AND a.estado = 'confirmada'
@@ -544,8 +565,7 @@ export class TurnoDespacho {
         [imagen.codigo_ocr, firme, tipo],
       );
     }
-    if (clase === 'contenedor') await this.pg.query(`UPDATE tarea SET codigo_equipo = $2 WHERE id = $1`, [tareaId, firme]);
-    if (clase === 'serie') await this.pg.query(`UPDATE tarea SET maquina_equipo = $2 WHERE id = $1`, [tareaId, firme]);
+    await this.ponerEnHilo(tareaId, imagen.orden, clase, firme);
     const aprendio = imagen.imagen_externa ? await confirmarImagen(imagen.imagen_externa, firme, tipo) : false;
     const nombre = clase === 'contenedor' ? 'contenedor' : clase === 'serie' ? 'serie de máquina' : 'código';
     const anterior = imagen.codigo_ocr || 'sin lectura';
@@ -553,6 +573,17 @@ export class TurnoDespacho {
     return aprendio
       ? `Quedó ${nombre} ${firme}. ProcesoImagen guardó la corrección para afinar la siguiente lectura.`
       : `Quedó ${nombre} ${firme}. La corrección quedó en la ficha.`;
+  }
+
+  private async ponerEnHilo(tareaId: string, orden: number, clase: 'contenedor' | 'serie' | 'otro', firme: string): Promise<void> {
+    if (clase === 'contenedor') {
+      await this.pg.query(`UPDATE tarea SET codigo_equipo = $2 WHERE id = $1`, [tareaId, firme]);
+      await this.pg.query(`UPDATE hilo_atencion SET contenedor = $3 WHERE tarea_id = $1 AND orden = $2`, [tareaId, orden, firme]);
+    }
+    if (clase === 'serie') {
+      await this.pg.query(`UPDATE tarea SET maquina_equipo = $2 WHERE id = $1`, [tareaId, firme]);
+      await this.pg.query(`UPDATE hilo_atencion SET maquina = $3 WHERE tarea_id = $1 AND orden = $2`, [tareaId, orden, firme]);
+    }
   }
 
   async leerImagen(archivoId: string): Promise<{ nombre: string; mime: string; contenido: Buffer } | null> {
@@ -564,6 +595,39 @@ export class TurnoDespacho {
     if (!archivo) return null;
     const contenido = await new AlmacenCorreo(this.conexiones).leer(archivo.clave);
     return { nombre: archivo.nombre, mime: archivo.mime, contenido };
+  }
+
+  async encolarHilos(tareaId: string, pendientes: number): Promise<'encolada' | 'en_curso' | 'sin_coordinador'> {
+    const pregunta = preguntaHilosPendientes(pendientes);
+    const abierta = await this.pg.query<{ id: string; estado: string }>(
+      `SELECT id, estado FROM turno_despacho
+       WHERE tarea_id = $1 AND estado IN ('en_cola', 'en_curso', 'reconsulta')
+       ORDER BY abierto_en DESC LIMIT 1`,
+      [tareaId],
+    );
+    const fila = abierta.rows[0];
+    if (fila?.estado === 'en_curso' || fila?.estado === 'reconsulta') {
+      await this.pg.query(`UPDATE turno_despacho SET pregunta = $2 WHERE id = $1`, [fila.id, pregunta]);
+      if ((await this.coordinadores()).length === 0) return 'sin_coordinador';
+      return fila.estado === 'en_curso' ? 'en_curso' : 'encolada';
+    }
+    if (fila) {
+      await this.pg.query(`UPDATE turno_despacho SET estado = 'en_cola', pregunta = $2, telefono_dueno = NULL WHERE id = $1`, [fila.id, pregunta]);
+    } else {
+      try {
+        await this.pg.query(
+          `INSERT INTO turno_despacho (id, tarea_id, estado, pregunta, abierto_en) VALUES ($1, $2, 'en_cola', $3, now())`,
+          [randomUUID(), tareaId, pregunta],
+        );
+      } catch (error) {
+        if ((error as { code?: string }).code !== '23505') throw error;
+        await this.pg.query(
+          `UPDATE turno_despacho SET pregunta = $2 WHERE tarea_id = $1 AND estado IN ('en_cola', 'reconsulta')`,
+          [tareaId, pregunta],
+        );
+      }
+    }
+    return (await this.coordinadores()).length ? 'encolada' : 'sin_coordinador';
   }
 
   async consultarAhora(tareaId: string, pregunta: string, equipo = 1): Promise<'avisado' | 'ocupado' | 'sin_coordinador'> {
@@ -794,10 +858,20 @@ export class TurnoDespacho {
       }
       await this.pg.query(
         `INSERT INTO charla (telefono, paso, tarea_id, lista, pendiente, actualizado_en)
-         VALUES ($1, 'corroborar_lectura', $2, '[]'::jsonb, '{"origen":"aviso"}'::jsonb, now())
+         VALUES ($1, 'corroborar_lectura', $2, '[]'::jsonb, '{"origen":"aviso","corte":"aviso"}'::jsonb, now())
          ON CONFLICT (telefono) DO UPDATE
            SET paso = 'corroborar_lectura', tarea_id = EXCLUDED.tarea_id, lista = '[]'::jsonb,
-               pendiente = EXCLUDED.pendiente, actualizado_en = now()`,
+               pendiente = CASE
+                 WHEN charla.tarea_id = EXCLUDED.tarea_id AND charla.pendiente ? 'hiloId'
+                 THEN jsonb_strip_nulls(jsonb_build_object(
+                   'origen', 'aviso',
+                   'corte', 'aviso',
+                   'hiloId', charla.pendiente->>'hiloId',
+                   'zona', charla.pendiente->>'zona'
+                 ))
+                 ELSE EXCLUDED.pendiente
+               END,
+               actualizado_en = now()`,
         [destino.telefono, asignacion.tarea_id],
       );
       avisados += 1;

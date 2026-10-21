@@ -48,11 +48,12 @@ export function crearClienteBot(base: string, clave: string) {
       telefono: string,
       texto: string,
       archivo: { nombre: string; mime: string; contenido: string } | null,
+      archivos: Array<{ nombre: string; mime: string; contenido: string }> = [],
     ): Promise<{ respuesta: string; archivo?: { nombre: string; mime: string; contenido: string } | null }> {
       const respuesta = await fetch(`${base}/bot/entrar`, {
         method: 'POST',
         headers: cabeza,
-        body: JSON.stringify({ telefono, texto, archivo }),
+        body: JSON.stringify({ telefono, texto, archivo, archivos }),
       });
       if (!respuesta.ok) return { respuesta: '' };
       return (await respuesta.json()) as { respuesta: string; archivo?: { nombre: string; mime: string; contenido: string } | null };
