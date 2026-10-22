@@ -300,6 +300,8 @@ type MensajeEntrante = {
     _serialized?: string;
     $1?: string;
   };
+  mimetype?: string;
+  filename?: string;
   downloadMedia: () => Promise<{ data: string; mimetype?: string; filename?: string | null } | undefined>;
   reload?: () => Promise<unknown>;
   getContact: () => Promise<{ number?: string }>;
@@ -367,22 +369,139 @@ function esperar(ms: number): Promise<void> {
   return new Promise((resolver) => setTimeout(resolver, ms));
 }
 
+function pareceDocumento(mensaje: MensajeEntrante): boolean {
+  if (mensaje.type === 'document') return true;
+  const mime = (mensaje.mimetype || '').toLowerCase();
+  if (mime.includes('pdf')) return true;
+  return (mensaje.filename || '').toLowerCase().endsWith('.pdf');
+}
+
 async function bajarPdf(mensaje: MensajeEntrante): Promise<{ archivo: { nombre: string; mime: string; contenido: string } | null; grande: boolean; fallo: boolean } | null> {
-  if (mensaje.type !== 'document' || !mensaje.hasMedia) return null;
+  if (!pareceDocumento(mensaje)) return null;
+  const identidad = identidadMensaje(mensaje);
+  let ultimoError = '';
+  for (let intento = 0; intento < 3; intento += 1) {
+    const media = await bajarPdfEnPagina(identidad);
+    if (media?.data) {
+      const listo = clasificarPdf(media.data, media.filename || mensaje.filename || mensaje.body || 'documento.pdf');
+      if (listo) return listo;
+      ultimoError = 'los bytes no son un pdf';
+    } else if (media?.error) {
+      ultimoError = media.error;
+    }
+    await esperar(800);
+  }
+  console.error(`SGIT bot: no pude leer el PDF. tipo=${mensaje.type || '-'} ${ultimoError || 'sin bytes'}`);
+  return { archivo: null, grande: false, fallo: true };
+}
+
+function clasificarPdf(data: string, nombre: string): { archivo: { nombre: string; mime: string; contenido: string } | null; grande: boolean; fallo: boolean } | null {
+  const bytes = Buffer.from(data, 'base64');
+  if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') return null;
+  if (bytes.length > 5 * 1024 * 1024) return { archivo: null, grande: true, fallo: false };
+  const limpio = nombre.replace(/[\r\n"]/g, '').trim() || 'documento.pdf';
+  const archivo = limpio.toLowerCase().endsWith('.pdf') ? limpio : `${limpio}.pdf`;
+  return { archivo: { nombre: archivo, mime: 'application/pdf', contenido: data }, grande: false, fallo: false };
+}
+
+const leerPdfEnWhatsapp = new Function(
+  'clave',
+  `return (async () => {
+    function fallo(error) {
+      if (!error) return 'no se pudo leer';
+      return (error.name ? error.name + ': ' : '') + (error.message || String(error));
+    }
+    function serie(valor) {
+      if (!valor) return '';
+      return valor._serialized || valor.$1 || '';
+    }
+    function esPdf(buffer) {
+      var b = new Uint8Array(buffer);
+      return b.length >= 5 && b[0] === 37 && b[1] === 80 && b[2] === 68 && b[3] === 70 && b[4] === 45;
+    }
+    async function buscar() {
+      var coleccion = window.require('WAWebCollections').Msg;
+      var candidatos = [];
+      if (clave.serial) candidatos.push(clave.serial);
+      if (clave.remote && clave.id) candidatos.push((clave.fromMe ? 'true' : 'false') + '_' + clave.remote + '_' + clave.id);
+      try {
+        var fabrica = window.require('WAWebWidFactory');
+        if (clave.remote && fabrica.createWid && clave.id) {
+          candidatos.push({ fromMe: clave.fromMe, remote: fabrica.createWid(clave.remote), id: clave.id, _serialized: clave.serial });
+        }
+      } catch (error) {}
+      for (var i = 0; i < candidatos.length; i++) {
+        try {
+          var directo = coleccion.get(candidatos[i]);
+          if (directo) return directo;
+        } catch (error) {}
+        try {
+          var hallados = await coleccion.getMessagesById([candidatos[i]]);
+          if (hallados && hallados.messages && hallados.messages[0]) return hallados.messages[0];
+        } catch (error) {}
+      }
+      var modelos = (coleccion.getModelsArray && coleccion.getModelsArray()) || coleccion.models || [];
+      for (var j = 0; j < modelos.length; j++) {
+        var suyo = serie(modelos[j].id);
+        if (suyo && (suyo === clave.serial || (clave.id && suyo.slice(-clave.id.length - 1) === '_' + clave.id))) return modelos[j];
+      }
+      return null;
+    }
+    async function empaquetar(buffer, nombre) {
+      if (!esPdf(buffer)) return { data: '', filename: '', error: 'los bytes no son un pdf' };
+      var data = await window.WWebJS.arrayBufferToBase64Async(buffer);
+      return { data: data, filename: String(nombre || ''), error: '' };
+    }
+    try {
+      var msg = await buscar();
+      if (!msg) return { data: '', filename: '', error: 'mensaje no encontrado' };
+      if (msg.downloadMedia && msg.mediaData && String((msg.mediaData && msg.mediaData.mediaStage) || '') !== 'RESOLVED') {
+        try {
+          await msg.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1, isUserInitiated: true });
+        } catch (error) {}
+      }
+      var hash = (msg.mediaObject && msg.mediaObject.filehash) || msg.filehash || '';
+      var blob = null;
+      try {
+        var modulo = window.require('WAWebMediaInMemoryBlobCache');
+        var cache = modulo.InMemoryMediaBlobCache || modulo;
+        if (hash && cache && cache.get) blob = cache.get(hash) || null;
+      } catch (error) {}
+      if (!blob && msg.mediaObject && msg.mediaObject.mediaBlob && msg.mediaObject.mediaBlob.forceToBlob) {
+        try { blob = msg.mediaObject.mediaBlob.forceToBlob(); } catch (error) {}
+      }
+      var nombre = String(msg.filename || msg.body || '');
+      if (blob && blob.arrayBuffer) {
+        var previo = await blob.arrayBuffer();
+        if (esPdf(previo)) return empaquetar(previo, nombre);
+      }
+      if (!msg.directPath || !msg.mediaKey) return { data: '', filename: nombre, error: 'sin ruta del pdf' };
+      var marca = { addAnnotations: function () { return this; }, addPoint: function () { return this; } };
+      var descifrado = await window.require('WAWebDownloadManager').downloadManager.downloadAndMaybeDecrypt({
+        directPath: msg.directPath,
+        encFilehash: msg.encFilehash,
+        filehash: msg.filehash,
+        mediaKey: msg.mediaKey,
+        mediaKeyTimestamp: msg.mediaKeyTimestamp,
+        type: msg.type || 'document',
+        mimetype: 'application/pdf',
+        signal: new AbortController().signal,
+        downloadQpl: marca
+      });
+      return empaquetar(descifrado, nombre);
+    } catch (error) {
+      return { data: '', filename: '', error: fallo(error) };
+    }
+  })();`,
+) as (clave: { fromMe: boolean; remote: string; id: string; serial: string }) => Promise<{ data: string; filename: string; error: string }>;
+
+async function bajarPdfEnPagina(identidad: { fromMe: boolean; remote: string; id: string; serial: string }): Promise<{ data: string; filename: string; error: string } | null> {
+  const pagina = cliente.pupPage;
+  if (!pagina || (!identidad.serial && !identidad.id)) return { data: '', filename: '', error: 'sin identificador' };
   try {
-    const media = await mensaje.downloadMedia();
-    if (!media?.data) return { archivo: null, grande: false, fallo: true };
-    const nombre = (media.filename || 'documento.pdf').trim();
-    const mime = (media.mimetype || '').toLowerCase();
-    const bytes = Buffer.from(media.data, 'base64');
-    const es = mime.includes('pdf') || nombre.toLowerCase().endsWith('.pdf') || bytes.subarray(0, 5).toString('ascii') === '%PDF-';
-    if (!es) return null;
-    if (bytes.length > 5 * 1024 * 1024) return { archivo: null, grande: true, fallo: false };
-    const archivo = nombre.toLowerCase().endsWith('.pdf') ? nombre : `${nombre}.pdf`;
-    return { archivo: { nombre: archivo, mime: 'application/pdf', contenido: media.data }, grande: false, fallo: false };
+    return await pagina.evaluate(leerPdfEnWhatsapp, identidad);
   } catch (error) {
-    console.error(`SGIT bot: no pude leer el PDF. ${detalle(error)}`);
-    return { archivo: null, grande: false, fallo: true };
+    return { data: '', filename: '', error: detalle(error) };
   }
 }
 
