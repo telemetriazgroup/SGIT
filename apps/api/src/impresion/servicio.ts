@@ -19,6 +19,7 @@ export type ImpresionRealizada = {
   telefono: string;
   autor: string;
   creadoEn: string;
+  guardado: boolean;
 };
 
 export class ImpresionServicio {
@@ -74,9 +75,10 @@ export class ImpresionServicio {
       respuesta: string;
       telefono: string;
       autor: string;
+      clave: string;
       creado_en: Date;
     }>(
-      `SELECT id, via, nombre, estado, respuesta, telefono, autor, creado_en
+      `SELECT id, via, nombre, estado, respuesta, telefono, autor, clave, creado_en
        FROM impresion_realizada
        ORDER BY creado_en DESC
        LIMIT 40`,
@@ -90,14 +92,15 @@ export class ImpresionServicio {
       telefono: fila.telefono,
       autor: fila.autor,
       creadoEn: new Date(fila.creado_en).toISOString(),
+      guardado: Boolean(fila.clave),
     }));
   }
 
-  async anotarSinArchivo(telefono: string): Promise<void> {
+  async anotarSinArchivo(telefono: string, nombre = ''): Promise<void> {
     await this.anotar({
       id: randomUUID(),
       via: 'whatsapp',
-      nombre: '',
+      nombre: nombre.replace(/[\r\n"]/g, '').trim().slice(0, 180),
       clave: '',
       externalId: '',
       estado: 'sin_archivo',
@@ -105,6 +108,19 @@ export class ImpresionServicio {
       telefono,
       autor: '',
     });
+  }
+
+  async leerArchivo(id: string): Promise<{ nombre: string; contenido: Buffer } | null> {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+    const filas = await this.conexiones.pg.query<{ clave: string; nombre: string }>(
+      `SELECT clave, nombre FROM impresion_realizada WHERE id = $1`,
+      [id],
+    );
+    const fila = filas.rows[0];
+    if (!fila?.clave) return null;
+    const contenido = await new AlmacenCorreo(this.conexiones).leer(fila.clave);
+    if (!esPdf(contenido)) return null;
+    return { nombre: fila.nombre || 'documento.pdf', contenido };
   }
 
   async enviar(pdf: Buffer, nombre: string, externalId: string, contexto: ContextoImpresion = { via: 'web' }): Promise<string> {

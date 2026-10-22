@@ -2536,7 +2536,7 @@ export class BotService {
     if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(telefono, charla);
     if (/^(menu|menú|0)$/i.test(limpio) && !archivo) return this.abrirMenu(telefono);
     if (!archivo || !esPdf(archivo.contenido)) {
-      if (!limpio || /\.pdf$/i.test(limpio) || archivo) await new ImpresionServicio(this.conexiones).anotarSinArchivo(telefono);
+      if (!limpio || /\.pdf$/i.test(limpio) || archivo) await new ImpresionServicio(this.conexiones).anotarSinArchivo(telefono, limpio);
       return this.dejar(telefono, true, 'Manda el documento PDF. Escribe menu para volver sin imprimir.');
     }
     const texto = await new ImpresionServicio(this.conexiones).enviar(archivo.contenido, archivo.nombre || 'documento.pdf', `sgit-whatsapp-${Date.now()}`, { via: 'whatsapp', telefono });

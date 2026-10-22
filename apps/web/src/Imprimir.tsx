@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 
 type Configuracion = { baseUrl: string; clavePuesta: boolean };
-type Realizada = { id: string; via: 'whatsapp' | 'web' | 'orden'; nombre: string; estado: string; respuesta: string; telefono: string; autor: string; creadoEn: string };
+type Realizada = { id: string; via: 'whatsapp' | 'web' | 'orden'; nombre: string; estado: string; respuesta: string; telefono: string; autor: string; creadoEn: string; guardado: boolean };
 
 export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string }) {
   const [baseUrl, setBaseUrl] = useState('');
@@ -11,6 +11,7 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
   const [aviso, setAviso] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const [realizadas, setRealizadas] = useState<Realizada[]>([]);
+  const [vista, setVista] = useState<string | null>(null);
 
   useEffect(() => {
     void pedir<Configuracion>(apiUrl, token, '/impresion/configuracion')
@@ -23,6 +24,12 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
     const reloj = window.setInterval(() => void cargarRealizadas(), 8000);
     return () => window.clearInterval(reloj);
   }, [apiUrl, token]);
+
+  useEffect(() => {
+    if (vista) return;
+    const primera = realizadas.find((item) => item.guardado);
+    if (primera) setVista(primera.id);
+  }, [realizadas, vista]);
 
   function cargarRealizadas() {
     return pedir<Realizada[]>(apiUrl, token, '/impresion/realizadas')
@@ -162,6 +169,15 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
               </div>
               <p>{[item.nombre, item.autor, item.telefono].filter(Boolean).join(' · ')}</p>
               <p>{item.respuesta}</p>
+              {item.guardado ? (
+                vista === item.id ? (
+                  <VistaPdf apiUrl={apiUrl} token={token} id={item.id} />
+                ) : (
+                  <button type="button" onClick={() => setVista(item.id)}>
+                    Ver PDF
+                  </button>
+                )
+              ) : null}
             </li>
           ))}
         </ol>
@@ -198,6 +214,28 @@ async function pedir<T>(apiUrl: string, token: string, ruta: string, init?: Requ
 
 function texto(error: unknown): string {
   return error instanceof Error ? error.message : 'No se pudo completar la operación.';
+}
+
+function VistaPdf({ apiUrl, token, id }: { apiUrl: string; token: string; id: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let vigente = true;
+    let objeto = '';
+    void fetch(`${apiUrl}/impresion/realizadas/${id}/archivo`, { headers: { authorization: `Bearer ${token}` } })
+      .then((respuesta) => (respuesta.ok ? respuesta.blob() : null))
+      .then((blob) => {
+        if (!blob || !vigente) return;
+        objeto = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+        setUrl(objeto);
+      })
+      .catch(() => undefined);
+    return () => {
+      vigente = false;
+      if (objeto) URL.revokeObjectURL(objeto);
+    };
+  }, [apiUrl, token, id]);
+  if (!url) return <p className="bajada">Cargando la vista previa…</p>;
+  return <iframe className="vista-pdf" title="Vista previa del PDF" src={url} />;
 }
 
 function etiquetaVia(via: Realizada['via']): string {

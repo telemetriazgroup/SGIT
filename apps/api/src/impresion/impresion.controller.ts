@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Headers, Inject, Post, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Headers, Inject, NotFoundException, Param, Post, StreamableFile, UnauthorizedException } from '@nestjs/common';
 import { Conexiones } from '../conexiones';
 import { IdentidadService } from '../identidad/identidad.service';
 import { esPdf } from './reglas';
@@ -33,6 +33,14 @@ export class ImpresionController {
   async realizadas(@Headers('authorization') autorizacion?: string) {
     await this.exigir(autorizacion);
     return new ImpresionServicio(this.conexiones).realizadas();
+  }
+
+  @Get('realizadas/:id/archivo')
+  async archivo(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    await this.exigir(autorizacion);
+    const archivo = await new ImpresionServicio(this.conexiones).leerArchivo(id);
+    if (!archivo) throw new NotFoundException('Ese PDF no está guardado.');
+    return new StreamableFile(archivo.contenido, { type: 'application/pdf', disposition: `inline; filename="${archivo.nombre.replace(/"/g, '')}"` });
   }
 
   @Post('enviar')

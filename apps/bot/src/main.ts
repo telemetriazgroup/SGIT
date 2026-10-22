@@ -302,6 +302,7 @@ type MensajeEntrante = {
   };
   mimetype?: string;
   filename?: string;
+  rawData?: { type?: string; mimetype?: string; filename?: string; caption?: string; body?: string; directPath?: string };
   downloadMedia: () => Promise<{ data: string; mimetype?: string; filename?: string | null } | undefined>;
   reload?: () => Promise<unknown>;
   getContact: () => Promise<{ number?: string }>;
@@ -369,15 +370,49 @@ function esperar(ms: number): Promise<void> {
   return new Promise((resolver) => setTimeout(resolver, ms));
 }
 
+function datosDe(mensaje: MensajeEntrante): { type: string; mimetype: string; filename: string; caption: string; body: string } {
+  const crudo = mensaje.rawData ?? {};
+  return {
+    type: mensaje.type || crudo.type || '',
+    mimetype: mensaje.mimetype || crudo.mimetype || '',
+    filename: mensaje.filename || crudo.filename || '',
+    caption: crudo.caption || '',
+    body: mensaje.body || crudo.body || '',
+  };
+}
+
 function pareceDocumento(mensaje: MensajeEntrante): boolean {
-  if (mensaje.type === 'document') return true;
-  const mime = (mensaje.mimetype || '').toLowerCase();
-  if (mime.includes('pdf')) return true;
-  return (mensaje.filename || '').toLowerCase().endsWith('.pdf');
+  const datos = datosDe(mensaje);
+  const mime = datos.mimetype.toLowerCase();
+  const nombre = datos.filename || datos.body || datos.caption;
+  if (mime.includes('pdf') || nombre.trim().toLowerCase().endsWith('.pdf')) return true;
+  if (datos.type.toLowerCase() !== 'document') return false;
+  return !mime || mime.includes('pdf');
 }
 
 async function bajarPdf(mensaje: MensajeEntrante): Promise<{ archivo: { nombre: string; mime: string; contenido: string } | null; grande: boolean; fallo: boolean } | null> {
   if (!pareceDocumento(mensaje)) return null;
+  const datos = datosDe(mensaje);
+  const nombre = datos.filename || datos.body || datos.caption || 'documento.pdf';
+  console.error(`SGIT bot: llegó un PDF. tipo=${datos.type || '-'} hasMedia=${mensaje.hasMedia} archivo=${nombre}`);
+  if (!mensaje.hasMedia && mensaje.reload) {
+    try {
+      await mensaje.reload();
+    } catch (error) {
+      console.error(`SGIT bot: no pude recargar el PDF. ${detalle(error)}`);
+    }
+  }
+  if (mensaje.downloadMedia) {
+    try {
+      const media = await mensaje.downloadMedia();
+      if (media?.data) {
+        const listo = clasificarPdf(media.data, media.filename || nombre);
+        if (listo) return listo;
+      }
+    } catch (error) {
+      console.error(`SGIT bot: la descarga del PDF falló. ${detalle(error)}`);
+    }
+  }
   const identidad = identidadMensaje(mensaje);
   let ultimoError = '';
   for (let intento = 0; intento < 3; intento += 1) {
