@@ -42,6 +42,10 @@ import {
   preguntaSiEsTodo,
   salioDeCot,
   preguntaHilosPendientes,
+  atajoDeLista,
+  type AtajoMenu,
+  pieListaCoti,
+  textoCuentaHilos,
   textoColaHilos,
   textoReprogramacion,
   silencioDespacho,
@@ -131,6 +135,8 @@ type Pendiente = {
   candidatos?: string[];
   imeis?: string[];
   vuelve?: 'almacen' | 'instalacion' | 'validar';
+  cotis?: string[];
+  listaPaso?: 'recientes' | 'resultados';
 };
 type Charla = { paso: Paso; tarea_id: string | null; lista: string[]; pendiente: Pendiente | null };
 type ArchivoSalida = { nombre: string; mime: string; contenido: string };
@@ -143,6 +149,7 @@ type TareaBreve = {
   campana?: boolean;
   despacho_fecha?: string | null;
   despacho_hora?: string | null;
+  hilos?: number;
 };
 type NotaBreve = {
   id: string;
@@ -406,7 +413,13 @@ export class BotService {
   async guardarTelefono(correo: string, telefono: string): Promise<void> {
     const limpio = digitos(telefono);
     if (limpio && (limpio.length < 8 || limpio.length > 15)) throw new BadRequestException('El teléfono tiene entre 8 y 15 dígitos.');
-    const resultado = await this.conexiones.pg.query(`UPDATE usuario SET telefono = $2 WHERE correo = $1`, [correo.trim().toLowerCase(), limpio || null]);
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE usuario
+       SET telefono = $2,
+           consulta_despacho = CASE WHEN rol = 'despacho' THEN $2 IS NOT NULL ELSE consulta_despacho END
+       WHERE correo = $1`,
+      [correo.trim().toLowerCase(), limpio || null],
+    );
     if (resultado.rowCount === 0) throw new NotFoundException('No está ese miembro.');
   }
 
@@ -659,6 +672,15 @@ export class BotService {
     if (quien.rol === 'almacen') return this.atenderAlmacen(numero, quien, limpio, archivo, extras);
     if (charla.pendiente?.espera_menu) return this.abrirMenu(numero);
     if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(numero, charla);
+    if (!archivo && limpio === '0' && this.ceroSaleDeCot(charla)) return this.volverALista(numero, charla);
+    const atajo = !archivo ? atajoDeLista(limpio) : null;
+    if (atajo) {
+      const cotis = charla.paso === 'recientes' || charla.paso === 'resultados' ? charla.lista : (charla.pendiente?.cotis ?? []);
+      if (cotis.length) {
+        const pasoLista = charla.paso === 'resultados' || charla.pendiente?.listaPaso === 'resultados' ? 'resultados' : 'recientes';
+        return this.saltar(numero, cotis, atajo, pasoLista);
+      }
+    }
     const paso = charla.paso;
     const general = paso === 'menu' || paso === 'recientes' || paso === 'busca' || paso === 'confirma' || paso === 'resultados' || paso === 'internos' || paso === 'decisiones';
     const elevado = await this.esElevado(numero);
@@ -699,6 +721,7 @@ export class BotService {
       return this.dejar(telefono, true, 'Escribe el número de COT o el nombre del cliente.');
     }
     if (!limpio || esSaludo(limpio) || /^(menu|menú)$/i.test(limpio)) return this.abrirMenu(telefono);
+    if (atajoDeLista(limpio)) return this.dejar(telefono, true, `Primero abre las tareas con 1.\n${menuGeneral(elevado)}`);
     return this.buscar(telefono, limpio);
   }
 
@@ -717,6 +740,7 @@ export class BotService {
   }
 
   private async enLista(telefono: string, charla: Charla, limpio: string): Promise<RespuestaBot> {
+    if (limpio === '0' && (charla.paso === 'recientes' || charla.paso === 'resultados')) return this.volverALista(telefono, charla);
     if (/^(menu|menú)$/i.test(limpio)) return this.abrirMenu(telefono);
     const indice = Number(limpio);
     if (Number.isInteger(indice) && indice >= 1) {
@@ -1796,7 +1820,8 @@ export class BotService {
   private async recientes(telefono: string): Promise<RespuestaBot> {
     const veTodo = await this.veTodo(telefono);
     const tareas = await this.tareasBreves(
-      `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+      `       SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tarea.id) AS hilos,
               to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
               CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
        FROM tarea
@@ -1813,7 +1838,7 @@ export class BotService {
     }
     await this.guardarCharla(telefono, 'recientes', null, tareas.map((tarea) => tarea.id), null);
     const lineas = tareas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea)}`);
-    return this.dejar(telefono, true, ['Tareas por atender:', ...lineas, 'Escribe el número para entrar. Escribe menú para quedarte en el menú general.'].join('\n'));
+    return this.dejar(telefono, true, ['Tareas por atender:', ...lineas, pieListaCoti()].join('\n'));
   }
 
   private async buscar(telefono: string, texto: string): Promise<RespuestaBot> {
@@ -1830,7 +1855,7 @@ export class BotService {
     }
     await this.guardarCharla(telefono, 'resultados', null, tareas.map((tarea) => tarea.id), null);
     const lineas = tareas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea)}`);
-    return this.dejar(telefono, true, ['Encontré varias:', ...lineas, 'Escribe el número para entrar. Escribe menú para quedarte en el menú general.'].join('\n'));
+    return this.dejar(telefono, true, ['Encontré varias:', ...lineas, pieListaCoti()].join('\n'));
   }
 
   private async datosDeCot(telefono: string, tareaId: string): Promise<RespuestaBot> {
@@ -1988,6 +2013,7 @@ export class BotService {
   private async porNumero(cot: string, veTodo: boolean, despacho = false): Promise<TareaBreve[]> {
     return this.tareasBreves(
       `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tarea.id) AS hilos,
               to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
               CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
        FROM tarea
@@ -2004,6 +2030,7 @@ export class BotService {
   private async porCliente(nombre: string, veTodo: boolean, despacho = false): Promise<TareaBreve[]> {
     return this.tareasBreves(
       `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tarea.id) AS hilos,
               to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
               CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
        FROM tarea
@@ -2030,10 +2057,10 @@ export class BotService {
       const cantidad = await this.turno().cantidadDe(tareaId);
       await this.guardarCharla(telefono, 'hilos', tareaId, [], null);
       const detectado = cantidad ? `Detecté ${cantidad} ${cantidad === 1 ? 'telemetría' : 'telemetrías'}.` : 'No detecté la cantidad en la cotización.';
-      return this.dejar(telefono, true, [ref.linea, detectado, 'Escribe cuántas telemetrías son.', 'Si es 1 se abre un hilo. Si son 3 se abren 3.', 'Escribe menu para volver.'].join('\n'));
+      return this.dejar(telefono, true, [ref.linea, detectado, 'Escribe cuántas telemetrías son.', 'Si es 1 se abre un hilo. Si son 3 se abren 3.', 'Escribe 0 para volver a la lista de cotizaciones.', 'Escribe menu para volver.'].join('\n'));
     }
     await this.guardarCharla(telefono, 'hilos', tareaId, hilos.map((hilo) => hilo.id), null);
-    return this.dejar(telefono, true, [ref.linea, 'Hilos de esta cotización:', ...hilos.map((hilo, indice) => `${indice + 1}. ${lineaHilo(hilo)}`), 'Escribe el número.', 'Escribe menu para volver.'].join('\n'));
+    return this.dejar(telefono, true, [ref.linea, 'Hilos de esta cotización:', ...hilos.map((hilo, indice) => `${indice + 1}. ${lineaHilo(hilo)}`), 'Escribe el número.', 'Escribe 0 para volver a la lista de cotizaciones.', 'Escribe menu para volver.'].join('\n'));
   }
 
   private async enHilos(telefono: string, charla: Charla, limpio: string): Promise<RespuestaBot> {
@@ -2697,9 +2724,7 @@ export class BotService {
         [randomUUID(), tareaId, telefono, quien.nombre, hiloId],
       );
     }
-    const almacenes = await this.conexiones.pg.query<{ telefono: string }>(
-      `SELECT telefono FROM usuario WHERE activo AND rol = 'almacen' AND telefono IS NOT NULL AND telefono <> ''`,
-    );
+    const almacenes = { rows: await this.destinosDe('almacen') };
     const pregunta = await this.textoRetiro(hiloId);
     for (const destino of almacenes.rows) {
       await this.conexiones.pg.query(
@@ -2970,9 +2995,7 @@ export class BotService {
     } else if (hiloId) {
       await this.conexiones.pg.query(`UPDATE consulta_chip SET hilo_id = $2 WHERE id = $1`, [consultaId, hiloId]);
     }
-    const almacenes = await this.conexiones.pg.query<{ telefono: string }>(
-      `SELECT telefono FROM usuario WHERE activo AND rol = 'almacen' AND telefono IS NOT NULL AND telefono <> ''`,
-    );
+    const almacenes = { rows: await this.destinosDe('almacen') };
     const cuerpo = await this.textoPedidosChip();
     for (const destino of almacenes.rows) {
       await this.conexiones.pg.query(
@@ -2999,9 +3022,7 @@ export class BotService {
       `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id, clase) VALUES ($1, $2, $3, $4, $5, 'modem')`,
       [randomUUID(), tareaId, telefono, quien.nombre, hiloId],
     );
-    const almacenes = await this.conexiones.pg.query<{ telefono: string }>(
-      `SELECT telefono FROM usuario WHERE activo AND rol = 'almacen' AND telefono IS NOT NULL AND telefono <> ''`,
-    );
+    const almacenes = { rows: await this.destinosDe('almacen') };
     const cuerpo = `${ref.linea}\nPedido de módulo 4G. Manda las fotos de la etiqueta ZTRACK. Pueden ser varias juntas. Ahí se lee el SN y el IMEI.`;
     for (const destino of almacenes.rows) {
       await this.conexiones.pg.query(
@@ -3255,16 +3276,17 @@ export class BotService {
     }
   }
 
-  private linea(tarea: { cot: string; cliente: string | null; lugar?: string | null; campana?: boolean; despacho_fecha?: string | null; despacho_hora?: string | null; cita_fecha?: string | null; cita_hora?: string | null }, despacho = false): string {
+  private linea(tarea: { cot: string; cliente: string | null; lugar?: string | null; campana?: boolean; despacho_fecha?: string | null; despacho_hora?: string | null; cita_fecha?: string | null; cita_hora?: string | null; hilos?: number }, despacho = false): string {
     const cot = `*${tarea.cot.split('#')[0].split('+').join(' · ').replace(/\*/g, '')}*`;
     const quien = tarea.cliente?.trim() || tarea.lugar?.trim() || 'sin cliente';
     const fecha = ` · ${textoFecha(tarea.despacho_fecha ?? tarea.cita_fecha, tarea.despacho_hora ?? tarea.cita_hora)}`;
+    const hilos = !despacho && typeof tarea.hilos === 'number' ? ` · ${textoCuentaHilos(tarea.hilos)}` : '';
     if (tarea.cot.includes('#')) {
       const tienda = tarea.lugar?.trim() || 'tienda';
-      return despacho ? `COT ${cot} · ${tienda}${fecha}` : `Campaña ${cot} · ${tienda}${fecha}`;
+      return despacho ? `COT ${cot} · ${tienda}${fecha}` : `Campaña ${cot} · ${tienda}${fecha}${hilos}`;
     }
-    if (!despacho && tarea.campana) return `Campaña ${cot} · ${quien}${fecha}`;
-    return `COT ${cot} · ${quien}${fecha}`;
+    if (!despacho && tarea.campana) return `Campaña ${cot} · ${quien}${fecha}${hilos}`;
+    return `COT ${cot} · ${quien}${fecha}${hilos}`;
   }
 
   private async referencia(tareaId: string, despacho = false): Promise<{ linea: string } | null> {
@@ -3293,13 +3315,93 @@ export class BotService {
   }
 
   private async guardarCharla(telefono: string, paso: Paso, tareaId: string | null, lista: string[], pendiente: Pendiente | null): Promise<void> {
+    let siguiente = pendiente;
+    const conserva = paso !== 'menu' && paso !== 'recientes' && paso !== 'resultados';
+    if (conserva && !siguiente?.cotis?.length) {
+      const previa = await this.charla(telefono);
+      const cotis = previa.pendiente?.cotis?.length
+        ? previa.pendiente.cotis
+        : (previa.paso === 'recientes' || previa.paso === 'resultados' ? previa.lista : []);
+      if (cotis.length) {
+        const listaPaso = previa.pendiente?.listaPaso ?? (previa.paso === 'resultados' ? 'resultados' : 'recientes');
+        siguiente = { ...(siguiente ?? {}), cotis, listaPaso };
+      }
+    }
     await this.conexiones.pg.query(
       `INSERT INTO charla (telefono, paso, tarea_id, lista, pendiente, actualizado_en)
        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, now())
        ON CONFLICT (telefono) DO UPDATE
          SET paso = EXCLUDED.paso, tarea_id = EXCLUDED.tarea_id, lista = EXCLUDED.lista, pendiente = EXCLUDED.pendiente, actualizado_en = now()`,
-      [telefono, paso, tareaId, JSON.stringify(lista), pendiente ? JSON.stringify(pendiente) : null],
+      [telefono, paso, tareaId, JSON.stringify(lista), siguiente ? JSON.stringify(siguiente) : null],
     );
+  }
+
+  private ceroSaleDeCot(charla: Charla): boolean {
+    return charla.paso === 'cot' || charla.paso === 'hilos' || charla.paso === 'hilo' || charla.paso === 'fabricacion';
+  }
+
+  private async volverALista(telefono: string, charla: Charla): Promise<RespuestaBot> {
+    const cotis = charla.pendiente?.cotis?.length
+      ? charla.pendiente.cotis
+      : (charla.paso === 'recientes' || charla.paso === 'resultados' ? charla.lista : []);
+    const paso = charla.paso === 'resultados' || charla.pendiente?.listaPaso === 'resultados' ? 'resultados' : 'recientes';
+    if (cotis.length === 0) return this.recientes(telefono);
+    return this.mostrarCotiLista(telefono, cotis, paso);
+  }
+
+  private async mostrarCotiLista(telefono: string, ids: string[], paso: 'recientes' | 'resultados'): Promise<RespuestaBot> {
+    const filas = await this.conexiones.pg.query<TareaBreve>(
+      `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tarea.id) AS hilos,
+              to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
+       FROM tarea
+       ${joinUrgente('tarea')}
+       WHERE tarea.id = ANY($1::uuid[])`,
+      [ids],
+    );
+    const porId = new Map(filas.rows.map((tarea) => [tarea.id, tarea]));
+    const ordenadas = ids.flatMap((id) => {
+      const tarea = porId.get(id);
+      return tarea ? [tarea] : [];
+    });
+    if (ordenadas.length === 0) return this.recientes(telefono);
+    await this.guardarCharla(telefono, paso, null, ordenadas.map((tarea) => tarea.id), null);
+    const titulo = paso === 'resultados' ? 'Encontré varias:' : 'Tareas por atender:';
+    const lineas = ordenadas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea)}`);
+    return this.dejar(telefono, true, [titulo, ...lineas, pieListaCoti()].join('\n'));
+  }
+
+  private async saltar(telefono: string, cotis: string[], atajo: AtajoMenu, paso: 'recientes' | 'resultados'): Promise<RespuestaBot> {
+    const tareaId = cotis[atajo.cot - 1];
+    if (!tareaId) return this.dejar(telefono, true, 'Ese número no está en la lista.');
+    const ref = await this.referencia(tareaId);
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    if (hilos.length === 0) {
+      await this.guardarCharla(telefono, 'hilos', tareaId, [], { cotis, listaPaso: paso });
+      return this.dejar(telefono, true, [
+        ref?.linea ?? 'Cotización',
+        'No hay hilos en la coti.',
+        'Coloca el número de telemetrías a instalar para crear los hilos.',
+      ].join('\n'));
+    }
+    const hilo = hilos[atajo.hilo - 1];
+    if (!hilo) return this.dejar(telefono, true, `${ref?.linea ?? 'Cotización'}\nEse hilo no está. Hay ${textoCuentaHilos(hilos.length)}.`);
+    if (atajo.destino === 'A') return this.menuAlmacen(telefono, tareaId, hilo.id);
+    if (atajo.destino === 'D') return this.menuDespacho(telefono, tareaId, hilo.id);
+    if (atajo.destino === 'R') return this.menuValidar(telefono, tareaId, hilo.id);
+    return this.menuOrdenFabricacion(telefono, tareaId, hilo.id);
+  }
+
+  private async destinosDe(rol: 'almacen' | 'despacho'): Promise<Array<{ telefono: string }>> {
+    const filas = await this.conexiones.pg.query<{ telefono: string }>(
+      `SELECT regexp_replace(telefono, '\\D', '', 'g') AS telefono
+       FROM usuario
+       WHERE activo AND rol = $1
+         AND regexp_replace(coalesce(telefono, ''), '\\D', '', 'g') <> ''`,
+      [rol],
+    );
+    return filas.rows.filter((fila) => fila.telefono);
   }
 
   private async hayQr(): Promise<boolean> {

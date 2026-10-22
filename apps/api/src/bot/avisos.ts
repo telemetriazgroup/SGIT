@@ -302,6 +302,29 @@ export function preguntaHilosPendientes(pendientes: number): string {
   return `Hay ${pendientes} hilos pendientes. Envíame el contenedor y la máquina de cada uno.`;
 }
 
+export function textoCuentaHilos(cantidad: number): string {
+  if (cantidad <= 0) return 'sin hilo';
+  if (cantidad === 1) return '1 hilo';
+  return `${cantidad} hilos`;
+}
+
+export type AtajoMenu = { cot: number; hilo: number; destino: 'A' | 'D' | 'R' | 'F' };
+
+export function atajoDeLista(texto: string): AtajoMenu | null {
+  const coincidencia = /^(\d+)-(\d+)-([adfr])$/i.exec(texto.trim());
+  if (!coincidencia) return null;
+  const cot = Number(coincidencia[1]);
+  const hilo = Number(coincidencia[2]);
+  if (!Number.isInteger(cot) || !Number.isInteger(hilo) || cot < 1 || hilo < 1) return null;
+  const destino = coincidencia[3].toUpperCase();
+  if (destino !== 'A' && destino !== 'D' && destino !== 'R' && destino !== 'F') return null;
+  return { cot, hilo, destino };
+}
+
+export function pieListaCoti(): string {
+  return 'Escribe el número para entrar, o un atajo: 3-1-A almacén, 3-1-D despacho, 3-1-R regularización, 3-1-F fabricación. Escribe 0 para volver a esta lista. Escribe menú para el menú general.';
+}
+
 export function textoColaHilos(pendientes: number, situacion: 'encolada' | 'en_curso' | 'sin_coordinador'): string {
   const cuantos = pendientes === 1 ? '1 hilo pendiente' : `${pendientes} hilos pendientes`;
   if (situacion === 'sin_coordinador') return `No hay un coordinador de despacho con WhatsApp. Quedó en la cola: ${cuantos} de contenedor y máquina.`;

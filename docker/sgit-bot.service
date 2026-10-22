@@ -1,0 +1,14 @@
+[Unit]
+Description=SGIT WhatsApp
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ztrack/mongo/Proyectos/SGIT
+ExecStart=/bin/bash -lc 'npm run dev:bot'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

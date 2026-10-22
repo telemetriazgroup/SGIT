@@ -968,9 +968,9 @@ export class TurnoDespacho {
 
   private async coordinadores(): Promise<Array<{ telefono: string }>> {
     const filas = await this.pg.query<{ telefono: string }>(
-      `SELECT telefono FROM usuario
-       WHERE activo AND rol = 'despacho' AND consulta_despacho
-         AND telefono IS NOT NULL AND telefono <> ''
+      `SELECT regexp_replace(telefono, '\\D', '', 'g') AS telefono FROM usuario
+       WHERE activo AND rol = 'despacho'
+         AND regexp_replace(coalesce(telefono, ''), '\\D', '', 'g') <> ''
        ORDER BY telefono`,
     );
     return filas.rows;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { menuAreaAlmacen, menuAreaDespacho, menuDeHilo, menuInstalacion, menuOrden, menuValidarInstalacion, opcionesCot, preguntaHilosPendientes, textoColaHilos } from '../src/bot/avisos';
+import { atajoDeLista, menuAreaAlmacen, menuAreaDespacho, menuDeHilo, menuInstalacion, menuOrden, menuValidarInstalacion, opcionesCot, preguntaHilosPendientes, textoColaHilos, textoCuentaHilos } from '../src/bot/avisos';
 
 test('la cotización del admin ya no pide chip ni respuesta de despacho', () => {
   const menu = opcionesCot(true);
@@ -53,6 +53,19 @@ test('despacho y almacén tienen su propio menú', () => {
   assert.match(menuAreaAlmacen('ÁREA ALMACÉN'), /6\. Registrar entrega de solicitud a almacén/);
   assert.match(menuAreaAlmacen('ÁREA ALMACÉN'), /8\. Ver estado de solicitud de insumos en almacén/);
   assert.match(menuAreaAlmacen('ÁREA ALMACÉN'), /9\. Volver al menú anterior/);
+});
+
+test('el atajo abre la cotización, el hilo y el área', () => {
+  assert.deepEqual(atajoDeLista('3-1-A'), { cot: 3, hilo: 1, destino: 'A' });
+  assert.deepEqual(atajoDeLista(' 3-1-d '), { cot: 3, hilo: 1, destino: 'D' });
+  assert.deepEqual(atajoDeLista('3-1-R'), { cot: 3, hilo: 1, destino: 'R' });
+  assert.deepEqual(atajoDeLista('3-1-f'), { cot: 3, hilo: 1, destino: 'F' });
+  assert.equal(atajoDeLista('3'), null);
+  assert.equal(atajoDeLista('0'), null);
+  assert.equal(atajoDeLista('3-0-A'), null);
+  assert.equal(textoCuentaHilos(0), 'sin hilo');
+  assert.equal(textoCuentaHilos(1), '1 hilo');
+  assert.equal(textoCuentaHilos(2), '2 hilos');
 });
 
 test('abrir hilos deja la consulta en la cola y nombra cuántos faltan', () => {
