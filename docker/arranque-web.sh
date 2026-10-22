@@ -9,4 +9,5 @@ if [ ! -x node_modules/.bin/vite ]; then
 fi
 
 cd /app/apps/web
+export API_INTERNO="${API_INTERNO:-http://api:18003}"
 exec /app/node_modules/.bin/vite --host 0.0.0.0 --port 18004

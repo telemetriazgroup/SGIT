@@ -79,3 +79,13 @@ test('la URL del API queda definida', () => {
   const url = urlDelApi();
   expect(url).toMatch(/^https?:\/\/.+/);
 });
+
+test('en este equipo el API sigue en localhost', () => {
+  expect(urlDelApi({ protocol: 'http:', hostname: 'localhost' })).toBe('http://localhost:18003/SGIT');
+});
+
+test('desde otro equipo el ingreso sale por la misma pantalla', () => {
+  expect(urlDelApi({ protocol: 'http:', hostname: '161.132.53.51', port: '18004' })).toBe(
+    'http://161.132.53.51:18004/servicio',
+  );
+});

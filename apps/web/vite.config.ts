@@ -1,9 +1,11 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 const raiz = path.dirname(fileURLToPath(import.meta.url));
+const icono = fs.readFileSync(path.resolve(raiz, 'public/favicon.svg'));
 
 export default defineConfig({
   base: '/SGIT/',
@@ -14,6 +16,12 @@ export default defineConfig({
       configureServer(servidor) {
         servidor.middlewares.use((req, res, siguiente) => {
           const url = req.url ?? '/';
+          if (url === '/favicon.ico' || url.startsWith('/favicon.ico?')) {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'image/svg+xml');
+            res.end(icono);
+            return;
+          }
           if (url === '/' || url.startsWith('/?')) {
             res.statusCode = 302;
             res.setHeader('Location', `/SGIT/${url.slice(1)}`);
@@ -33,6 +41,12 @@ export default defineConfig({
   server: {
     port: 18004,
     strictPort: true,
+    proxy: {
+      '/servicio': {
+        target: process.env.API_INTERNO || 'http://api:18003',
+        rewrite: (ruta) => ruta.replace(/^\/servicio/, '/SGIT'),
+      },
+    },
   },
   test: {
     environment: 'happy-dom',

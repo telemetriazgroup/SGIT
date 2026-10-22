@@ -22,7 +22,13 @@ async function main() {
   });
   app.use(json({ limit: '8mb' }));
   app.use(urlencoded({ extended: true, limit: '8mb' }));
-  app.enableCors({ origin: origenesWeb(configuracion.webOrigin), exposedHeaders: ['content-disposition'] });
+  app.enableCors({
+    origin: (origen, responder) => {
+      const aceptado = !origen || origenAceptado(origen, configuracion.webOrigin);
+      responder(null, aceptado);
+    },
+    exposedHeaders: ['content-disposition'],
+  });
   await app.listen(configuracion.port, '0.0.0.0');
   console.log(`SGIT API listo en http://0.0.0.0:${configuracion.port}${RUTA_ACCESO}/salud`);
 }
@@ -32,6 +38,17 @@ main().catch((error: unknown) => {
   console.error(`SGIT no arrancó. ${mensaje}`);
   process.exit(1);
 });
+
+function origenAceptado(pedido: string, configurado: string): boolean {
+  if (origenesWeb(configurado).includes(pedido)) return true;
+  try {
+    const url = new URL(pedido);
+    const web = new URL(configurado);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.port === (web.port || '18004');
+  } catch {
+    return false;
+  }
+}
 
 function origenesWeb(origen: string): string[] {
   const origenes = [origen];
