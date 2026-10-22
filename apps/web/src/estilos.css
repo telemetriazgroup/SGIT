@@ -2136,6 +2136,13 @@ button.enlace:disabled {
   height: 40px;
 }
 
+.cuenta-alta input[type='file'] {
+  height: auto;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+}
+
 .cuenta-alta button,
 .cuenta-campos button {
   justify-self: start;

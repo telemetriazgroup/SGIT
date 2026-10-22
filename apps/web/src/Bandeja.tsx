@@ -6,6 +6,7 @@ import { Logo } from './Logo';
 import { PanelChips } from './Chips';
 import { PanelModems } from './Modems';
 import { PanelLector } from './Lector';
+import { PanelImprimir } from './Imprimir';
 import { PanelOdoo } from './Odoo';
 import { PanelRespaldo } from './Respaldo';
 import { PanelDiccionario, PanelTareas } from './Tareas';
@@ -126,7 +127,8 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [paginas, setPaginas] = useState(1);
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'chips' | 'modems' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
+  const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
   const [redactando, setRedactando] = useState(false);
   const [notaProceso, setNotaProceso] = useState<string | null>(null);
   const [tareaAbierta, setTareaAbierta] = useState<string | null>(null);
@@ -470,6 +472,11 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
               </button>
             </>
           ) : null}
+          {imprime ? (
+            <button type="button" className={vista === 'imprimir' ? 'activo' : ''} onClick={() => { setVista('imprimir'); setHilo(null); }}>
+              Imprimir
+            </button>
+          ) : null}
           {sesion.usuario.rol === 'superusuario' ? (
             <button type="button" className={vista === 'odoo' ? 'activo' : ''} onClick={() => { setVista('odoo'); setHilo(null); }}>
               Odoo
@@ -560,6 +567,8 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             <PanelChips apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'modems' ? (
             <PanelModems apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'imprimir' ? (
+            <PanelImprimir apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'odoo' ? (
             <PanelOdoo apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'respaldo' ? (

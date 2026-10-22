@@ -1,6 +1,8 @@
 import { Body, Controller, ForbiddenException, Get, Headers, Inject, NotFoundException, Param, Post, UnauthorizedException } from '@nestjs/common';
+import { Conexiones } from '../conexiones';
 import { IdentidadService } from '../identidad/identidad.service';
 import { puedeEditarTarea } from '../identidad/permisos';
+import { ImpresionServicio } from '../impresion/servicio';
 import { TareasService } from '../tareas/tareas.service';
 import { FabricacionServicio } from './servicio';
 import type { MaterialPedido } from './reglas';
@@ -11,6 +13,7 @@ export class FabricacionController {
     @Inject(FabricacionServicio) private readonly fabricacion: FabricacionServicio,
     @Inject(TareasService) private readonly tareas: TareasService,
     @Inject(IdentidadService) private readonly identidad: IdentidadService,
+    @Inject(Conexiones) private readonly conexiones: Conexiones,
   ) {}
 
   @Post('tareas/:id/hilos/:hiloId/insumos')
@@ -36,6 +39,21 @@ export class FabricacionController {
     const usuario = await this.exigirEdicion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     return { texto: await this.fabricacion.pedirReporte(hiloId) };
+  }
+
+  @Post('tareas/:id/hilos/:hiloId/imprimir')
+  async imprimir(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('hiloId') hiloId: string,
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    const leido = await this.fabricacion.leerReporte(hiloId);
+    if (!leido.ok) return { texto: leido.texto };
+    const texto = await new ImpresionServicio(this.conexiones).enviar(leido.pdf, leido.nombre, `sgit-mo-${leido.id}-${Date.now()}`);
+    await this.fabricacion.anotarImpresion(hiloId, usuario, texto);
+    return { texto };
   }
 
   @Get('fabricacion/:token')

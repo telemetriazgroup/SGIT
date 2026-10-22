@@ -29,6 +29,8 @@ type PiezaEntrante = {
   texto: string;
   archivo: { nombre: string; mime: string; contenido: string } | null;
   fallo: boolean;
+  pdf: boolean;
+  pdfGrande: boolean;
   mensaje: MensajeEntrante;
 };
 
@@ -307,10 +309,11 @@ type MensajeEntrante = {
 async function atender(mensaje: MensajeEntrante): Promise<void> {
   if (mensaje.fromMe || mensaje.from.endsWith('@g.us')) return;
   const clave = mensaje.from;
-  const archivo = await bajarImagen(mensaje);
-  const fallo = pareceImagen(mensaje) && !archivo;
+  const pdf = await bajarPdf(mensaje);
+  const archivo = pdf && !pdf.grande ? pdf.archivo : await bajarImagen(mensaje);
+  const fallo = Boolean(pdf?.fallo) || (pareceImagen(mensaje) && !archivo);
   const grupo = rafaga.get(clave) ?? { piezas: [], token: 0 };
-  grupo.piezas.push({ texto: mensaje.body ?? '', archivo, fallo, mensaje });
+  grupo.piezas.push({ texto: mensaje.body ?? '', archivo, fallo, pdf: Boolean(pdf), pdfGrande: Boolean(pdf?.grande), mensaje });
   grupo.token += 1;
   const token = grupo.token;
   rafaga.set(clave, grupo);
@@ -322,8 +325,13 @@ async function atender(mensaje: MensajeEntrante): Promise<void> {
   if (!ultimo) return;
   const llegaron = piezas.map((pieza) => pieza.archivo).filter((item): item is { nombre: string; mime: string; contenido: string } => Boolean(item));
   const { usados, fuera } = recortarArchivos(llegaron);
+  if (piezas.some((pieza) => pieza.pdfGrande)) {
+    await ultimo.reply('Ese PDF pesa demasiado. Tiene que ser de menos de 5 MB.');
+    return;
+  }
   if (piezas.some((pieza) => pieza.fallo) && usados.length === 0) {
-    await ultimo.reply('No pude leer la imagen. Envíala otra vez, o escribe no para seguir sin imagen.');
+    const eraPdf = piezas.some((pieza) => pieza.pdf);
+    await ultimo.reply(eraPdf ? 'No pude leer el PDF. Envíalo otra vez.' : 'No pude leer la imagen. Envíala otra vez, o escribe no para seguir sin imagen.');
     return;
   }
   const textos = piezas.map((pieza) => pieza.texto.trim()).filter(Boolean);
@@ -357,6 +365,25 @@ function recortarArchivos(archivos: Array<{ nombre: string; mime: string; conten
 
 function esperar(ms: number): Promise<void> {
   return new Promise((resolver) => setTimeout(resolver, ms));
+}
+
+async function bajarPdf(mensaje: MensajeEntrante): Promise<{ archivo: { nombre: string; mime: string; contenido: string } | null; grande: boolean; fallo: boolean } | null> {
+  if (mensaje.type !== 'document' || !mensaje.hasMedia) return null;
+  try {
+    const media = await mensaje.downloadMedia();
+    if (!media?.data) return { archivo: null, grande: false, fallo: true };
+    const nombre = (media.filename || 'documento.pdf').trim();
+    const mime = (media.mimetype || '').toLowerCase();
+    const bytes = Buffer.from(media.data, 'base64');
+    const es = mime.includes('pdf') || nombre.toLowerCase().endsWith('.pdf') || bytes.subarray(0, 5).toString('ascii') === '%PDF-';
+    if (!es) return null;
+    if (bytes.length > 5 * 1024 * 1024) return { archivo: null, grande: true, fallo: false };
+    const archivo = nombre.toLowerCase().endsWith('.pdf') ? nombre : `${nombre}.pdf`;
+    return { archivo: { nombre: archivo, mime: 'application/pdf', contenido: media.data }, grande: false, fallo: false };
+  } catch (error) {
+    console.error(`SGIT bot: no pude leer el PDF. ${detalle(error)}`);
+    return { archivo: null, grande: false, fallo: true };
+  }
 }
 
 function pareceImagen(mensaje: MensajeEntrante): boolean {

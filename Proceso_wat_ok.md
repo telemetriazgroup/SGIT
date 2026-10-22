@@ -12,13 +12,16 @@ Administrador y superusuario:
 2. Asuntos internos
 3. Pendientes de decisión
 4. Buscar cotización
-5. Salir
+5. Imprimir
+6. Salir
 
 Técnico:
 
 1. Tareas recientes
 2. Buscar cotización
 3. Salir
+
+Imprimir, la opción 5 del administrador y del superusuario, espera un PDF y lo manda a la impresora. Escribe menu para volver sin imprimir. El técnico no tiene esa opción.
 
 También se puede escribir el número de COT o el nombre del cliente.
 
@@ -114,7 +117,7 @@ Despacho puede mandar varias fotos juntas del contenedor y de la máquina. Queda
 
 ## Insumos
 
-La opción 5 del hilo abre el menú de la orden. Pedir el insumo crea la orden cuando el hilo está listo: despacho validado y, si se instala, chip disponible. Si la orden ya existe, se muestran la orden y los insumos marcados. Agregar o modificar insumos solo sigue abierto mientras la orden está en borrador. Si ya no lo está, la respuesta va en negrita y se vuelve al menú. Confirmar muestra los insumos y pide un sí. Al confirmar, los componentes pedidos quedan como consumidos. No se pulsa Producir todo. Después se manda el PDF y se vuelve al menú. El PDF también se pide aparte, y solo si la orden ya está confirmada. La primera vez se baja de Odoo y queda guardado. Si los insumos consumidos no cambiaron, las siguientes veces se manda ese archivo y no se vuelve a pedir a Odoo. Imprimir el PDF todavía no está implementado.
+La opción 5 del hilo abre el menú de la orden. Pedir el insumo crea la orden cuando el hilo está listo: despacho validado y, si se instala, chip disponible. Si la orden ya existe, se muestran la orden y los insumos marcados. Agregar o modificar insumos solo sigue abierto mientras la orden está en borrador. Si ya no lo está, la respuesta va en negrita y se vuelve al menú. Confirmar muestra los insumos y pide un sí. Al confirmar, los componentes pedidos quedan como consumidos. No se pulsa Producir todo. Después se manda el PDF y se vuelve al menú. El PDF también se pide aparte, y solo si la orden ya está confirmada. La primera vez se baja de Odoo y queda guardado. Si los insumos consumidos no cambiaron, las siguientes veces se manda ese archivo y no se vuelve a pedir a Odoo. La opción 5 manda ese mismo PDF a la impresora configurada en Imprimir. Sale una copia. Si se pide otra vez, se imprime otra vez.
 
 El enlace deja marcar materiales. Al guardar, el chip queda en Lote/Serie de su componente. Odoo recibe dos notas, cada dato en su línea: una con contenedor, máquina, chip e IMEI, y otra con los datos de la cotización y lo que se pide. Lo que no se marcó no entra en esas notas. Eso queda antes de confirmar, para que Odoo no tome otro chip. Lo que se desmarca sale de la lista y no queda en la reserva.
 
@@ -129,3 +132,9 @@ El reporte de instalación solo se abre con la orden confirmada.
 7. Volver al menú de la orden
 
 Si el hilo ya tiene módulo 4G, el menú lo muestra y la opción 6 lo cambia.
+
+
+#
+
+
+

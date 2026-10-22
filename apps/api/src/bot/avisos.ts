@@ -236,7 +236,8 @@ export function menuGeneral(elevado = false): string {
       '2. Asuntos internos',
       '3. Pendientes de decisión',
       '4. Buscar cotización',
-      '5. Salir',
+      '5. Imprimir',
+      '6. Salir',
       'Escribe el número. También puedes escribir el número de COT o el nombre del cliente.',
     ].join('\n');
   }

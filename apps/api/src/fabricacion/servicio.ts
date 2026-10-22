@@ -268,6 +268,42 @@ export class FabricacionServicio {
     return texto;
   }
 
+  async leerReporte(hiloId: string): Promise<{ ok: true; nombre: string; pdf: Buffer; id: string; orden: string } | { ok: false; texto: string }> {
+    const fila = await this.porHilo(hiloId);
+    if (!fila?.odoo_id || fila.estado === 'incidente') return { ok: false, texto: 'Todavía no hay una orden de fabricación. Pide el insumo con 1.' };
+    const huella = huellaConsumidos(fila.materiales);
+    const destino = await this.enlazarReportePrevio(fila, huella);
+    if (await this.reporteGuardado(destino, huella)) {
+      const pdf = await new AlmacenCorreo(this.conexiones).leer(destino.reporte_clave ?? '');
+      return { ok: true, nombre: nombreReporte(fila.nombre), pdf, id: fila.id, orden: fila.nombre };
+    }
+    const config = await this.config();
+    if (!config?.sesion) return { ok: false, texto: 'Falta el usuario y la clave normal de Odoo para bajar el reporte. Se cargan en Odoo, en Usuario del reporte y Clave del reporte.' };
+    try {
+      const estado = await estadoDeOrden(config, fila.odoo_id);
+      if (estado === 'draft') return { ok: false, texto: `La orden ${fila.nombre} sigue en borrador. Confírmala con 3 y después imprime con 5.` };
+      if (!estado || estado === 'cancel') return { ok: false, texto: `La orden ${fila.nombre} no está confirmada.` };
+      if (estado === 'confirmed' || estado === 'progress') {
+        const pedidos = fila.materiales.filter((material) => material.pedido && material.cantidad > 0).map((material) => material.moveId);
+        await marcarConsumido(config, pedidos);
+      }
+      const pdf = await pdfDeOrden(config, fila.odoo_id);
+      const clave = `fabricacion/${fila.id}/reporte.pdf`;
+      await new AlmacenCorreo(this.conexiones).guardar(clave, pdf, 'application/pdf');
+      await this.conexiones.pg.query(`UPDATE fabricacion SET reporte_clave = $2, reporte_huella = $3 WHERE id = $1`, [fila.id, clave, huella]);
+      return { ok: true, nombre: nombreReporte(fila.nombre), pdf, id: fila.id, orden: fila.nombre };
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'No pude bajar el reporte.';
+      return { ok: false, texto: `No pude bajar el reporte de ${fila.nombre}.\n${mensaje}` };
+    }
+  }
+
+  async anotarImpresion(hiloId: string, autor: { correo: string; nombre: string }, texto: string): Promise<void> {
+    const fila = await this.porHilo(hiloId);
+    if (!fila) return;
+    await this.nota(fila.tarea_id, autor, 'seguimiento', texto);
+  }
+
   async reenviar(fabricacionId: string): Promise<string> {
     const fila = await this.porId(fabricacionId);
     if (!fila) return 'Esa orden ya no está.';
@@ -479,6 +515,10 @@ export class FabricacionServicio {
       [telefono, fila.tarea_id, JSON.stringify({ hiloId: fila.hilo_id, fabricacionId: fila.id })],
     );
   }
+}
+
+function nombreReporte(orden: string): string {
+  return `Produccion - ${orden.replaceAll('/', '-')}.pdf`;
 }
 
 function mezclar(actuales: MaterialPedido[], recibidos: MaterialPedido[]): MaterialPedido[] {

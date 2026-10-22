@@ -9,6 +9,8 @@ import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrar
 import { ChipsService } from '../chips/chips.service';
 import { serieChipDe, serieCoincide } from '../chips/orden';
 import { FabricacionServicio } from '../fabricacion/servicio';
+import { esPdf } from '../impresion/reglas';
+import { ImpresionServicio } from '../impresion/servicio';
 import { joinUrgente, ordenFecha, ordenUrgente } from '../tareas/prioridad';
 import { anotarConexion } from '../conexion/bitacora';
 import type { Conexiones } from '../conexiones';
@@ -137,6 +139,7 @@ type Pendiente = {
   vuelve?: 'almacen' | 'instalacion' | 'validar';
   cotis?: string[];
   listaPaso?: 'recientes' | 'resultados';
+  impresion?: boolean;
 };
 type Charla = { paso: Paso; tarea_id: string | null; lista: string[]; pendiente: Pendiente | null };
 type ArchivoSalida = { nombre: string; mime: string; contenido: string };
@@ -668,6 +671,9 @@ export class BotService {
 
     const charla = await this.charla(numero);
     const limpio = texto.trim();
+    if ((charla.paso === 'menu' && charla.pendiente?.impresion) || (archivo && esPdf(archivo.contenido))) {
+      return this.enImpresion(numero, quien.rol, limpio, archivo, charla);
+    }
     if (quien.rol === 'despacho') return this.atenderDespacho(numero, quien, limpio, charla, archivo, extras);
     if (quien.rol === 'almacen') return this.atenderAlmacen(numero, quien, limpio, archivo, extras);
     if (charla.pendiente?.espera_menu) return this.abrirMenu(numero);
@@ -685,7 +691,7 @@ export class BotService {
     const general = paso === 'menu' || paso === 'recientes' || paso === 'busca' || paso === 'confirma' || paso === 'resultados' || paso === 'internos' || paso === 'decisiones';
     const elevado = await this.esElevado(numero);
     if (general && /^salir$/i.test(limpio)) return this.cerrarConsulta(numero);
-    if (paso === 'menu' && ((elevado && limpio === '5') || (!elevado && limpio === '3'))) return this.cerrarConsulta(numero);
+    if (paso === 'menu' && ((elevado && limpio === '6') || (!elevado && limpio === '3'))) return this.cerrarConsulta(numero);
 
     if ((paso === 'nota' || paso === 'espera_imagen' || paso === 'pregunta_imagen') && charla.pendiente?.tipo) {
       if (paso === 'nota') return this.enNota(numero, charla, quien, limpio, archivo, anotador);
@@ -719,6 +725,10 @@ export class BotService {
     if (busca) {
       await this.guardarCharla(telefono, 'busca', null, [], null);
       return this.dejar(telefono, true, 'Escribe el número de COT o el nombre del cliente.');
+    }
+    if (elevado && (limpio === '5' || /^imprimir$/i.test(limpio))) {
+      await this.guardarCharla(telefono, 'menu', null, [], { impresion: true });
+      return this.dejar(telefono, true, 'Manda el documento PDF. Sale una copia. Escribe menu para volver sin imprimir.');
     }
     if (!limpio || esSaludo(limpio) || /^(menu|menú)$/i.test(limpio)) return this.abrirMenu(telefono);
     if (atajoDeLista(limpio)) return this.dejar(telefono, true, `Primero abre las tareas con 1.\n${menuGeneral(elevado)}`);
@@ -2507,10 +2517,7 @@ export class BotService {
       const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
       return { ...menu, respuesta: `${reporte.respuesta}\n${menu.respuesta}` };
     }
-    if (/^5$/.test(limpio)) {
-      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
-      return { ...menu, respuesta: `Imprimir el PDF todavía no está implementado.\n${menu.respuesta}` };
-    }
+    if (/^5$/.test(limpio)) return this.imprimirOrden(telefono, tareaId, hiloId);
     if (/^6$/.test(limpio)) {
       if (!vista || vista.borrador) {
         const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
@@ -2519,6 +2526,32 @@ export class BotService {
       return this.menuReporteInstalacion(telefono, tareaId, hiloId);
     }
     return this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+  }
+
+  private async enImpresion(telefono: string, rol: string, limpio: string, archivo: ArchivoNota | null, charla: Charla): Promise<RespuestaBot> {
+    const elevado = rol === 'administrador' || rol === 'superusuario';
+    const esperando = charla.paso === 'menu' && Boolean(charla.pendiente?.impresion);
+    if (!elevado) return this.dejar(telefono, true, 'Ese PDF no entra en este paso.');
+    if (!esperando) return this.dejar(telefono, true, 'Para imprimir, vuelve al menú general y escribe 5. Luego manda el PDF.');
+    if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(telefono, charla);
+    if (/^(menu|menú|0)$/i.test(limpio) && !archivo) return this.abrirMenu(telefono);
+    if (!archivo || !esPdf(archivo.contenido)) return this.dejar(telefono, true, 'Manda el documento PDF. Escribe menu para volver sin imprimir.');
+    const texto = await new ImpresionServicio(this.conexiones).enviar(archivo.contenido, archivo.nombre || 'documento.pdf', `sgit-whatsapp-${Date.now()}`);
+    const menu = await this.abrirMenu(telefono);
+    return { ...menu, respuesta: `${texto}\n${menu.respuesta}` };
+  }
+
+  private async imprimirOrden(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const servicio = new FabricacionServicio(this.conexiones);
+    const leido = await servicio.leerReporte(hiloId);
+    if (!leido.ok) {
+      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `${leido.texto}\n${menu.respuesta}` };
+    }
+    const texto = await new ImpresionServicio(this.conexiones).enviar(leido.pdf, leido.nombre, `sgit-mo-${leido.id}-${Date.now()}`);
+    await servicio.anotarImpresion(hiloId, await this.autorDe(telefono), texto);
+    const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+    return { ...menu, respuesta: `${texto}\n${menu.respuesta}` };
   }
 
   private async ofrecerConfirmacion(telefono: string, tareaId: string, hiloId: string, vista: { nombre: string; estado: string; borrador: boolean; lineas: string[] } | null): Promise<RespuestaBot> {

@@ -1707,6 +1707,7 @@ function HilosCotizacion({
 }) {
   const [numero, setNumero] = useState(String(hilos.length || cantidad || ''));
   const [reporte, setReporte] = useState('');
+  const [imprimiendo, setImprimiendo] = useState(false);
   return (
     <section>
       <h3>Telemetrías</h3>
@@ -1795,6 +1796,22 @@ function HilosCotizacion({
                     }}
                   >
                     Pedir reporte
+                  </button>
+                ) : null}
+                {editar && fabricaciones.some((item) => item.hiloId === hilo.id) ? (
+                  <button
+                    type="button"
+                    disabled={imprimiendo}
+                    onClick={() => {
+                      setImprimiendo(true);
+                      setReporte('');
+                      void pedir<{ texto: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/imprimir`, { method: 'POST', body: '{}' })
+                        .then((respuesta) => setReporte(respuesta.texto))
+                        .catch((error: unknown) => alFallar(texto(error)))
+                        .finally(() => setImprimiendo(false));
+                    }}
+                  >
+                    Imprimir orden
                   </button>
                 ) : null}
                 {editar ? (

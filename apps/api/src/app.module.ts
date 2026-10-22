@@ -11,10 +11,11 @@ import { ChipsModule } from './chips/chips.module';
 import { ModemsModule } from './modems/modems.module';
 import { FabricacionModule } from './fabricacion/fabricacion.module';
 import { LectorModule } from './lector/lector.module';
+import { ImpresionModule } from './impresion/impresion.module';
 import { RespaldoModule } from './respaldo/respaldo.module';
 
 @Module({
-  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule, ChipsModule, ModemsModule, FabricacionModule, RespaldoModule, LectorModule],
+  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule, ChipsModule, ModemsModule, FabricacionModule, RespaldoModule, LectorModule, ImpresionModule],
   providers: [
     {
       provide: PrepararBase,
