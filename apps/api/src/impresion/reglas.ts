@@ -48,25 +48,37 @@ export type CapturaMensaje = {
   claves: string;
 };
 
+function corto(valor: string): string {
+  return valor.replace(/\s+/g, ' ').trim().slice(0, 180);
+}
+
 export function textoCaptura(captura: CapturaMensaje): string {
-  const corto = (valor: string) => valor.replace(/\s+/g, ' ').trim().slice(0, 180);
+  const bytes = Number.isFinite(captura.bytes) ? captura.bytes : 0;
   return [
-    'El mensaje de WhatsApp no se guardó como PDF y no se mandó a imprimir.',
-    `Decisión: ${corto(captura.decision) || 'sin decisión'}`,
-    `Tipo que vio el proceso: ${corto(captura.tipoProceso) || '(vacío)'}`,
-    `Tipo en WhatsApp: ${corto(captura.tipoWhatsapp) || '(no se pudo leer)'}`,
-    `Tiene archivo: ${captura.tieneMedia ? 'sí' : 'no'}`,
-    `MIME: ${corto(captura.mime) || '(vacío)'}`,
-    `Nombre: ${corto(captura.nombre) || '(vacío)'}`,
-    `Texto: ${corto(captura.texto) || '(vacío)'}`,
-    `Leyenda: ${corto(captura.leyenda) || '(vacío)'}`,
-    `Ruta de descarga: ${captura.ruta ? 'sí' : 'no'}`,
-    `Clave de media: ${captura.claveMedia ? 'sí' : 'no'}`,
-    `Etapa del archivo: ${corto(captura.etapa) || '(vacía)'}`,
-    `Bytes leídos: ${Number.isFinite(captura.bytes) ? captura.bytes : 0}`,
-    `Empieza por %PDF: ${captura.esPdf ? 'sí' : 'no'}`,
-    `Error: ${corto(captura.error) || '(ninguno)'}`,
-    `Campos del mensaje: ${corto(captura.claves) || '(ninguno)'}`,
+    'Lectura del proceso',
+    `1. El proceso recibió el mensaje como tipo ${corto(captura.tipoProceso) || '(vacío)'}.`,
+    `2. En WhatsApp el mensaje es tipo ${corto(captura.tipoWhatsapp) || '(no se pudo leer)'}.`,
+    `3. Nombre que trae: ${corto(captura.nombre) || '(vacío)'}.`,
+    `4. Texto del mensaje: ${corto(captura.texto) || '(vacío)'}.`,
+    `5. Leyenda: ${corto(captura.leyenda) || '(vacío)'}.`,
+    `6. MIME: ${corto(captura.mime) || '(vacío)'}. Tiene archivo adjunto: ${captura.tieneMedia ? 'sí' : 'no'}.`,
+    `7. Ruta de descarga: ${captura.ruta ? 'sí' : 'no'}. Clave de media: ${captura.claveMedia ? 'sí' : 'no'}. Etapa: ${corto(captura.etapa) || '(vacía)'}.`,
+    `8. Bytes leídos: ${bytes}. Empieza por %PDF: ${captura.esPdf ? 'sí' : 'no'}.`,
+    `9. Error al leer: ${corto(captura.error) || '(ninguno)'}.`,
+    `10. Campos que llegaron: ${corto(captura.claves) || '(ninguno)'}.`,
+    `11. ${corto(captura.decision) || 'No se guardó el PDF y no se mandó a imprimir.'}`,
+  ].join('\n');
+}
+
+export function lecturaSinPdf(nombre: string, captura?: CapturaMensaje | null): string {
+  if (captura) return textoCaptura(captura);
+  const visto = corto(nombre) || '(vacío)';
+  return [
+    'Lectura del proceso',
+    `1. A la API llegó solo este texto: ${visto}.`,
+    '2. El proceso del bot no adjuntó el archivo. Bytes del PDF: 0.',
+    '3. Se tomó el nombre y no el documento.',
+    '4. No se guardó el PDF y no se mandó a imprimir.',
   ].join('\n');
 }
 

@@ -2545,8 +2545,8 @@ export class BotService {
     if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(telefono, charla);
     if (/^(menu|menú|0)$/i.test(limpio) && !archivo) return this.abrirMenu(telefono);
     if (!archivo || !esPdf(archivo.contenido)) {
-      if (!limpio || /\.pdf$/i.test(limpio) || archivo || captura) await new ImpresionServicio(this.conexiones).anotarSinArchivo(telefono, limpio, captura);
-      return this.dejar(telefono, true, 'Manda el documento PDF. Escribe menu para volver sin imprimir.');
+      if (!limpio || /\.pdf$/i.test(limpio) || archivo || captura) await new ImpresionServicio(this.conexiones).anotarSinArchivo(telefono, archivo?.nombre || limpio, captura);
+      return this.dejar(telefono, true, 'Llegó el nombre y no el archivo. La lectura quedó en Imprimir. Manda otra vez el PDF.');
     }
     const texto = await new ImpresionServicio(this.conexiones).enviar(archivo.contenido, archivo.nombre || 'documento.pdf', `sgit-whatsapp-${Date.now()}`, { via: 'whatsapp', telefono });
     const menu = await this.abrirMenu(telefono);

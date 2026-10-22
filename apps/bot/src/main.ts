@@ -495,7 +495,7 @@ async function bajarPdf(mensaje: MensajeEntrante, forzar = false, nombreForzado 
   const datos = datosDe(mensaje);
   const nombre = nombreForzado || datos.filename || datos.body || datos.caption || 'documento.pdf';
   console.error(`SGIT bot: llegó un PDF. tipo=${datos.type || '-'} hasMedia=${mensaje.hasMedia} archivo=${nombre}`);
-  if (!mensaje.hasMedia && mensaje.reload) {
+  if (mensaje.reload) {
     try {
       await mensaje.reload();
     } catch (error) {
@@ -515,7 +515,7 @@ async function bajarPdf(mensaje: MensajeEntrante, forzar = false, nombreForzado 
   }
   const identidad = identidadMensaje(mensaje);
   let ultimoError = '';
-  for (let intento = 0; intento < 3; intento += 1) {
+  for (let intento = 0; intento < 6; intento += 1) {
     const media = await bajarPdfEnPagina(identidad);
     if (media?.data) {
       const listo = clasificarPdf(media.data, media.filename || mensaje.filename || mensaje.body || 'documento.pdf');

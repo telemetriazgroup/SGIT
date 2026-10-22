@@ -4,7 +4,7 @@ import { AlmacenCorreo } from '../buzon/almacen';
 import { cifrar, descifrar } from '../buzon/cifrado';
 import type { Conexiones } from '../conexiones';
 import { leerConfiguracion } from '../configuracion';
-import { esPdf, normalizarBase, textoCaptura, textoTrabajo, type CapturaMensaje, type TrabajoImpresion } from './reglas';
+import { esPdf, lecturaSinPdf, normalizarBase, textoTrabajo, type CapturaMensaje, type TrabajoImpresion } from './reglas';
 
 const MAXIMO = 5 * 1024 * 1024;
 
@@ -105,7 +105,7 @@ export class ImpresionServicio {
       clave: '',
       externalId: '',
       estado: 'sin_archivo',
-      respuesta: captura ? textoCaptura(captura) : 'Llegó el mensaje de WhatsApp sin el PDF. El proceso del bot no adjuntó el documento.',
+      respuesta: lecturaSinPdf(visto, captura),
       telefono,
       autor: '',
     });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { menuGeneral } from '../src/bot/avisos';
-import { capturaDe, esPdf, normalizarBase, textoCaptura, textoTrabajo } from '../src/impresion/reglas';
+import { capturaDe, esPdf, lecturaSinPdf, normalizarBase, textoCaptura, textoTrabajo } from '../src/impresion/reglas';
 
 test('la dirección de impresión queda en el origen y acepta otra IP', () => {
   assert.equal(normalizarBase('http://10.20.0.8:7101'), 'http://10.20.0.8:7101');
@@ -37,11 +37,15 @@ test('la captura de WhatsApp dice por qué el PDF no se guardó', () => {
     decision: 'WhatsApp muestra un PDF, pero el proceso no recibió los bytes.',
     claves: 'type, body',
   });
-  assert.match(texto, /no se guardó como PDF/);
-  assert.match(texto, /Tipo que vio el proceso: chat/);
-  assert.match(texto, /Tipo en WhatsApp: document/);
+  assert.match(texto, /Lectura del proceso/);
+  assert.match(texto, /1\. El proceso recibió el mensaje como tipo chat/);
+  assert.match(texto, /2\. En WhatsApp el mensaje es tipo document/);
   assert.match(texto, /14349 Cotización/);
   assert.match(texto, /Empieza por %PDF: no/);
+  const soloNombre = lecturaSinPdf('14349 Cotización (1).pdf', null);
+  assert.match(soloNombre, /solo este texto/);
+  assert.match(soloNombre, /Bytes del PDF: 0/);
+  assert.match(soloNombre, /Se tomó el nombre y no el documento/);
   assert.equal(capturaDe(null), null);
   assert.equal(capturaDe({ tipoProceso: 'document', tieneMedia: true, bytes: 12.9 })?.bytes, 12);
 });
