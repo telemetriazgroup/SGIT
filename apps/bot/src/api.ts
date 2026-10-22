@@ -1,3 +1,21 @@
+export type CapturaMensaje = {
+  tipoProceso: string;
+  tipoWhatsapp: string;
+  tieneMedia: boolean;
+  mime: string;
+  nombre: string;
+  texto: string;
+  leyenda: string;
+  ruta: boolean;
+  claveMedia: boolean;
+  etapa: string;
+  bytes: number;
+  esPdf: boolean;
+  error: string;
+  decision: string;
+  claves: string;
+};
+
 export type AvisoSalida = {
   id: string;
   destino: string;
@@ -49,14 +67,22 @@ export function crearClienteBot(base: string, clave: string) {
       texto: string,
       archivo: { nombre: string; mime: string; contenido: string } | null,
       archivos: Array<{ nombre: string; mime: string; contenido: string }> = [],
+      captura: CapturaMensaje | null = null,
     ): Promise<{ respuesta: string; archivo?: { nombre: string; mime: string; contenido: string } | null }> {
       const respuesta = await fetch(`${base}/bot/entrar`, {
         method: 'POST',
         headers: cabeza,
-        body: JSON.stringify({ telefono, texto, archivo, archivos }),
+        body: JSON.stringify({ telefono, texto, archivo, archivos, captura }),
       });
       if (!respuesta.ok) return { respuesta: '' };
       return (await respuesta.json()) as { respuesta: string; archivo?: { nombre: string; mime: string; contenido: string } | null };
+    },
+    async capturarImpresion(telefono: string, captura: CapturaMensaje): Promise<void> {
+      await fetch(`${base}/bot/impresion/captura`, {
+        method: 'POST',
+        headers: cabeza,
+        body: JSON.stringify({ telefono, captura }),
+      });
     },
   };
 }

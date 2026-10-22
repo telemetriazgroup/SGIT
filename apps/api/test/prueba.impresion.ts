@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { menuGeneral } from '../src/bot/avisos';
-import { esPdf, normalizarBase, textoTrabajo } from '../src/impresion/reglas';
+import { capturaDe, esPdf, normalizarBase, textoCaptura, textoTrabajo } from '../src/impresion/reglas';
 
 test('la dirección de impresión queda en el origen y acepta otra IP', () => {
   assert.equal(normalizarBase('http://10.20.0.8:7101'), 'http://10.20.0.8:7101');
@@ -17,6 +17,33 @@ test('solo un PDF real pasa y el resultado se dice en claro', () => {
   assert.match(textoTrabajo({ id: 'abc', status: 'queued' }), /en cola/);
   assert.match(textoTrabajo({ status: 'failed', error: 'media-empty' }), /no lo terminó/);
   assert.match(textoTrabajo({ duplicate: true, status: 'completed', id: 'abc' }), /No se imprimió otra vez/);
+});
+
+test('la captura de WhatsApp dice por qué el PDF no se guardó', () => {
+  const texto = textoCaptura({
+    tipoProceso: 'chat',
+    tipoWhatsapp: 'document',
+    tieneMedia: false,
+    mime: '',
+    nombre: '14349 Cotización (1).pdf',
+    texto: '',
+    leyenda: '',
+    ruta: false,
+    claveMedia: false,
+    etapa: '',
+    bytes: 0,
+    esPdf: false,
+    error: 'sin ruta del pdf',
+    decision: 'WhatsApp muestra un PDF, pero el proceso no recibió los bytes.',
+    claves: 'type, body',
+  });
+  assert.match(texto, /no se guardó como PDF/);
+  assert.match(texto, /Tipo que vio el proceso: chat/);
+  assert.match(texto, /Tipo en WhatsApp: document/);
+  assert.match(texto, /14349 Cotización/);
+  assert.match(texto, /Empieza por %PDF: no/);
+  assert.equal(capturaDe(null), null);
+  assert.equal(capturaDe({ tipoProceso: 'document', tieneMedia: true, bytes: 12.9 })?.bytes, 12);
 });
 
 test('el menú del administrador separa imprimir de salir', () => {

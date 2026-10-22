@@ -9,7 +9,7 @@ import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrar
 import { ChipsService } from '../chips/chips.service';
 import { serieChipDe, serieCoincide } from '../chips/orden';
 import { FabricacionServicio } from '../fabricacion/servicio';
-import { esPdf } from '../impresion/reglas';
+import { esPdf, type CapturaMensaje } from '../impresion/reglas';
 import { ImpresionServicio } from '../impresion/servicio';
 import { joinUrgente, ordenFecha, ordenUrgente } from '../tareas/prioridad';
 import { anotarConexion } from '../conexion/bitacora';
@@ -658,6 +658,7 @@ export class BotService {
     archivo: ArchivoNota | null,
     anotador: Anotador,
     extras: ArchivoNota[] = [],
+    captura: CapturaMensaje | null = null,
   ): Promise<RespuestaBot> {
     const numero = digitos(telefono);
     const textoRecibido = texto.trim() || (archivo ? 'Foto' : '');
@@ -672,7 +673,7 @@ export class BotService {
     const charla = await this.charla(numero);
     const limpio = texto.trim();
     if ((charla.paso === 'menu' && charla.pendiente?.impresion) || (archivo && esPdf(archivo.contenido))) {
-      return this.enImpresion(numero, quien.rol, limpio, archivo, charla);
+      return this.enImpresion(numero, quien.rol, limpio, archivo, charla, captura);
     }
     if (quien.rol === 'despacho') return this.atenderDespacho(numero, quien, limpio, charla, archivo, extras);
     if (quien.rol === 'almacen') return this.atenderAlmacen(numero, quien, limpio, archivo, extras);
@@ -2528,7 +2529,15 @@ export class BotService {
     return this.menuOrdenFabricacion(telefono, tareaId, hiloId);
   }
 
-  private async enImpresion(telefono: string, rol: string, limpio: string, archivo: ArchivoNota | null, charla: Charla): Promise<RespuestaBot> {
+  async anotarCapturaImpresion(telefono: string, captura: CapturaMensaje | null): Promise<void> {
+    if (!captura) return;
+    const numero = digitos(telefono);
+    const charla = await this.charla(numero);
+    if (!(charla.paso === 'menu' && charla.pendiente?.impresion)) return;
+    await new ImpresionServicio(this.conexiones).anotarSinArchivo(numero, captura.nombre, captura);
+  }
+
+  private async enImpresion(telefono: string, rol: string, limpio: string, archivo: ArchivoNota | null, charla: Charla, captura: CapturaMensaje | null = null): Promise<RespuestaBot> {
     const elevado = rol === 'administrador' || rol === 'superusuario';
     const esperando = charla.paso === 'menu' && Boolean(charla.pendiente?.impresion);
     if (!elevado) return this.dejar(telefono, true, 'Ese PDF no entra en este paso.');
@@ -2536,7 +2545,7 @@ export class BotService {
     if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(telefono, charla);
     if (/^(menu|menú|0)$/i.test(limpio) && !archivo) return this.abrirMenu(telefono);
     if (!archivo || !esPdf(archivo.contenido)) {
-      if (!limpio || /\.pdf$/i.test(limpio) || archivo) await new ImpresionServicio(this.conexiones).anotarSinArchivo(telefono, limpio);
+      if (!limpio || /\.pdf$/i.test(limpio) || archivo || captura) await new ImpresionServicio(this.conexiones).anotarSinArchivo(telefono, limpio, captura);
       return this.dejar(telefono, true, 'Manda el documento PDF. Escribe menu para volver sin imprimir.');
     }
     const texto = await new ImpresionServicio(this.conexiones).enviar(archivo.contenido, archivo.nombre || 'documento.pdf', `sgit-whatsapp-${Date.now()}`, { via: 'whatsapp', telefono });

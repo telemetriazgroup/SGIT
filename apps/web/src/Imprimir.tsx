@@ -155,7 +155,7 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
         </button>
       </form>
       <h3>Impresiones realizadas</h3>
-      <p className="bajada">Primero se guarda el PDF. Después se envía a la impresora y aquí queda la respuesta.</p>
+      <p className="bajada">Primero se guarda el PDF. Después se envía a la impresora y aquí queda la respuesta. Si WhatsApp no adjunta el documento, aquí queda el mensaje tal como llegó: tipo, nombre, si había archivo y por qué no se guardó.</p>
       {realizadas.length === 0 ? (
         <p>Todavía no hay impresiones.</p>
       ) : (
@@ -168,7 +168,7 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
                 <span>{etiquetaEstado(item.estado)}</span>
               </div>
               <p>{[item.nombre, item.autor, item.telefono].filter(Boolean).join(' · ')}</p>
-              <p>{item.respuesta}</p>
+              <p className="traza-impresion">{item.respuesta}</p>
               {item.guardado ? (
                 vista === item.id ? (
                   <VistaPdf apiUrl={apiUrl} token={token} id={item.id} />

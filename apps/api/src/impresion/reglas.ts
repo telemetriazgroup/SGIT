@@ -30,6 +30,70 @@ export function esPdf(bytes: Buffer): boolean {
   return bytes.length >= 5 && bytes.subarray(0, 5).toString('ascii') === '%PDF-';
 }
 
+export type CapturaMensaje = {
+  tipoProceso: string;
+  tipoWhatsapp: string;
+  tieneMedia: boolean;
+  mime: string;
+  nombre: string;
+  texto: string;
+  leyenda: string;
+  ruta: boolean;
+  claveMedia: boolean;
+  etapa: string;
+  bytes: number;
+  esPdf: boolean;
+  error: string;
+  decision: string;
+  claves: string;
+};
+
+export function textoCaptura(captura: CapturaMensaje): string {
+  const corto = (valor: string) => valor.replace(/\s+/g, ' ').trim().slice(0, 180);
+  return [
+    'El mensaje de WhatsApp no se guardó como PDF y no se mandó a imprimir.',
+    `Decisión: ${corto(captura.decision) || 'sin decisión'}`,
+    `Tipo que vio el proceso: ${corto(captura.tipoProceso) || '(vacío)'}`,
+    `Tipo en WhatsApp: ${corto(captura.tipoWhatsapp) || '(no se pudo leer)'}`,
+    `Tiene archivo: ${captura.tieneMedia ? 'sí' : 'no'}`,
+    `MIME: ${corto(captura.mime) || '(vacío)'}`,
+    `Nombre: ${corto(captura.nombre) || '(vacío)'}`,
+    `Texto: ${corto(captura.texto) || '(vacío)'}`,
+    `Leyenda: ${corto(captura.leyenda) || '(vacío)'}`,
+    `Ruta de descarga: ${captura.ruta ? 'sí' : 'no'}`,
+    `Clave de media: ${captura.claveMedia ? 'sí' : 'no'}`,
+    `Etapa del archivo: ${corto(captura.etapa) || '(vacía)'}`,
+    `Bytes leídos: ${Number.isFinite(captura.bytes) ? captura.bytes : 0}`,
+    `Empieza por %PDF: ${captura.esPdf ? 'sí' : 'no'}`,
+    `Error: ${corto(captura.error) || '(ninguno)'}`,
+    `Campos del mensaje: ${corto(captura.claves) || '(ninguno)'}`,
+  ].join('\n');
+}
+
+export function capturaDe(valor: unknown): CapturaMensaje | null {
+  if (!valor || typeof valor !== 'object') return null;
+  const fila = valor as Record<string, unknown>;
+  const texto = (campo: string) => (typeof fila[campo] === 'string' ? fila[campo] : '');
+  const bytes = typeof fila.bytes === 'number' && Number.isFinite(fila.bytes) ? Math.max(0, Math.floor(fila.bytes)) : 0;
+  return {
+    tipoProceso: texto('tipoProceso'),
+    tipoWhatsapp: texto('tipoWhatsapp'),
+    tieneMedia: fila.tieneMedia === true,
+    mime: texto('mime'),
+    nombre: texto('nombre'),
+    texto: texto('texto'),
+    leyenda: texto('leyenda'),
+    ruta: fila.ruta === true,
+    claveMedia: fila.claveMedia === true,
+    etapa: texto('etapa'),
+    bytes,
+    esPdf: fila.esPdf === true,
+    error: texto('error'),
+    decision: texto('decision'),
+    claves: texto('claves'),
+  };
+}
+
 export function textoTrabajo(trabajo: TrabajoImpresion): string {
   const id = trabajo.id ? ` Trabajo ${trabajo.id}.` : '';
   if (trabajo.duplicate) return `Ese documento ya estaba enviado. No se imprimió otra vez. Estado: ${trabajo.status || 'desconocido'}.${id}`;

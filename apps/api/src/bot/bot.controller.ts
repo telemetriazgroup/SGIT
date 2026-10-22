@@ -5,6 +5,7 @@ import type { Response } from 'express';
 import { IdentidadService } from '../identidad/identidad.service';
 import { Conexiones } from '../conexiones';
 import { TareasService } from '../tareas/tareas.service';
+import { capturaDe } from '../impresion/reglas';
 import { BotService } from './bot.service';
 
 @Controller()
@@ -179,7 +180,7 @@ export class BotController {
   @Post('bot/entrar')
   async entrar(
     @Headers('x-bot-clave') clave: string | undefined,
-    @Body() cuerpo: { telefono?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string }; archivos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
+    @Body() cuerpo: { telefono?: string; texto?: string; archivo?: { nombre?: string; mime?: string; contenido?: string }; archivos?: Array<{ nombre?: string; mime?: string; contenido?: string }>; captura?: unknown },
   ) {
     this.exigirBot(clave);
     if (!cuerpo?.telefono?.trim()) throw new BadRequestException('Indica el teléfono.');
@@ -190,7 +191,15 @@ export class BotController {
       .filter((item) => item.contenido)
       .slice(0, 5)
       .map((item) => ({ nombre: item.nombre ?? 'foto', mime: item.mime ?? '', contenido: Buffer.from(item.contenido ?? '', 'base64') }));
-    return this.bot.recibir(cuerpo.telefono, cuerpo.texto ?? '', archivo, this.tareas, extras);
+    return this.bot.recibir(cuerpo.telefono, cuerpo.texto ?? '', archivo, this.tareas, extras, capturaDe(cuerpo.captura));
+  }
+
+  @Post('bot/impresion/captura')
+  @HttpCode(204)
+  async capturaImpresion(@Headers('x-bot-clave') clave: string | undefined, @Body() cuerpo: { telefono?: string; captura?: unknown }) {
+    this.exigirBot(clave);
+    if (!cuerpo?.telefono?.trim()) return;
+    await this.bot.anotarCapturaImpresion(cuerpo.telefono, capturaDe(cuerpo.captura));
   }
 
   private async exigir(autorizacion?: string) {

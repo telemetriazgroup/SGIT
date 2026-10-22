@@ -1090,6 +1090,12 @@ button:disabled {
   margin: 0;
 }
 
+.traza-impresion {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}
+
 .bitacora-tiempo button {
   margin-top: 8px;
   height: 32px;

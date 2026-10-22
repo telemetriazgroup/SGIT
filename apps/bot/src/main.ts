@@ -4,7 +4,7 @@ import { readFile, rm, writeFile } from 'fs/promises';
 import path from 'path';
 import qrcodeTerminal from 'qrcode-terminal';
 import { Client, LocalAuth, MessageMedia } from 'whatsapp-web.js';
-import { crearClienteBot } from './api';
+import { crearClienteBot, type CapturaMensaje } from './api';
 import { enlazarEstado } from './estado';
 import { directorioDeEstado, rutaDeSesion } from './rutas';
 import { crearSumideroArchivo } from './sumidero';
@@ -31,6 +31,7 @@ type PiezaEntrante = {
   fallo: boolean;
   pdf: boolean;
   pdfGrande: boolean;
+  captura: CapturaMensaje | null;
   mensaje: MensajeEntrante;
 };
 
@@ -302,7 +303,7 @@ type MensajeEntrante = {
   };
   mimetype?: string;
   filename?: string;
-  rawData?: { type?: string; mimetype?: string; filename?: string; caption?: string; body?: string; directPath?: string };
+  rawData?: { type?: string; mimetype?: string; filename?: string; caption?: string; body?: string; directPath?: string; mediaKey?: string };
   downloadMedia: () => Promise<{ data: string; mimetype?: string; filename?: string | null } | undefined>;
   reload?: () => Promise<unknown>;
   getContact: () => Promise<{ number?: string }>;
@@ -312,11 +313,12 @@ type MensajeEntrante = {
 async function atender(mensaje: MensajeEntrante): Promise<void> {
   if (mensaje.fromMe || mensaje.from.endsWith('@g.us')) return;
   const clave = mensaje.from;
-  const pdf = await bajarPdf(mensaje);
+  const sondeo = await sondearPdf(mensaje);
+  const pdf = sondeo.resultado;
   const archivo = pdf && !pdf.grande ? pdf.archivo : await bajarImagen(mensaje);
   const fallo = Boolean(pdf?.fallo) || (pareceImagen(mensaje) && !archivo);
   const grupo = rafaga.get(clave) ?? { piezas: [], token: 0 };
-  grupo.piezas.push({ texto: mensaje.body ?? '', archivo, fallo, pdf: Boolean(pdf), pdfGrande: Boolean(pdf?.grande), mensaje });
+  grupo.piezas.push({ texto: mensaje.body ?? '', archivo, fallo, pdf: Boolean(pdf), pdfGrande: Boolean(pdf?.grande), captura: sondeo.captura, mensaje });
   grupo.token += 1;
   const token = grupo.token;
   rafaga.set(clave, grupo);
@@ -328,20 +330,25 @@ async function atender(mensaje: MensajeEntrante): Promise<void> {
   if (!ultimo) return;
   const llegaron = piezas.map((pieza) => pieza.archivo).filter((item): item is { nombre: string; mime: string; contenido: string } => Boolean(item));
   const { usados, fuera } = recortarArchivos(llegaron);
+  const textos = piezas.map((pieza) => pieza.texto.trim()).filter(Boolean);
+  const escrito = usados.length > 0 ? textos.join('\n') : (textos.at(-1) ?? '');
+  const texto = fuera > 0 ? `${escrito}\nQuedaron fuera ${fuera} fotos de este envío. Mándalas otra vez.`.trim() : escrito;
+  const telefono = await telefonoReal(ultimo);
   if (piezas.some((pieza) => pieza.pdfGrande)) {
+    const captura = piezas.map((pieza) => pieza.captura).find((item): item is CapturaMensaje => Boolean(item)) ?? null;
+    if (captura) await api.capturarImpresion(telefono, captura).catch(() => undefined);
     await ultimo.reply('Ese PDF pesa demasiado. Tiene que ser de menos de 5 MB.');
     return;
   }
   if (piezas.some((pieza) => pieza.fallo) && usados.length === 0) {
     const eraPdf = piezas.some((pieza) => pieza.pdf);
+    const captura = piezas.map((pieza) => pieza.captura).find((item): item is CapturaMensaje => Boolean(item)) ?? null;
+    if (eraPdf && captura) await api.capturarImpresion(telefono, captura).catch(() => undefined);
     await ultimo.reply(eraPdf ? 'No pude leer el PDF. Envíalo otra vez.' : 'No pude leer la imagen. Envíala otra vez, o escribe no para seguir sin imagen.');
     return;
   }
-  const textos = piezas.map((pieza) => pieza.texto.trim()).filter(Boolean);
-  const escrito = usados.length > 0 ? textos.join('\n') : (textos.at(-1) ?? '');
-  const texto = fuera > 0 ? `${escrito}\nQuedaron fuera ${fuera} fotos de este envío. Mándalas otra vez.`.trim() : escrito;
-  const telefono = await telefonoReal(ultimo);
-  const resultado = await api.entrar(telefono, texto, usados[0] ?? null, usados.slice(1));
+  const captura = piezas.map((pieza) => pieza.captura).find((item): item is CapturaMensaje => Boolean(item)) ?? null;
+  const resultado = await api.entrar(telefono, texto, usados[0] ?? null, usados.slice(1), captura);
   if (resultado.archivo?.contenido) {
     const media = new MessageMedia(resultado.archivo.mime, resultado.archivo.contenido, resultado.archivo.nombre);
     try {
@@ -390,10 +397,103 @@ function pareceDocumento(mensaje: MensajeEntrante): boolean {
   return !mime || mime.includes('pdf');
 }
 
-async function bajarPdf(mensaje: MensajeEntrante): Promise<{ archivo: { nombre: string; mime: string; contenido: string } | null; grande: boolean; fallo: boolean } | null> {
-  if (!pareceDocumento(mensaje)) return null;
+type FichaDocumento = {
+  encontrado: boolean;
+  tipo: string;
+  mime: string;
+  nombre: string;
+  cuerpo: string;
+  leyenda: string;
+  etapa: string;
+  ruta: boolean;
+  claveMedia: boolean;
+  bytes: number;
+  esPdf: boolean;
+  error: string;
+};
+
+function mereceMirar(mensaje: MensajeEntrante, datos: { type: string; mimetype: string; filename: string; caption: string; body: string }): boolean {
+  if (pareceDocumento(mensaje)) return true;
+  const tipo = datos.type.toLowerCase();
+  if (tipo === 'image' || tipo === 'sticker' || tipo === 'video' || tipo === 'audio' || tipo === 'ptt') return false;
+  if (tipo === 'document') return true;
+  const nombre = `${datos.filename} ${datos.body} ${datos.caption}`.toLowerCase();
+  if (nombre.includes('.pdf') || datos.mimetype.toLowerCase().includes('pdf')) return true;
+  if (mensaje.hasMedia) return true;
+  return !datos.body.trim() && !datos.caption.trim();
+}
+
+function fichaIndicaPdf(ficha: FichaDocumento): boolean {
+  const mime = ficha.mime.toLowerCase();
+  const nombre = ficha.nombre.trim().toLowerCase();
+  if (mime.includes('pdf') || nombre.endsWith('.pdf') || ficha.esPdf) return true;
+  return ficha.tipo.toLowerCase() === 'document' && (!mime || mime.includes('pdf'));
+}
+
+function clavesDe(mensaje: MensajeEntrante): string {
+  const crudo = mensaje.rawData ?? {};
+  return Object.keys(crudo).filter((clave) => !/key|hash|path|token|secret/i.test(clave)).slice(0, 24).join(', ');
+}
+
+function capturaBase(mensaje: MensajeEntrante, datos: { type: string; mimetype: string; filename: string; caption: string; body: string }, ficha: FichaDocumento): CapturaMensaje {
+  const crudo = mensaje.rawData ?? {};
+  return {
+    tipoProceso: datos.type,
+    tipoWhatsapp: ficha.tipo,
+    tieneMedia: mensaje.hasMedia,
+    mime: ficha.mime || datos.mimetype,
+    nombre: ficha.nombre || datos.filename || datos.body || datos.caption,
+    texto: datos.body,
+    leyenda: datos.caption || ficha.leyenda,
+    ruta: Boolean(crudo.directPath) || ficha.ruta,
+    claveMedia: Boolean(crudo.mediaKey) || ficha.claveMedia,
+    etapa: ficha.etapa,
+    bytes: ficha.bytes,
+    esPdf: ficha.esPdf,
+    error: ficha.error,
+    decision: '',
+    claves: clavesDe(mensaje),
+  };
+}
+
+async function sondearPdf(mensaje: MensajeEntrante): Promise<{ resultado: { archivo: { nombre: string; mime: string; contenido: string } | null; grande: boolean; fallo: boolean; error?: string } | null; captura: CapturaMensaje | null }> {
   const datos = datosDe(mensaje);
-  const nombre = datos.filename || datos.body || datos.caption || 'documento.pdf';
+  if (!mereceMirar(mensaje, datos)) return { resultado: null, captura: null };
+  const ficha = await fichaEnPagina(identidadMensaje(mensaje));
+  const base = capturaBase(mensaje, datos, ficha);
+  if (!pareceDocumento(mensaje) && !fichaIndicaPdf(ficha)) {
+    const visto = base.tipoWhatsapp || base.mime || base.nombre;
+    return {
+      resultado: null,
+      captura: {
+        ...base,
+        decision: visto
+          ? 'WhatsApp trae un mensaje con archivo, pero no es un PDF. No se guardó ni se mandó a imprimir.'
+          : 'El proceso no vio un PDF y WhatsApp tampoco entregó el archivo. No se guardó ni se mandó a imprimir.',
+      },
+    };
+  }
+  const resultado = await bajarPdf(mensaje, true, base.nombre);
+  if (resultado?.archivo) {
+    const bytes = Buffer.from(resultado.archivo.contenido, 'base64');
+    return {
+      resultado,
+      captura: { ...base, nombre: resultado.archivo.nombre, mime: 'application/pdf', bytes: bytes.length, esPdf: true, error: '', decision: 'Se reconoció el PDF. Se guarda y se manda a imprimir.' },
+    };
+  }
+  if (resultado?.grande) {
+    return { resultado, captura: { ...base, decision: 'El archivo es un PDF y supera 5 MB. No se guardó ni se mandó a imprimir.', error: base.error || 'pdf grande' } };
+  }
+  return {
+    resultado: resultado ?? { archivo: null, grande: false, fallo: true },
+    captura: { ...base, decision: 'Parecía un PDF, pero no se pudieron leer los bytes. No se guardó ni se mandó a imprimir.', error: resultado?.error || base.error || 'sin bytes' },
+  };
+}
+
+async function bajarPdf(mensaje: MensajeEntrante, forzar = false, nombreForzado = ''): Promise<{ archivo: { nombre: string; mime: string; contenido: string } | null; grande: boolean; fallo: boolean; error?: string } | null> {
+  if (!forzar && !pareceDocumento(mensaje)) return null;
+  const datos = datosDe(mensaje);
+  const nombre = nombreForzado || datos.filename || datos.body || datos.caption || 'documento.pdf';
   console.error(`SGIT bot: llegó un PDF. tipo=${datos.type || '-'} hasMedia=${mensaje.hasMedia} archivo=${nombre}`);
   if (!mensaje.hasMedia && mensaje.reload) {
     try {
@@ -427,7 +527,7 @@ async function bajarPdf(mensaje: MensajeEntrante): Promise<{ archivo: { nombre: 
     await esperar(800);
   }
   console.error(`SGIT bot: no pude leer el PDF. tipo=${mensaje.type || '-'} ${ultimoError || 'sin bytes'}`);
-  return { archivo: null, grande: false, fallo: true };
+  return { archivo: null, grande: false, fallo: true, error: ultimoError || 'sin bytes' };
 }
 
 function clasificarPdf(data: string, nombre: string): { archivo: { nombre: string; mime: string; contenido: string } | null; grande: boolean; fallo: boolean } | null {
@@ -529,6 +629,105 @@ const leerPdfEnWhatsapp = new Function(
     }
   })();`,
 ) as (clave: { fromMe: boolean; remote: string; id: string; serial: string }) => Promise<{ data: string; filename: string; error: string }>;
+
+const leerFichaDocumento = new Function(
+  'clave',
+  `return (async () => {
+    function fallo(error) {
+      if (!error) return 'no se pudo leer';
+      return (error.name ? error.name + ': ' : '') + (error.message || String(error));
+    }
+    function serie(valor) {
+      if (!valor) return '';
+      return valor._serialized || valor.$1 || '';
+    }
+    function esPdf(buffer) {
+      var b = new Uint8Array(buffer);
+      return b.length >= 5 && b[0] === 37 && b[1] === 80 && b[2] === 68 && b[3] === 70 && b[4] === 45;
+    }
+    function vacio(error) {
+      return { encontrado: false, tipo: '', mime: '', nombre: '', cuerpo: '', leyenda: '', etapa: '', ruta: false, claveMedia: false, bytes: 0, esPdf: false, error: error };
+    }
+    async function buscar() {
+      var coleccion = window.require('WAWebCollections').Msg;
+      var candidatos = [];
+      if (clave.serial) candidatos.push(clave.serial);
+      if (clave.remote && clave.id) candidatos.push((clave.fromMe ? 'true' : 'false') + '_' + clave.remote + '_' + clave.id);
+      try {
+        var fabrica = window.require('WAWebWidFactory');
+        if (clave.remote && fabrica.createWid && clave.id) {
+          candidatos.push({ fromMe: clave.fromMe, remote: fabrica.createWid(clave.remote), id: clave.id, _serialized: clave.serial });
+        }
+      } catch (error) {}
+      for (var i = 0; i < candidatos.length; i++) {
+        try {
+          var directo = coleccion.get(candidatos[i]);
+          if (directo) return directo;
+        } catch (error) {}
+        try {
+          var hallados = await coleccion.getMessagesById([candidatos[i]]);
+          if (hallados && hallados.messages && hallados.messages[0]) return hallados.messages[0];
+        } catch (error) {}
+      }
+      var modelos = (coleccion.getModelsArray && coleccion.getModelsArray()) || coleccion.models || [];
+      for (var j = 0; j < modelos.length; j++) {
+        var suyo = serie(modelos[j].id);
+        if (suyo && (suyo === clave.serial || (clave.id && suyo.slice(-clave.id.length - 1) === '_' + clave.id))) return modelos[j];
+      }
+      return null;
+    }
+    try {
+      var msg = await buscar();
+      if (!msg) return vacio('mensaje no encontrado en WhatsApp');
+      var mime = String(msg.mimetype || (msg.mediaObject && msg.mediaObject.mimetype) || '');
+      var nombre = String(msg.filename || '');
+      var bytes = 0;
+      var es = false;
+      var hash = (msg.mediaObject && msg.mediaObject.filehash) || msg.filehash || '';
+      var blob = null;
+      try {
+        var modulo = window.require('WAWebMediaInMemoryBlobCache');
+        var cache = modulo.InMemoryMediaBlobCache || modulo;
+        if (hash && cache && cache.get) blob = cache.get(hash) || null;
+      } catch (error) {}
+      if (!blob && msg.mediaObject && msg.mediaObject.mediaBlob && msg.mediaObject.mediaBlob.forceToBlob) {
+        try { blob = msg.mediaObject.mediaBlob.forceToBlob(); } catch (error) {}
+      }
+      if (blob && blob.arrayBuffer) {
+        var previo = await blob.arrayBuffer();
+        bytes = previo.byteLength || 0;
+        es = esPdf(previo);
+      }
+      return {
+        encontrado: true,
+        tipo: String(msg.type || ''),
+        mime: mime,
+        nombre: nombre,
+        cuerpo: String(msg.body || '').slice(0, 180),
+        leyenda: String(msg.caption || '').slice(0, 180),
+        etapa: String((msg.mediaData && msg.mediaData.mediaStage) || ''),
+        ruta: Boolean(msg.directPath),
+        claveMedia: Boolean(msg.mediaKey),
+        bytes: bytes,
+        esPdf: es,
+        error: ''
+      };
+    } catch (error) {
+      return vacio(fallo(error));
+    }
+  })();`,
+) as (clave: { fromMe: boolean; remote: string; id: string; serial: string }) => Promise<FichaDocumento>;
+
+async function fichaEnPagina(identidad: { fromMe: boolean; remote: string; id: string; serial: string }): Promise<FichaDocumento> {
+  const vacia = (error: string): FichaDocumento => ({ encontrado: false, tipo: '', mime: '', nombre: '', cuerpo: '', leyenda: '', etapa: '', ruta: false, claveMedia: false, bytes: 0, esPdf: false, error });
+  const pagina = cliente.pupPage;
+  if (!pagina || (!identidad.serial && !identidad.id)) return vacia('sin identificador del mensaje');
+  try {
+    return await pagina.evaluate(leerFichaDocumento, identidad);
+  } catch (error) {
+    return vacia(detalle(error));
+  }
+}
 
 async function bajarPdfEnPagina(identidad: { fromMe: boolean; remote: string; id: string; serial: string }): Promise<{ data: string; filename: string; error: string } | null> {
   const pagina = cliente.pupPage;

@@ -4,7 +4,7 @@ import { AlmacenCorreo } from '../buzon/almacen';
 import { cifrar, descifrar } from '../buzon/cifrado';
 import type { Conexiones } from '../conexiones';
 import { leerConfiguracion } from '../configuracion';
-import { esPdf, normalizarBase, textoTrabajo, type TrabajoImpresion } from './reglas';
+import { esPdf, normalizarBase, textoCaptura, textoTrabajo, type CapturaMensaje, type TrabajoImpresion } from './reglas';
 
 const MAXIMO = 5 * 1024 * 1024;
 
@@ -96,15 +96,16 @@ export class ImpresionServicio {
     }));
   }
 
-  async anotarSinArchivo(telefono: string, nombre = ''): Promise<void> {
+  async anotarSinArchivo(telefono: string, nombre = '', captura?: CapturaMensaje | null): Promise<void> {
+    const visto = (captura?.nombre || nombre).replace(/[\r\n"]/g, '').trim().slice(0, 180);
     await this.anotar({
       id: randomUUID(),
       via: 'whatsapp',
-      nombre: nombre.replace(/[\r\n"]/g, '').trim().slice(0, 180),
+      nombre: visto,
       clave: '',
       externalId: '',
       estado: 'sin_archivo',
-      respuesta: 'Llegó el mensaje de WhatsApp sin el PDF. El proceso del bot no adjuntó el documento.',
+      respuesta: captura ? textoCaptura(captura) : 'Llegó el mensaje de WhatsApp sin el PDF. El proceso del bot no adjuntó el documento.',
       telefono,
       autor: '',
     });
