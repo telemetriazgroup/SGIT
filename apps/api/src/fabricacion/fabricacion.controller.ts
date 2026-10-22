@@ -51,7 +51,7 @@ export class FabricacionController {
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     const leido = await this.fabricacion.leerReporte(hiloId);
     if (!leido.ok) return { texto: leido.texto };
-    const texto = await new ImpresionServicio(this.conexiones).enviar(leido.pdf, leido.nombre, `sgit-mo-${leido.id}-${Date.now()}`);
+    const texto = await new ImpresionServicio(this.conexiones).enviar(leido.pdf, leido.nombre, `sgit-mo-${leido.id}-${Date.now()}`, { via: 'orden', autor: usuario.nombre });
     await this.fabricacion.anotarImpresion(hiloId, usuario, texto);
     return { texto };
   }

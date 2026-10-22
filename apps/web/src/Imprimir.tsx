@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 
 type Configuracion = { baseUrl: string; clavePuesta: boolean };
+type Realizada = { id: string; via: 'whatsapp' | 'web' | 'orden'; nombre: string; estado: string; respuesta: string; telefono: string; autor: string; creadoEn: string };
 
 export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string }) {
   const [baseUrl, setBaseUrl] = useState('');
@@ -9,6 +10,7 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
   const [archivo, setArchivo] = useState<File | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  const [realizadas, setRealizadas] = useState<Realizada[]>([]);
 
   useEffect(() => {
     void pedir<Configuracion>(apiUrl, token, '/impresion/configuracion')
@@ -17,7 +19,16 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
         setClavePuesta(config.clavePuesta);
       })
       .catch((error: unknown) => setAviso(texto(error)));
+    void cargarRealizadas();
+    const reloj = window.setInterval(() => void cargarRealizadas(), 8000);
+    return () => window.clearInterval(reloj);
   }, [apiUrl, token]);
+
+  function cargarRealizadas() {
+    return pedir<Realizada[]>(apiUrl, token, '/impresion/realizadas')
+      .then(setRealizadas)
+      .catch((error: unknown) => setAviso(texto(error)));
+  }
 
   async function guardar(evento: FormEvent) {
     evento.preventDefault();
@@ -70,6 +81,7 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
         body: JSON.stringify({ nombre: archivo.name, contenido }),
       });
       setAviso(respuesta.texto);
+      await cargarRealizadas();
     } catch (error: unknown) {
       setAviso(texto(error));
     } finally {
@@ -135,6 +147,25 @@ export function PanelImprimir({ apiUrl, token }: { apiUrl: string; token: string
           Enviar a imprimir
         </button>
       </form>
+      <h3>Impresiones realizadas</h3>
+      <p className="bajada">Primero se guarda el PDF. Después se envía a la impresora y aquí queda la respuesta.</p>
+      {realizadas.length === 0 ? (
+        <p>Todavía no hay impresiones.</p>
+      ) : (
+        <ol className="bitacora-tiempo">
+          {realizadas.map((item) => (
+            <li key={item.id}>
+              <div className="bitacora-evento">
+                <time>{cuando(item.creadoEn)}</time>
+                <strong>{etiquetaVia(item.via)}</strong>
+                <span>{etiquetaEstado(item.estado)}</span>
+              </div>
+              <p>{[item.nombre, item.autor, item.telefono].filter(Boolean).join(' · ')}</p>
+              <p>{item.respuesta}</p>
+            </li>
+          ))}
+        </ol>
+      )}
     </section>
   );
 }
@@ -167,4 +198,25 @@ async function pedir<T>(apiUrl: string, token: string, ruta: string, init?: Requ
 
 function texto(error: unknown): string {
   return error instanceof Error ? error.message : 'No se pudo completar la operación.';
+}
+
+function etiquetaVia(via: Realizada['via']): string {
+  if (via === 'whatsapp') return 'WhatsApp';
+  if (via === 'orden') return 'Orden de fabricación';
+  return 'Prueba';
+}
+
+function etiquetaEstado(estado: string): string {
+  if (estado === 'guardado') return 'Guardado';
+  if (estado === 'enviando') return 'Enviando';
+  if (estado === 'enviado') return 'En la impresora';
+  if (estado === 'impreso') return 'Impreso';
+  if (estado === 'sin_archivo') return 'Sin PDF';
+  return 'No se imprimió';
+}
+
+function cuando(valor: string): string {
+  const fecha = new Date(valor);
+  if (Number.isNaN(fecha.getTime())) return '';
+  return fecha.toLocaleString('es-PE', { hour12: false });
 }

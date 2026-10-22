@@ -29,13 +29,19 @@ export class ImpresionController {
     return { texto: await new ImpresionServicio(this.conexiones).probar() };
   }
 
+  @Get('realizadas')
+  async realizadas(@Headers('authorization') autorizacion?: string) {
+    await this.exigir(autorizacion);
+    return new ImpresionServicio(this.conexiones).realizadas();
+  }
+
   @Post('enviar')
   async enviar(@Headers('authorization') autorizacion: string | undefined, @Body() cuerpo: { nombre?: string; contenido?: string }) {
-    await this.exigir(autorizacion);
+    const usuario = await this.exigir(autorizacion);
     const pdf = Buffer.from(cuerpo?.contenido ?? '', 'base64');
     if (!esPdf(pdf)) throw new BadRequestException('El archivo no es un PDF.');
     if (pdf.length > 5 * 1024 * 1024) throw new BadRequestException('El PDF supera 5 MB.');
-    const texto = await new ImpresionServicio(this.conexiones).enviar(pdf, cuerpo?.nombre ?? 'prueba.pdf', `sgit-prueba-${Date.now()}`);
+    const texto = await new ImpresionServicio(this.conexiones).enviar(pdf, cuerpo?.nombre ?? 'prueba.pdf', `sgit-prueba-${Date.now()}`, { via: 'web', autor: usuario.nombre });
     return { texto };
   }
 

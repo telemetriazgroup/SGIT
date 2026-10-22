@@ -2535,8 +2535,11 @@ export class BotService {
     if (!esperando) return this.dejar(telefono, true, 'Para imprimir, vuelve al menú general y escribe 5. Luego manda el PDF.');
     if (/^salir$/i.test(limpio) && !archivo) return this.cancelarTecnico(telefono, charla);
     if (/^(menu|menú|0)$/i.test(limpio) && !archivo) return this.abrirMenu(telefono);
-    if (!archivo || !esPdf(archivo.contenido)) return this.dejar(telefono, true, 'Manda el documento PDF. Escribe menu para volver sin imprimir.');
-    const texto = await new ImpresionServicio(this.conexiones).enviar(archivo.contenido, archivo.nombre || 'documento.pdf', `sgit-whatsapp-${Date.now()}`);
+    if (!archivo || !esPdf(archivo.contenido)) {
+      if (!limpio || /\.pdf$/i.test(limpio) || archivo) await new ImpresionServicio(this.conexiones).anotarSinArchivo(telefono);
+      return this.dejar(telefono, true, 'Manda el documento PDF. Escribe menu para volver sin imprimir.');
+    }
+    const texto = await new ImpresionServicio(this.conexiones).enviar(archivo.contenido, archivo.nombre || 'documento.pdf', `sgit-whatsapp-${Date.now()}`, { via: 'whatsapp', telefono });
     const menu = await this.abrirMenu(telefono);
     return { ...menu, respuesta: `${texto}\n${menu.respuesta}` };
   }
@@ -2548,8 +2551,9 @@ export class BotService {
       const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
       return { ...menu, respuesta: `${leido.texto}\n${menu.respuesta}` };
     }
-    const texto = await new ImpresionServicio(this.conexiones).enviar(leido.pdf, leido.nombre, `sgit-mo-${leido.id}-${Date.now()}`);
-    await servicio.anotarImpresion(hiloId, await this.autorDe(telefono), texto);
+    const autor = await this.autorDe(telefono);
+    const texto = await new ImpresionServicio(this.conexiones).enviar(leido.pdf, leido.nombre, `sgit-mo-${leido.id}-${Date.now()}`, { via: 'orden', telefono, autor: autor.nombre });
+    await servicio.anotarImpresion(hiloId, autor, texto);
     const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
     return { ...menu, respuesta: `${texto}\n${menu.respuesta}` };
   }
