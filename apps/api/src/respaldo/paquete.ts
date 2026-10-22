@@ -62,8 +62,12 @@ export async function carpetaTemporal(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), 'sgit-partida-'));
 }
 
+export function carpetaPartida(): string {
+  return path.join(directorioDatos(), 'partida-extraida');
+}
+
 export async function empaquetar(origen: string, destino: string): Promise<void> {
-  const nombres = await readdir(origen);
+  const nombres = (await readdir(origen)).sort((a, b) => Number(b === 'manifiesto.json') - Number(a === 'manifiesto.json'));
   if (nombres.length === 0) throw new Error('La partida no tiene archivos.');
   await ejecutar('tar', ['-czf', destino, '-C', origen, ...nombres]);
 }

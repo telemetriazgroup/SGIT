@@ -23,7 +23,7 @@ async function main() {
   app.use(json({ limit: '8mb' }));
   app.use(urlencoded({ extended: true, limit: '8mb' }));
   app.enableCors({
-    origin: (origen, responder) => {
+    origin: (origen: string | undefined, responder: (error: Error | null, permitir?: boolean) => void) => {
       const aceptado = !origen || origenAceptado(origen, configuracion.webOrigin);
       responder(null, aceptado);
     },

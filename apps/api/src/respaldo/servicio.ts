@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { mkdir, readFile, readdir, writeFile } from 'fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
 import path from 'path';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AlmacenCorreo } from '../buzon/almacen';
@@ -8,13 +8,13 @@ import type { Conexiones } from '../conexiones';
 import {
   NOMBRE_PARTIDA,
   borrarCarpeta,
+  carpetaPartida,
   carpetaTemporal,
   desempaquetar,
   directorioDatos,
   empaquetar,
   esPartida,
   leerJson,
-  manifiestoDe,
   rutaPartida,
   textoPartida,
   type ManifiestoPartida,
@@ -44,8 +44,12 @@ type Resumen = {
   diccionario: number;
 };
 
+type FasePartida = 'ocioso' | 'extrayendo' | 'importando' | 'listo' | 'error';
+
 export class RespaldoServicio {
   private readonly almacen: AlmacenCorreo;
+  private corriendo = false;
+  private asimilacion: { fase: FasePartida; texto: string } = { fase: 'ocioso', texto: '' };
 
   constructor(private readonly conexiones: Conexiones) {
     this.almacen = new AlmacenCorreo(conexiones);
@@ -276,15 +280,27 @@ export class RespaldoServicio {
     throw new BadRequestException('Ese archivo no es de correos ni de la clasificación.');
   }
 
-  async estadoPartida(): Promise<{ presente: boolean; ruta: string; nombre: string; manifiesto: ManifiestoPartida | null; texto: string }> {
+  async estadoPartida(): Promise<{ presente: boolean; ruta: string; nombre: string; manifiesto: null; texto: string; fase: FasePartida; bytes: number }> {
     const ruta = rutaPartida();
-    const manifiesto = await manifiestoDe(ruta);
+    const info = await stat(ruta).catch((error: unknown) => {
+      if ((error as { code?: string }).code === 'ENOENT') return null;
+      throw error;
+    });
+    const bytes = info?.size ?? 0;
+    if (this.asimilacion.fase !== 'ocioso') {
+      return { presente: Boolean(info), ruta, nombre: NOMBRE_PARTIDA, manifiesto: null, texto: this.asimilacion.texto, fase: this.asimilacion.fase, bytes };
+    }
+    if (!info) {
+      return { presente: false, ruta, nombre: NOMBRE_PARTIDA, manifiesto: null, texto: 'Todavía no hay una partida en el servidor.', fase: 'ocioso', bytes: 0 };
+    }
     return {
-      presente: Boolean(manifiesto),
+      presente: true,
       ruta,
       nombre: NOMBRE_PARTIDA,
-      manifiesto,
-      texto: manifiesto ? textoPartida(manifiesto) : 'Todavía no hay una partida en el servidor.',
+      manifiesto: null,
+      texto: `Partida en el servidor (${tamanoLegible(bytes)}). Pulsa Asimilar. Se abre en el servidor y puedes dejar esta pantalla.`,
+      fase: 'ocioso',
+      bytes,
     };
   }
 
@@ -322,24 +338,65 @@ export class RespaldoServicio {
   }
 
   async asimilarPartida(): Promise<string> {
-    const ruta = rutaPartida();
-    const manifiesto = await manifiestoDe(ruta);
-    if (!manifiesto) throw new BadRequestException('No hay una partida de SGIT en el servidor. Copia sgit-partida.tar.gz a la carpeta de datos.');
-    const carpeta = await carpetaTemporal();
+    if (this.corriendo) return this.asimilacion.texto;
+    this.corriendo = true;
+    let info: { size: number } | null = null;
     try {
-      await desempaquetar(ruta, carpeta);
+      info = await stat(rutaPartida());
+    } catch (error: unknown) {
+      this.corriendo = false;
+      if ((error as { code?: string }).code === 'ENOENT') {
+        throw new BadRequestException('No hay una partida de SGIT en el servidor. Copia sgit-partida.tar.gz a la carpeta de datos.');
+      }
+      throw error;
+    }
+    if (!info) {
+      this.corriendo = false;
+      throw new BadRequestException('No hay una partida de SGIT en el servidor. Copia sgit-partida.tar.gz a la carpeta de datos.');
+    }
+    const aviso = `Estoy abriendo la partida (${tamanoLegible(info.size)}). Puedes dejar esta pantalla; sigue en el servidor.`;
+    this.asimilacion = { fase: 'extrayendo', texto: aviso };
+    void this.correrAsimilacion().catch((error: unknown) => {
+      this.asimilacion = { fase: 'error', texto: error instanceof Error ? error.message : 'No se pudo asimilar la partida.' };
+      this.corriendo = false;
+    });
+    return aviso;
+  }
+
+  private async correrAsimilacion(): Promise<void> {
+    const ruta = rutaPartida();
+    const carpeta = carpetaPartida();
+    const marca = path.join(carpeta, '.extraida');
+    try {
+      const extraida = await stat(marca).then(() => true).catch(() => false);
+      if (!extraida) {
+        await borrarCarpeta(carpeta);
+        await mkdir(carpeta, { recursive: true });
+        await desempaquetar(ruta, carpeta);
+        await writeFile(marca, new Date().toISOString());
+      }
       const leido = await leerJson<unknown>(path.join(carpeta, 'manifiesto.json'));
       if (!esPartida(leido)) throw new BadRequestException('Ese archivo no es una partida de SGIT.');
       const correos = path.join(carpeta, 'correos');
       const nombres = await nombresDe(correos);
-      for (const nombre of nombres.filter((item) => item.includes('mensajes') && item.endsWith('.json'))) {
-        await this.importarMensajes(await leerJson<ParteMensajes>(dentro(correos, nombre)));
+      const mensajes = nombres.filter((item) => item.includes('mensajes') && item.endsWith('.json'));
+      const adjuntos = nombres.filter((item) => item.includes('adjuntos') && item.endsWith('.json'));
+      this.asimilacion = { fase: 'importando', texto: 'Estoy guardando los correos.' };
+      for (let indice = 0; indice < mensajes.length; indice += 1) {
+        this.asimilacion = { fase: 'importando', texto: `Estoy guardando correos, parte ${indice + 1} de ${mensajes.length}.` };
+        await this.importarMensajes(await leerJson<ParteMensajes>(dentro(correos, mensajes[indice] ?? '')));
       }
-      for (const nombre of nombres.filter((item) => item.includes('adjuntos') && item.endsWith('.json'))) {
-        const parte = await leerJson<ParteAdjuntos>(dentro(correos, nombre));
+      for (let indice = 0; indice < adjuntos.length; indice += 1) {
+        this.asimilacion = { fase: 'importando', texto: `Estoy guardando adjuntos, parte ${indice + 1} de ${adjuntos.length}.` };
+        const parte = await leerJson<ParteAdjuntos>(dentro(correos, adjuntos[indice] ?? ''));
         await this.importarAdjuntos(parte);
-        for (const adjunto of parte.adjuntos ?? []) {
-          if (!adjunto.archivo) continue;
+        const conArchivo = (parte.adjuntos ?? []).filter((adjunto) => adjunto.archivo);
+        for (let archivo = 0; archivo < conArchivo.length; archivo += 1) {
+          const adjunto = conArchivo[archivo];
+          if (!adjunto?.archivo) continue;
+          if (archivo % 20 === 0) {
+            this.asimilacion = { fase: 'importando', texto: `Estoy guardando adjuntos, parte ${indice + 1} de ${adjuntos.length}, archivo ${archivo + 1} de ${conArchivo.length}.` };
+          }
           const bytes = await readFile(dentro(correos, adjunto.archivo));
           await this.guardarArchivo({
             mensaje: adjunto.gmailMensajeId,
@@ -351,13 +408,15 @@ export class RespaldoServicio {
           }, bytes);
         }
       }
+      this.asimilacion = { fase: 'importando', texto: 'Estoy guardando la clasificación, los chips y el M2M.' };
       await this.importarClasificacion(await leerJson<ParteClasificacion>(path.join(carpeta, 'clasificacion.json')));
       await this.importarChips(await leerSiExiste(path.join(carpeta, 'chips.json'), { chips: [] }));
       await this.importarModems(await leerSiExiste(path.join(carpeta, 'modems.json'), { modems: [], movimientos: [] }));
       await this.cubrirRangos(leido.correos.rangos);
-      return textoPartida(leido, true);
+      this.asimilacion = { fase: 'listo', texto: textoPartida(leido, true) };
+      await borrarCarpeta(carpeta).catch(() => undefined);
     } finally {
-      await borrarCarpeta(carpeta);
+      this.corriendo = false;
     }
   }
 
@@ -867,6 +926,11 @@ export class RespaldoServicio {
       clave: fila.clave_almacen,
     };
   }
+}
+
+function tamanoLegible(bytes: number): string {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
 function ordenarTareas(tareas: TareaExportada[]): TareaExportada[] {

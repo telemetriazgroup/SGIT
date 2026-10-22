@@ -45,6 +45,8 @@ export default defineConfig({
       '/servicio': {
         target: process.env.API_INTERNO || 'http://api:18003',
         rewrite: (ruta) => ruta.replace(/^\/servicio/, '/SGIT'),
+        timeout: 0,
+        proxyTimeout: 0,
       },
     },
   },

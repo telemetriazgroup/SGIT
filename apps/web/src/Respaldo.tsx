@@ -17,6 +17,7 @@ type Partida = {
   ruta: string;
   nombre: string;
   texto: string;
+  fase?: 'ocioso' | 'extrayendo' | 'importando' | 'listo' | 'error';
 };
 
 type AdjuntoParte = {
@@ -36,6 +37,7 @@ export function PanelRespaldo({ apiUrl, token }: { apiUrl: string; token: string
   const [parteAdjunto, setParteAdjunto] = useState('1');
   const [aviso, setAviso] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  const [siguiendo, setSiguiendo] = useState(false);
   const parar = useRef(false);
 
   useEffect(() => {
@@ -43,9 +45,33 @@ export function PanelRespaldo({ apiUrl, token }: { apiUrl: string; token: string
       .then(setResumen)
       .catch((error: unknown) => setAviso(texto(error)));
     void pedir<Partida>(apiUrl, token, '/respaldo/partida')
-      .then(setPartida)
+      .then((dato) => {
+        setPartida(dato);
+        if (dato.fase === 'extrayendo' || dato.fase === 'importando') {
+          setAviso(dato.texto);
+          setOcupado(true);
+          setSiguiendo(true);
+        }
+      })
       .catch(() => setPartida(null));
   }, [apiUrl, token]);
+
+  useEffect(() => {
+    if (!siguiendo) return undefined;
+    const id = setInterval(() => {
+      void pedir<Partida>(apiUrl, token, '/respaldo/partida')
+        .then((dato) => {
+          setPartida(dato);
+          setAviso(dato.texto);
+          if (dato.fase !== 'extrayendo' && dato.fase !== 'importando') {
+            setSiguiendo(false);
+            setOcupado(false);
+          }
+        })
+        .catch((error: unknown) => setAviso(texto(error)));
+    }, 4000);
+    return () => clearInterval(id);
+  }, [siguiendo, apiUrl, token]);
 
   async function crearPartida() {
     setOcupado(true);
@@ -76,9 +102,9 @@ export function PanelRespaldo({ apiUrl, token }: { apiUrl: string; token: string
     try {
       const resultado = await pedir<{ texto: string }>(apiUrl, token, '/respaldo/partida/asimilar', { method: 'POST', body: '{}' });
       setAviso(resultado.texto);
+      setSiguiendo(true);
     } catch (error: unknown) {
       setAviso(texto(error));
-    } finally {
       setOcupado(false);
     }
   }
