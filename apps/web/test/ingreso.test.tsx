@@ -89,3 +89,7 @@ test('desde otro equipo el ingreso sale por la misma pantalla', () => {
     'http://161.132.53.51:18004/servicio',
   );
 });
+
+test('detrás de https el API queda en el mismo dominio', () => {
+  expect(urlDelApi({ protocol: 'https:', hostname: 'ztrack.app', port: '' })).toBe('https://ztrack.app/servicio');
+});

@@ -41,6 +41,7 @@ export default defineConfig({
   server: {
     port: 18004,
     strictPort: true,
+    allowedHosts: ['ztrack.app', 'localhost', '127.0.0.1', '161.132.53.51'],
     proxy: {
       '/servicio': {
         target: process.env.API_INTERNO || 'http://api:18003',

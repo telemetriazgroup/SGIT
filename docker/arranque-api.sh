@@ -7,7 +7,6 @@ export DATABASE_URL="postgres://sgit:sgit@postgres:5432/sgit"
 export REDIS_URL="redis://redis:6379"
 export S3_ENDPOINT="http://minio:9000"
 export PORT="${PORT:-18003}"
-export WEB_ORIGIN="${WEB_ORIGIN:-http://localhost:18004}"
 export PUPPETEER_SKIP_DOWNLOAD=true
 
 if [ ! -x node_modules/.bin/tsx ]; then
