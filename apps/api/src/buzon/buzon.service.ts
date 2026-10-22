@@ -57,7 +57,7 @@ export class BuzonService {
     this.almacen = new AlmacenCorreo(conexiones);
   }
 
-  async onModuleInit(): Promise<void> {
+  async onApplicationBootstrap(): Promise<void> {
     if (!this.config.iniciarSync) return;
     if (await this.preferenciaSync()) this.arrancarSync();
   }
@@ -708,7 +708,7 @@ export class BuzonService {
       return resultado.rows[0]?.sync_automatica ?? true;
     } catch (error) {
       const codigo = (error as { code?: string }).code;
-      if (codigo === '42703') return true;
+      if (codigo === '42703' || codigo === '42P01') return true;
       throw error;
     }
   }

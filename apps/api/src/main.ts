@@ -24,7 +24,14 @@ async function main() {
   app.use(urlencoded({ extended: true, limit: '8mb' }));
   app.enableCors({ origin: origenesWeb(configuracion.webOrigin), exposedHeaders: ['content-disposition'] });
   await app.listen(configuracion.port, '0.0.0.0');
+  console.log(`SGIT API listo en http://0.0.0.0:${configuracion.port}${RUTA_ACCESO}/salud`);
 }
+
+main().catch((error: unknown) => {
+  const mensaje = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error(`SGIT no arrancó. ${mensaje}`);
+  process.exit(1);
+});
 
 function origenesWeb(origen: string): string[] {
   const origenes = [origen];
@@ -38,5 +45,3 @@ function origenesWeb(origen: string): string[] {
   }
   return origenes;
 }
-
-main();
