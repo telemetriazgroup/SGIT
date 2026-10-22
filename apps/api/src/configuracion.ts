@@ -38,6 +38,11 @@ export type LecturaOdoo = {
   sesion?: { usuario: string; clave: string };
 };
 
+export function urlDeEntrada(origen: string): string {
+  const base = origen.trim().replace(/\/$/, '').replace(/\/SGIT$/, '');
+  return `${base}/SGIT/`;
+}
+
 const OBLIGATORIAS = [
   'DATABASE_URL',
   'REDIS_URL',
@@ -85,7 +90,7 @@ export function leerConfiguracion(env: NodeJS.ProcessEnv = process.env): Configu
         ? {
             clientId,
             clientSecret,
-            redirectUri: env.GOOGLE_REDIRECT_URI?.trim() || `http://localhost:${port}/buzon/oauth/callback`,
+            redirectUri: env.GOOGLE_REDIRECT_URI?.trim() || `http://localhost:${port}/SGIT/buzon/oauth/callback`,
             correo: (env.GMAIL_CORREO?.trim() || 'telemetria@zgroup.com.pe').toLowerCase(),
           }
         : null,

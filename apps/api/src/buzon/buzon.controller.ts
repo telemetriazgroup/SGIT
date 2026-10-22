@@ -15,7 +15,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import type { Configuracion } from '../configuracion';
+import { urlDeEntrada, type Configuracion } from '../configuracion';
 import { IdentidadService } from '../identidad/identidad.service';
 import { puedeOperarSistema } from '../identidad/permisos';
 import { BuzonService } from './buzon.service';
@@ -45,17 +45,17 @@ export class BuzonController {
 
   @Get('buzon/oauth/callback')
   async callback(@Query('code') code: string | undefined, @Query('state') state: string | undefined, @Res() respuesta: Response) {
-    const destino = this.config.webOrigin;
+    const destino = urlDeEntrada(this.config.webOrigin);
     if (!code || !state || !estadoVigente(state, this.config.sesionSecreto)) {
-      respuesta.redirect(`${destino}/?gmail=error`);
+      respuesta.redirect(`${destino}?gmail=error`);
       return;
     }
     try {
       await this.buzon.cambiarCodigo(code);
-      respuesta.redirect(`${destino}/?gmail=conectado`);
+      respuesta.redirect(`${destino}?gmail=conectado`);
     } catch (error) {
       const mensaje = error instanceof Error ? error.message : 'No se pudo conectar el buzón.';
-      respuesta.redirect(`${destino}/?gmail=error&motivo=${encodeURIComponent(mensaje)}`);
+      respuesta.redirect(`${destino}?gmail=error&motivo=${encodeURIComponent(mensaje)}`);
     }
   }
 

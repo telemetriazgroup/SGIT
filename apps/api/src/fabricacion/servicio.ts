@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
 import { AlmacenCorreo } from '../buzon/almacen';
 import type { Conexiones } from '../conexiones';
-import { leerConfiguracion, type LecturaOdoo } from '../configuracion';
+import { leerConfiguracion, urlDeEntrada, type LecturaOdoo } from '../configuracion';
 import { hiloListo, listarHilos } from '../tareas/hilos';
 import { aplicarSeleccion, completarNombres, confirmarOrden, estadoDeOrden, marcarConsumido, pdfDeOrden, registrarConstancia, tomarOrden } from './odoo';
 import { ejecutorDe, huellaConsumidos, notaInsumos, notasRegistro, textoMateriales, type MaterialPedido } from './reglas';
@@ -348,7 +348,7 @@ export class FabricacionServicio {
   }
 
   private enlace(token: string): string {
-    return `${leerConfiguracion().webOrigin}/?materiales=${token}`;
+    return `${urlDeEntrada(leerConfiguracion().webOrigin)}?materiales=${token}`;
   }
 
   private async config(): Promise<LecturaOdoo | null> {

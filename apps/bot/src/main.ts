@@ -12,7 +12,8 @@ import { crearSumideroArchivo } from './sumidero';
 config({ path: path.resolve(__dirname, '../../../.env') });
 
 const clave = process.env.SESION_SECRETO?.trim() ?? '';
-const base = process.env.API_URL?.trim() || 'http://localhost:18003';
+const pedido = (process.env.API_URL?.trim() || 'http://localhost:18003/SGIT').replace(/\/$/, '');
+const base = pedido.endsWith('/SGIT') ? pedido : `${pedido}/SGIT`;
 if (!clave) {
   console.error('SGIT bot: falta SESION_SECRETO. Este proceso no arranca.');
   process.exit(1);

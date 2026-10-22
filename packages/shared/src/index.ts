@@ -1,3 +1,5 @@
+export const RUTA_ACCESO = '/SGIT';
+
 export type EstadoServicio = 'listo' | 'no_listo';
 
 export type Salud = {

@@ -87,7 +87,7 @@ export async function manifiestoDe(archivo: string): Promise<ManifiestoPartida |
 }
 
 function miembro(archivo: string, nombre: string): Promise<string> {
-  return new Promise((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     const proceso = spawn('tar', ['-xOzf', archivo, nombre]);
     const trozos: Buffer[] = [];
     proceso.stdout.on('data', (trozo: Buffer) => trozos.push(trozo));

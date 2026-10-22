@@ -1,7 +1,7 @@
 import puppeteer from 'puppeteer-core';
 
 const chrome = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome';
-const web = process.env.WEB_URL || 'http://localhost:18004';
+const web = process.env.WEB_URL || 'http://localhost:18004/SGIT/';
 const correo = process.env.SEED_OPERATOR_CORREO || 'operador@sgit.local';
 const contrasena = process.env.SEED_OPERATOR_PASSWORD || 'operador-prueba';
 
