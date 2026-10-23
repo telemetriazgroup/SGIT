@@ -256,7 +256,7 @@ async function enviarPendiente(): Promise<void> {
   try {
     const aviso = await api.tomar();
     if (!aviso) return;
-    const destino = aviso.destino.includes('@') ? aviso.destino : `${aviso.destino}@c.us`;
+    const destino = await chatDeEnvio(aviso.destino);
     const imagenes = aviso.imagenes ?? [];
     try {
       for (const imagen of imagenes) {
@@ -266,7 +266,7 @@ async function enviarPendiente(): Promise<void> {
       await cliente.sendMessage(destino, aviso.cuerpo, { sendSeen: false });
     } catch (error) {
       await api.soltarAviso(aviso.id);
-      throw error;
+      throw new Error(`hacia ${aviso.destino}: ${detalle(error)}`);
     }
     await api.confirmar(aviso.id);
   } catch (error) {
@@ -282,6 +282,63 @@ async function enviarPendiente(): Promise<void> {
   } finally {
     enviando = false;
   }
+}
+
+async function chatDeEnvio(destino: string): Promise<string> {
+  const digitos = destino.replace(/\D/g, '');
+  const crudo = destino.includes('@') ? destino : `${digitos}@c.us`;
+  const pagina = cliente.pupPage;
+  if (!pagina || !digitos) return crudo;
+  try {
+    const resuelto = await pagina.evaluate(async (chatId: string, numero: string) => {
+      const paginaWa = window as unknown as {
+        require: (nombre: string) => any;
+        WWebJS: { enforceLidAndPnRetrieval: (id: string) => Promise<{ lid?: { _serialized?: string }; phone?: { _serialized?: string } }> };
+      };
+      const fabrica = paginaWa.require('WAWebWidFactory');
+      const coleccion = paginaWa.require('WAWebCollections').Chat;
+      const serial = (valor: unknown): string => {
+        if (!valor) return '';
+        if (typeof valor === 'string') return valor;
+        const id = valor as { _serialized?: string };
+        return id._serialized || '';
+      };
+      const buscar = (id: string): string => {
+        if (!id) return '';
+        try {
+          const wid = fabrica.createWid(id);
+          const chat = wid ? coleccion.get(wid) : null;
+          return serial(chat?.id);
+        } catch {
+          return '';
+        }
+      };
+      const directo = buscar(chatId);
+      if (directo) return directo;
+      try {
+        const par = await paginaWa.WWebJS.enforceLidAndPnRetrieval(chatId);
+        const porLid = buscar(serial(par?.lid));
+        if (porLid) return porLid;
+        const porTelefono = buscar(serial(par?.phone));
+        if (porTelefono) return porTelefono;
+        const lid = serial(par?.lid);
+        if (lid) return lid;
+      } catch {
+        // El número no está en la libreta. Se busca entre los chats abiertos.
+      }
+      const modelos = (coleccion.getModelsArray && coleccion.getModelsArray()) || [];
+      for (const chat of modelos) {
+        const id = serial(chat?.id);
+        const contacto = serial(chat?.contact?.phoneNumber);
+        if (id.includes(numero) || contacto.includes(numero)) return id;
+      }
+      return '';
+    }, crudo, digitos);
+    if (resuelto) return resuelto;
+  } catch (error) {
+    console.error(`SGIT bot: no pude resolver el chat ${crudo}. ${detalle(error)}`);
+  }
+  return crudo;
 }
 
 function sesionMuerta(texto: string): boolean {
