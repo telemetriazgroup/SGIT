@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Headers, HttpCode, Inject, Param, Post, Res, StreamableFile, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Headers, HttpCode, Inject, Param, Post, Query, Res, StreamableFile, UnauthorizedException } from '@nestjs/common';
 import { puedeOperarSistema } from '../identidad/permisos';
 import { timingSafeEqual } from 'crypto';
 import type { Response } from 'express';
@@ -170,11 +170,16 @@ export class BotController {
     await this.bot.confirmarEnvio(id);
   }
 
+  @Get('bot/eventos')
+  async eventos(@Headers('authorization') autorizacion: string | undefined, @Query('q') busqueda?: string) {
+    await this.exigirSistema(autorizacion);
+    return this.bot.listarEventos(busqueda ?? '');
+  }
+
   @Post('bot/salida/:id/soltar')
-  @HttpCode(204)
-  async soltarAviso(@Headers('x-bot-clave') clave: string | undefined, @Param('id') id: string) {
+  async soltarAviso(@Headers('x-bot-clave') clave: string | undefined, @Param('id') id: string, @Body() cuerpo: { motivo?: string }) {
     this.exigirBot(clave);
-    await this.bot.soltarAviso(id);
+    return this.bot.soltarAviso(id, cuerpo?.motivo ?? '');
   }
 
   @Post('bot/entrar')

@@ -263,8 +263,10 @@ async function enviarPendiente(): Promise<void> {
       }
       await enviarEnSesion(aviso.destino, { texto: aviso.cuerpo });
     } catch (error) {
-      await api.soltarAviso(aviso.id);
-      throw new Error(`hacia ${aviso.destino}: ${detalle(error)}`);
+      const motivo = detalle(error);
+      const cierre = await api.soltarAviso(aviso.id, motivo);
+      if (cierre.cerrado) throw new Error(`hacia ${aviso.destino}: se cerró tras 3 minutos sin salir. ${motivo}`);
+      throw new Error(`hacia ${aviso.destino}: ${motivo}`);
     }
     await api.confirmar(aviso.id);
   } catch (error) {

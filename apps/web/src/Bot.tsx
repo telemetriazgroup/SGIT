@@ -33,6 +33,19 @@ type LineaConexion = {
   creadoEn: string;
 };
 
+type EventoBot = {
+  id: string;
+  destino: string;
+  tipo: string;
+  motivo: string;
+  cuerpo: string;
+  intentos: number;
+  cot: string | null;
+  cliente: string | null;
+  abiertoEn: string;
+  cerradoEn: string;
+};
+
 type ReporteImagen = {
   en: string;
   id: string;
@@ -64,22 +77,26 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
   const [mensajes, setMensajes] = useState<MensajeWhatsapp[]>([]);
   const [reportes, setReportes] = useState<ReporteImagen[]>([]);
   const [bitacora, setBitacora] = useState<LineaConexion[]>([]);
+  const [eventos, setEventos] = useState<EventoBot[]>([]);
+  const [buscaEvento, setBuscaEvento] = useState('');
   const [pidiendo, setPidiendo] = useState<'reinicio' | 'olvido' | null>(null);
   const [numeroActivo, setNumeroActivo] = useState<string | null>(null);
   const hiloRef = useRef<HTMLDivElement>(null);
 
   async function cargar() {
-    const [sesion, lista, historial, lecturas, conexion] = await Promise.all([
+    const [sesion, lista, historial, lecturas, conexion, listaEventos] = await Promise.all([
       pedir<EstadoBot>(apiUrl, token, '/bot'),
       pedir<Miembro[]>(apiUrl, token, '/bot/miembros'),
       pedir<MensajeWhatsapp[]>(apiUrl, token, '/bot/mensajes'),
       pedir<ReporteImagen[]>(apiUrl, token, '/bot/reporte-imagen'),
       pedir<LineaConexion[]>(apiUrl, token, '/bot/bitacora'),
+      pedir<EventoBot[]>(apiUrl, token, `/bot/eventos${buscaEvento.trim() ? `?q=${encodeURIComponent(buscaEvento.trim())}` : ''}`),
     ]);
     setEstado(sesion);
     setMensajes(historial);
     setReportes(lecturas);
     setBitacora(conexion);
+    setEventos(listaEventos);
     setMiembros(lista.filter((miembro) => miembro.activo));
     setTelefonos(Object.fromEntries(lista.map((miembro) => [miembro.correo, miembro.telefono ?? ''])));
   }
@@ -90,7 +107,7 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
       void cargar().catch(() => undefined);
     }, 4000);
     return () => window.clearInterval(reloj);
-  }, [apiUrl, token]);
+  }, [apiUrl, token, buscaEvento]);
 
   useEffect(() => {
     if (!estado?.qr) {
@@ -262,7 +279,7 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
       <button type="button" onClick={() => void comprobar()} disabled={comprobando || enviando}>
         {comprobando ? 'Comprobando…' : 'Comprobar línea'}
       </button>
-      <p className="meta">Comprobar línea manda un mensaje a 51929467505 y espera a que salga. Si no sale, reinicia la misma sesión.</p>
+      <p className="meta">Comprobar línea manda un mensaje a 51929467505 y espera a que salga. Si un aviso no sale en 3 minutos, se cierra y queda en Eventos.</p>
       {aviso ? <p className={aviso.startsWith('Quedó') || aviso.includes('salió') || aviso.includes('pedido') || aviso.includes('código') ? 'meta' : 'error'}>{aviso}</p> : null}
       <h3>Registro de conexión</h3>
       <p>Gmail y WhatsApp dejan aquí cada arranque, reinicio y fallo. Sirve para ver por qué una sesión no volvió.</p>
@@ -275,6 +292,29 @@ export function PanelBot({ apiUrl, token }: { apiUrl: string; token: string }) {
               <time>{cuando(linea.creadoEn)}</time>
               <strong>{linea.servicio === 'gmail' ? 'Gmail' : 'WhatsApp'}</strong>
               <span>{linea.texto}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      <h3>Eventos</h3>
+      <p>Un aviso que no sale en 3 minutos se cierra. Aquí queda el número, el error, los intentos y el texto, para buscar la causa.</p>
+      <label htmlFor="buscar-eventos">Buscar</label>
+      <input id="buscar-eventos" value={buscaEvento} placeholder="Número, error, cotización o cliente" onChange={(evento) => setBuscaEvento(evento.target.value)} />
+      {eventos.length === 0 ? (
+        <p>{buscaEvento.trim() ? 'No hay eventos con ese dato.' : 'Todavía no se cerró ningún aviso.'}</p>
+      ) : (
+        <ol className="eventos-bot">
+          {eventos.map((evento) => (
+            <li key={evento.id}>
+              <time>{cuando(evento.cerradoEn)}</time>
+              <strong>{evento.destino}</strong>
+              <span>
+                {etiquetaTipo(evento.tipo)} · {evento.intentos} {evento.intentos === 1 ? 'intento' : 'intentos'}
+                {evento.cot ? ` · COT ${evento.cot}` : ''}
+                {evento.cliente ? ` · ${evento.cliente}` : ''}
+              </span>
+              <p>{evento.motivo}</p>
+              {evento.cuerpo ? <p className="evento-cuerpo">{evento.cuerpo}</p> : null}
             </li>
           ))}
         </ol>
@@ -396,6 +436,20 @@ function agrupar(mensajes: MensajeWhatsapp[], miembros: Miembro[]): Array<{ tele
 function recorte(texto: string): string {
   const limpio = texto.replace(/\s+/g, ' ').trim();
   return limpio.length > 72 ? `${limpio.slice(0, 71)}…` : limpio;
+}
+
+function etiquetaTipo(tipo: string): string {
+  if (tipo === 'prueba') return 'Prueba';
+  if (tipo === 'tarea_nueva') return 'Tarea nueva';
+  if (tipo === 'reprogramacion') return 'Reprogramación';
+  if (tipo === 'consulta_despacho') return 'Consulta a despacho';
+  if (tipo === 'asignacion_despacho') return 'Asignación de despacho';
+  if (tipo === 'apertura_despacho') return 'Apertura de despacho';
+  if (tipo === 'consulta_chip') return 'Consulta de chip';
+  if (tipo === 'consulta_lote') return 'Consulta de lote';
+  if (tipo === 'fabricacion') return 'Fabricación';
+  if (tipo === 'aviso_snooze') return 'Recordatorio';
+  return tipo || 'Aviso';
 }
 
 function etiquetaRol(rol: string): string {

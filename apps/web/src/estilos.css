@@ -1631,6 +1631,44 @@ button.enlace:disabled {
   color: #8a2e2e;
 }
 
+.eventos-bot {
+  list-style: none;
+  max-width: 880px;
+  max-height: 360px;
+  margin: 12px 0 0;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid #e4ddd2;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.eventos-bot li {
+  padding: 10px 12px;
+  border-bottom: 1px solid #efeae2;
+}
+
+.eventos-bot li:last-child {
+  border-bottom: 0;
+}
+
+.eventos-bot time,
+.eventos-bot strong,
+.eventos-bot span {
+  margin-right: 10px;
+  color: #5c6b66;
+  font-size: 0.85rem;
+}
+
+.eventos-bot p {
+  margin: 4px 0 0;
+  color: #8a2e2e;
+}
+
+.eventos-bot .evento-cuerpo {
+  color: #3b4a54;
+}
+
 @media (max-width: 720px) {
   .bitacora-conexion li {
     grid-template-columns: 1fr;

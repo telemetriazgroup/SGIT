@@ -547,11 +547,88 @@ export class BotService {
     }
   }
 
-  async soltarAviso(id: string): Promise<void> {
-    await this.conexiones.pg.query(
-      `UPDATE aviso SET tomado_en = NULL, no_enviar_antes = now() + interval '45 seconds' WHERE id = $1 AND estado = 'pendiente'`,
-      [id],
+  async soltarAviso(id: string, motivo = ''): Promise<{ cerrado: boolean }> {
+    const error = motivo.trim().slice(0, 500) || 'No salió el aviso.';
+    const filas = await this.conexiones.pg.query<{
+      estado: string;
+      destino: string;
+      tipo: string;
+      tarea_id: string | null;
+      cuerpo: string;
+      intentos: number;
+      primer_fallo_en: Date;
+    }>(
+      `UPDATE aviso
+       SET intentos = intentos + 1,
+           primer_fallo_en = COALESCE(primer_fallo_en, now()),
+           ultimo_error = $2,
+           tomado_en = NULL,
+           estado = CASE
+             WHEN COALESCE(primer_fallo_en, now()) <= now() - interval '3 minutes' THEN 'cerrado'
+             ELSE 'pendiente'
+           END,
+           no_enviar_antes = CASE
+             WHEN COALESCE(primer_fallo_en, now()) <= now() - interval '3 minutes' THEN no_enviar_antes
+             ELSE now() + interval '45 seconds'
+           END
+       WHERE id = $1 AND estado = 'pendiente'
+       RETURNING estado, destino, tipo, tarea_id, cuerpo, intentos, primer_fallo_en`,
+      [id, error],
     );
+    const aviso = filas.rows[0];
+    if (!aviso || aviso.estado !== 'cerrado') return { cerrado: false };
+    await this.conexiones.pg.query(
+      `INSERT INTO evento_bot (id, aviso_id, tarea_id, destino, tipo, motivo, cuerpo, intentos, abierto_en)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [randomUUID(), id, aviso.tarea_id, aviso.destino, aviso.tipo, error, aviso.cuerpo.trim().slice(0, 400), aviso.intentos, aviso.primer_fallo_en],
+    );
+    await this.conexiones.pg.query(
+      `DELETE FROM evento_bot
+       WHERE id IN (SELECT id FROM evento_bot ORDER BY cerrado_en DESC OFFSET 300)`,
+    );
+    return { cerrado: true };
+  }
+
+  async listarEventos(busqueda = ''): Promise<Array<{ id: string; destino: string; tipo: string; motivo: string; cuerpo: string; intentos: number; cot: string | null; cliente: string | null; abiertoEn: string; cerradoEn: string }>> {
+    const q = busqueda.trim().slice(0, 80);
+    const filas = await this.conexiones.pg.query<{
+      id: string;
+      destino: string;
+      tipo: string;
+      motivo: string;
+      cuerpo: string;
+      intentos: number;
+      cot: string | null;
+      cliente: string | null;
+      abierto_en: Date;
+      cerrado_en: Date;
+    }>(
+      `SELECT e.id, e.destino, e.tipo, e.motivo, e.cuerpo, e.intentos, t.cot, t.cliente, e.abierto_en, e.cerrado_en
+       FROM evento_bot e
+       LEFT JOIN tarea t ON t.id = e.tarea_id
+       WHERE $1 = ''
+          OR e.destino ILIKE '%' || $1 || '%'
+          OR e.motivo ILIKE '%' || $1 || '%'
+          OR e.tipo ILIKE '%' || $1 || '%'
+          OR e.cuerpo ILIKE '%' || $1 || '%'
+          OR COALESCE(t.cot, '') ILIKE '%' || $1 || '%'
+          OR COALESCE(t.cliente, '') ILIKE '%' || $1 || '%'
+       ORDER BY e.cerrado_en DESC
+       LIMIT 80`,
+      [q],
+    );
+    return filas.rows.map((fila) => ({
+      id: fila.id,
+      destino: fila.destino,
+      tipo: fila.tipo,
+      motivo: fila.motivo,
+      cuerpo: fila.cuerpo,
+      intentos: fila.intentos,
+      cot: fila.cot,
+      cliente: fila.cliente,
+      abiertoEn: new Date(fila.abierto_en).toISOString(),
+      cerradoEn: new Date(fila.cerrado_en).toISOString(),
+    }));
   }
 
   private async imagenesDeAviso(avisoId: string): Promise<Array<{ nombre: string; mime: string; contenido: string }>> {
