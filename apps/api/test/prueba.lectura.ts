@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { avisoSilencioMenu, negrita, textoApertura, textoAvisoAsignacion, textoFichaDespacho } from '../src/bot/avisos';
+import { avisoSilencioMenu, negrita, textoApertura, textoAvisoAsignacion, textoFichaDespacho, textoReconsultaDespacho } from '../src/bot/avisos';
 import { asumirZgru, claseDe, codigoContado, lineaLectura, presentarLectura } from '../src/bot/proceso-imagen';
 
 test('el contenedor ZGRU y la serie de la máquina no se confunden', () => {
@@ -46,6 +46,15 @@ test('a los 5 minutos sin respuesta se cierra y el siguiente mensaje pide el men
   assert.match(aviso, /no quedó guardado/);
   assert.match(aviso, /cualquier cosa/);
   assert.match(avisoSilencioMenu(true), /Guardé el texto y las imágenes/);
+});
+
+test('la repregunta a despacho nombra cliente y fecha a despacho', () => {
+  const texto = textoReconsultaDespacho('10020264263', 'Hay 1 hilo pendiente.', 'todavía no hay', 0, null, 'HIPERMERCADOS TOTTUS S.A', '23/10/2026');
+  assert.match(texto, /cotización 10020264263/);
+  assert.match(texto, /Cliente: HIPERMERCADOS TOTTUS S\.A/);
+  assert.match(texto, /Fecha a despacho: 23\/10\/2026/);
+  assert.match(textoReconsultaDespacho('10020264263', 'Hay 1 hilo pendiente.', '', 0), /Cliente: sin cliente/);
+  assert.match(textoReconsultaDespacho('10020264263', 'Hay 1 hilo pendiente.', '', 0), /Fecha a despacho: sin fecha/);
 });
 
 test('lo escrito por la persona va en negrita y el resto no', () => {

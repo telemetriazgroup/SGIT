@@ -138,10 +138,20 @@ export function sinValidarAviso(cot: string, lugar: string | null = null): strin
   ].filter(Boolean).join('\n');
 }
 
-export function textoReconsultaDespacho(cot: string, pregunta: string, anterior: string, imagenes: number, lugar: string | null = null): string {
+export function textoReconsultaDespacho(
+  cot: string,
+  pregunta: string,
+  anterior: string,
+  imagenes: number,
+  lugar: string | null = null,
+  cliente: string | null = null,
+  fecha: string | null = null,
+): string {
   const sitio = lineaSitio(cot, lugar);
   return [
     `El equipo técnico pregunta por la cotización ${cotVisible(cot)}:`,
+    `Cliente: ${cliente?.trim() || 'sin cliente'}`,
+    `Fecha a despacho: ${fecha?.trim() || 'sin fecha'}`,
     sitio ? `${sitio}.` : '',
     negrita(pregunta) || pregunta,
     'La asignación anterior fue:',

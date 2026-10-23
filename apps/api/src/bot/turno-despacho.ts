@@ -26,6 +26,8 @@ type TareaTurno = {
   lugar: string | null;
   cita_fecha: string | null;
   cita_hora: string | null;
+  despacho_fecha: string | null;
+  despacho_hora: string | null;
   cantidad: number | null;
 };
 
@@ -343,7 +345,7 @@ export class TurnoDespacho {
     const anterior = pregunta ? await this.textoConfirmado(tarea.id) : '';
     const imagenes = pregunta ? await this.contarImagenes(tarea.id, ['confirmada']) : 0;
     const texto = pregunta
-      ? textoReconsultaDespacho(tarea.cot, pregunta, anterior, imagenes, tarea.lugar)
+      ? textoReconsultaDespacho(tarea.cot, pregunta, anterior, imagenes, tarea.lugar, tarea.cliente, this.fechaDespacho(tarea))
       : textoApertura(this.aviso(tarea));
     const avisos = conCharla.filter((destino) => destino.telefono !== excepto);
     const momentos = momentosDeEnvio(avisos.length, ahora, PAUSA_MS);
@@ -668,7 +670,7 @@ export class TurnoDespacho {
     }
     const anterior = await this.textoConfirmado(tareaId);
     const imagenes = await this.contarImagenes(tareaId, ['confirmada']);
-    const pedido = textoReconsultaDespacho(tarea.cot, pregunta, anterior, imagenes, tarea.lugar);
+    const pedido = textoReconsultaDespacho(tarea.cot, pregunta, anterior, imagenes, tarea.lugar, tarea.cliente, this.fechaDespacho(tarea));
     const texto = ocupado
       ? `${pedido}\nSi estás cerrando otra cotización, termina esa primero. Esta queda primera apenas la sueltes.`
       : pedido;
@@ -935,7 +937,9 @@ export class TurnoDespacho {
   private async siguiente(): Promise<TareaTurno | null> {
     const fila = await this.pg.query<TareaTurno>(
       `SELECT t.id, t.cot, t.cliente, t.lugar,
-              to_char(t.cita_fecha, 'YYYY-MM-DD') AS cita_fecha, t.cita_hora, t.cantidad
+              to_char(t.cita_fecha, 'YYYY-MM-DD') AS cita_fecha, t.cita_hora, t.cantidad,
+              to_char(COALESCE(urgente.entrega_fecha, t.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(t.cita_hora, '') END AS despacho_hora
        FROM tarea t
        LEFT JOIN turno_despacho u ON u.tarea_id = t.id AND u.estado IN ('en_cola', 'reconsulta')
        ${joinUrgente('t')}
@@ -978,8 +982,12 @@ export class TurnoDespacho {
 
   private async datos(tareaId: string): Promise<TareaTurno | null> {
     const fila = await this.pg.query<TareaTurno>(
-      `SELECT id, cot, cliente, lugar, to_char(cita_fecha, 'YYYY-MM-DD') AS cita_fecha, cita_hora, cantidad
-       FROM tarea WHERE id = $1`,
+      `SELECT t.id, t.cot, t.cliente, t.lugar, to_char(t.cita_fecha, 'YYYY-MM-DD') AS cita_fecha, t.cita_hora, t.cantidad,
+              to_char(COALESCE(urgente.entrega_fecha, t.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(t.cita_hora, '') END AS despacho_hora
+       FROM tarea t
+       ${joinUrgente('t')}
+       WHERE t.id = $1`,
       [tareaId],
     );
     return fila.rows[0] ?? null;
@@ -988,6 +996,10 @@ export class TurnoDespacho {
   private async feriados(): Promise<Set<string>> {
     const resultado = await this.pg.query<{ fecha: string }>(`SELECT to_char(fecha, 'YYYY-MM-DD') AS fecha FROM feriado`);
     return new Set(resultado.rows.map((fila) => fila.fecha));
+  }
+
+  private fechaDespacho(tarea: TareaTurno): string | null {
+    return citaVisible(tarea.despacho_fecha, tarea.despacho_hora);
   }
 
   private aviso(tarea: TareaTurno): DatosAviso {
