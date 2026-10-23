@@ -1862,6 +1862,18 @@ function CorregirHilo({
   const [modemSerieTecnico, setModemSerieTecnico] = useState(hilo.modem_serie ?? '');
   const [fotosInstalacion, setFotosInstalacion] = useState(false);
   const [ampliaInstalacion, setAmpliaInstalacion] = useState<{ url: string; nombre: string; pie: string } | null>(null);
+  const fotosSinCodigo = useMemo(
+    () =>
+      notas.filter(
+        (nota) =>
+          !nota.archivado &&
+          Boolean(nota.archivo_nombre) &&
+          new RegExp(`Hilo\\s+${hilo.orden}\\.`, 'i').test(nota.texto) &&
+          nota.texto.includes('sin código leído'),
+      ),
+    [notas, hilo.orden],
+  );
+  const [leyendo, setLeyendo] = useState('');
   const notasInstalacion = useMemo(
     () =>
       notas.filter(
@@ -1893,8 +1905,34 @@ function CorregirHilo({
       .catch((error: unknown) => alFallar(texto(error)));
   }
 
+  function releer(notaId: string) {
+    setLeyendo(notaId);
+    void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas/${notaId}/releer`, {
+      method: 'POST',
+      body: '{}',
+    })
+      .then(alGuardar)
+      .catch((error: unknown) => alFallar(texto(error)))
+      .finally(() => setLeyendo(''));
+  }
+
   return (
     <div className="zonas">
+      {fotosSinCodigo.length > 0 ? (
+        <div className="zona-accion">
+          <h4>Fotos guardadas sin código</h4>
+          <p>La imagen ya está en la cotización. Volver a leer busca el código de contenedor, máquina o chip.</p>
+          {fotosSinCodigo.map((nota) => (
+            <div key={nota.id}>
+              <FotoNota apiUrl={apiUrl} token={token} tareaId={tareaId} notaId={nota.id} nombre={nota.archivo_nombre ?? 'foto'} />
+              <p>{nota.texto}</p>
+              <button type="button" disabled={leyendo === nota.id} onClick={() => releer(nota.id)}>
+                {leyendo === nota.id ? 'Leyendo…' : 'Volver a leer'}
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <form
         className="zona-accion"
         onSubmit={(evento) => {

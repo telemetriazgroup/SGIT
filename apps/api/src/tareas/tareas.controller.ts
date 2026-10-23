@@ -260,6 +260,18 @@ export class TareasController {
     return this.fichaDe(id);
   }
 
+  @Post('tareas/:id/notas/:notaId/releer')
+  async releerNota(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('notaId') notaId: string,
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.releerNota(id, notaId);
+    return this.fichaDe(id);
+  }
+
   @Post('tareas/:id/transferir')
   async transferir(
     @Headers('authorization') autorizacion: string | undefined,

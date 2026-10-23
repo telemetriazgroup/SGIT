@@ -256,14 +256,12 @@ async function enviarPendiente(): Promise<void> {
   try {
     const aviso = await api.tomar();
     if (!aviso) return;
-    const destino = await chatDeEnvio(aviso.destino);
     const imagenes = aviso.imagenes ?? [];
     try {
       for (const imagen of imagenes) {
-        const media = new MessageMedia(imagen.mime, imagen.contenido, imagen.nombre);
-        await cliente.sendMessage(destino, media, { sendSeen: false });
+        await enviarEnSesion(aviso.destino, { texto: '', mime: imagen.mime, data: imagen.contenido, filename: imagen.nombre });
       }
-      await cliente.sendMessage(destino, aviso.cuerpo, { sendSeen: false });
+      await enviarEnSesion(aviso.destino, { texto: aviso.cuerpo });
     } catch (error) {
       await api.soltarAviso(aviso.id);
       throw new Error(`hacia ${aviso.destino}: ${detalle(error)}`);
@@ -284,61 +282,78 @@ async function enviarPendiente(): Promise<void> {
   }
 }
 
-async function chatDeEnvio(destino: string): Promise<string> {
-  const digitos = destino.replace(/\D/g, '');
-  const crudo = destino.includes('@') ? destino : `${digitos}@c.us`;
+async function enviarEnSesion(destino: string, pieza: { texto: string; mime?: string; data?: string; filename?: string }): Promise<void> {
   const pagina = cliente.pupPage;
-  if (!pagina || !digitos) return crudo;
-  try {
-    const resuelto = await pagina.evaluate(async (chatId: string, numero: string) => {
-      const paginaWa = window as unknown as {
-        require: (nombre: string) => any;
-        WWebJS: { enforceLidAndPnRetrieval: (id: string) => Promise<{ lid?: { _serialized?: string }; phone?: { _serialized?: string } }> };
-      };
-      const fabrica = paginaWa.require('WAWebWidFactory');
-      const coleccion = paginaWa.require('WAWebCollections').Chat;
-      const serial = (valor: unknown): string => {
+  const numero = destino.replace(/\D/g, '');
+  if (!pagina || !numero) throw new Error('WhatsApp no está abierto.');
+  const resultado = await pagina.evaluate(async (telefono: string, envio: { texto: string; mime?: string; data?: string; filename?: string }) => {
+    const paginaWa = window as unknown as { require: (nombre: string) => any; WWebJS?: { sendMessage: (chat: unknown, texto: string, opciones: unknown) => Promise<unknown> } };
+    if (!paginaWa.WWebJS?.sendMessage) return { ok: false, error: 'WhatsApp todavía no está listo.' };
+    const textoDe = (valor: any): string => {
+      try {
         if (!valor) return '';
         if (typeof valor === 'string') return valor;
-        const id = valor as { _serialized?: string };
-        return id._serialized || '';
-      };
-      const buscar = (id: string): string => {
-        if (!id) return '';
-        try {
-          const wid = fabrica.createWid(id);
-          const chat = wid ? coleccion.get(wid) : null;
-          return serial(chat?.id);
-        } catch {
-          return '';
-        }
-      };
-      const directo = buscar(chatId);
-      if (directo) return directo;
-      try {
-        const par = await paginaWa.WWebJS.enforceLidAndPnRetrieval(chatId);
-        const porLid = buscar(serial(par?.lid));
-        if (porLid) return porLid;
-        const porTelefono = buscar(serial(par?.phone));
-        if (porTelefono) return porTelefono;
-        const lid = serial(par?.lid);
-        if (lid) return lid;
+        return String(valor.user || valor._serialized || '');
       } catch {
-        // El número no está en la libreta. Se busca entre los chats abiertos.
+        return '';
       }
-      const modelos = (coleccion.getModelsArray && coleccion.getModelsArray()) || [];
-      for (const chat of modelos) {
-        const id = serial(chat?.id);
-        const contacto = serial(chat?.contact?.phoneNumber);
-        if (id.includes(numero) || contacto.includes(numero)) return id;
+    };
+    const chats = paginaWa.require('WAWebCollections').Chat;
+    const modelos = (chats.getModelsArray && chats.getModelsArray()) || [];
+    let chat: any = null;
+    for (const item of modelos) {
+      const id = textoDe(item && item.id);
+      let contacto = '';
+      try {
+        contacto = textoDe(item && item.contact && item.contact.phoneNumber);
+      } catch {
+        contacto = '';
       }
-      return '';
-    }, crudo, digitos);
-    if (resuelto) return resuelto;
-  } catch (error) {
-    console.error(`SGIT bot: no pude resolver el chat ${crudo}. ${detalle(error)}`);
-  }
-  return crudo;
+      if (id.includes(telefono) || contacto.includes(telefono)) {
+        chat = item;
+        break;
+      }
+    }
+    if (!chat) {
+      try {
+        const fabrica = paginaWa.require('WAWebWidFactory');
+        const base = fabrica.createWid(`${telefono}@c.us`);
+        const existe = base ? await paginaWa.require('WAWebQueryExistsJob').queryWidExists(base) : null;
+        const wid = (existe && existe.wid) || base;
+        if (!wid) return { ok: false, error: `no armé el chat de ${telefono}` };
+        try {
+          chat = chats.get(wid);
+        } catch {
+          chat = null;
+        }
+        if (!chat) {
+          const creado = await paginaWa.require('WAWebFindChatAction').findOrCreateLatestChat(wid);
+          chat = creado && creado.chat;
+        }
+      } catch (error) {
+        const mensaje = error instanceof Error ? error.message : 'no abrí el chat';
+        return { ok: false, error: mensaje };
+      }
+    }
+    if (!chat) return { ok: false, error: `no hay chat para ${telefono}` };
+    const opciones: { waitUntilMsgSent: boolean; linkPreview: boolean; media?: { mimetype: string; data: string; filename: string } } = {
+      waitUntilMsgSent: true,
+      linkPreview: false,
+    };
+    let contenido = envio.texto;
+    if (envio.data && envio.mime) {
+      opciones.media = { mimetype: envio.mime, data: envio.data, filename: envio.filename || 'archivo' };
+      contenido = '';
+    }
+    try {
+      const mensaje = await paginaWa.WWebJS.sendMessage(chat, contenido, opciones);
+      return { ok: Boolean(mensaje), error: mensaje ? '' : 'WhatsApp no confirmó el envío.' };
+    } catch (error) {
+      const mensaje = error instanceof Error ? error.message : 'WhatsApp rechazó el envío';
+      return { ok: false, error: mensaje };
+    }
+  }, numero, pieza);
+  if (!resultado?.ok) throw new Error(resultado?.error || 'no salió');
 }
 
 function sesionMuerta(texto: string): boolean {

@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto';
 import { AlmacenCorreo } from '../buzon/almacen';
 import { vincularHijas } from '../tareas/hijas';
 import { anotarSinInstalacion, corregirEquipo, crearHilos, guardarChip, hiloListo, lineaHilo, listarHilos, marcarInstalada, textoEquipo, validarDespacho } from '../tareas/hilos';
-import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrarEquipo } from '../tareas/regularizar';
+import { chipParaGuardar, recibirFotoRegularizacion, registrarChip } from '../tareas/regularizar';
 import { ChipsService } from '../chips/chips.service';
 import { serieChipDe, serieCoincide } from '../chips/orden';
 import { FabricacionServicio } from '../fabricacion/servicio';
@@ -387,12 +387,11 @@ export class BotService {
       await esperar(2000);
     }
     const actual = await this.estado();
-    if (actual.proceso) await this.marcarReinicio();
     return {
       enLinea: false,
       enviado: false,
       detalle: actual.proceso
-        ? 'El mensaje no salió. Pedí reiniciar WhatsApp con la misma sesión.'
+        ? 'El mensaje no salió. La sesión sigue abierta. El registro de conexión dice el motivo.'
         : 'El mensaje no salió y el proceso del bot no está en marcha.',
     };
   }
@@ -516,7 +515,7 @@ export class BotService {
          FROM aviso
          WHERE estado = 'pendiente'
            AND (tomado_en IS NULL OR tomado_en < now() - interval '2 minutes')
-         ORDER BY no_enviar_antes, creado_en
+         ORDER BY CASE WHEN tipo = 'prueba' THEN 0 ELSE 1 END, no_enviar_antes, creado_en
          LIMIT 1
          FOR UPDATE SKIP LOCKED`,
       );
@@ -550,7 +549,7 @@ export class BotService {
 
   async soltarAviso(id: string): Promise<void> {
     await this.conexiones.pg.query(
-      `UPDATE aviso SET tomado_en = NULL WHERE id = $1 AND estado = 'pendiente'`,
+      `UPDATE aviso SET tomado_en = NULL, no_enviar_antes = now() + interval '45 seconds' WHERE id = $1 AND estado = 'pendiente'`,
       [id],
     );
   }
@@ -2993,28 +2992,14 @@ export class BotService {
       if (rechazo) return this.dejar(telefono, true, rechazo);
     }
     if (corrige === 'modem') return this.regularizarModem(telefono, tareaId, hiloId, zona, autor, '', fotos);
-    if (corrige === 'imei') {
-      const lectura = await leerFotoChip(this.conexiones, archivo);
-      if (!lectura) return this.dejar(telefono, true, 'El lector no respondió. Manda la foto otra vez.');
-      const chip = chipParaGuardar(lectura.hallados);
-      if (!chip) return this.dejar(telefono, true, `${lectura.paraWhatsapp}\nEscríbelo o manda otra foto.`);
-      await registrarChip(this.conexiones, hiloId, tareaId, chip, autor, archivo, 'técnico', 'whatsapp');
-      const menu = await this.menuDeZona(telefono, tareaId, hiloId, zona);
-      const aviso = chip.estado === 'ocupado'
-        ? `Quedó registrado. IMEI ${chip.imei}. Celular ${chip.celular}. Está ocupado${chip.telemetria ? ` en ${chip.telemetria}` : ''}.\nNo se envía a una orden de fabricación con un chip ocupado.`
-        : `IMEI ${chip.imei}. Celular ${chip.celular}.`;
-      return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
+    const clase = corrige === 'imei' ? 'chip' : corrige;
+    const origen = zona === 'almacen' ? 'almacén' : 'técnico';
+    const avisos: string[] = [];
+    for (const foto of fotos) {
+      avisos.push(await recibirFotoRegularizacion(this.conexiones, tareaId, hiloId, clase, autor, foto, 'whatsapp', origen));
     }
-    const equipo = await leerFotoEquipo(archivo);
-    if (!equipo) return this.dejar(telefono, true, 'No pude leer un código en la foto. Escríbelo o manda otra imagen.');
-    const espera = corrige === 'contenedor' ? 'contenedor' : 'serie';
-    if (equipo.clase !== espera) {
-      const visto = equipo.clase === 'contenedor' ? 'contenedor' : 'máquina';
-      return this.dejar(telefono, true, `Esa foto se leyó como ${visto} ${equipo.codigo}. Elige contenedor o máquina según lo que sea, o escríbelo.`);
-    }
-    const hilo = await registrarEquipo(this.conexiones, hiloId, tareaId, corrige, equipo.codigo, autor, archivo, 'whatsapp');
     const menu = await this.menuDeZona(telefono, tareaId, hiloId, zona);
-    return { ...menu, respuesta: `Regularización. ${lineaHilo(hilo)}\n${menu.respuesta}` };
+    return { ...menu, respuesta: `${avisos.join('\n')}\n${menu.respuesta}` };
   }
 
   private async pedirDespachoAhora(tareaId: string, pregunta: string, equipo: number): Promise<string> {

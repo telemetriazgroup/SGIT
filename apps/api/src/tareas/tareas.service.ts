@@ -14,7 +14,7 @@ import { claveTienda, coincideTienda, tiendasDeHtml, tiendasDeTexto, type Tienda
 import { vincularHijas } from './hijas';
 import { ajustarHilos, corregirEquipo, listarHilos } from './hilos';
 import { FabricacionServicio } from '../fabricacion/servicio';
-import { chipParaGuardar, leerFotoChip, leerFotoEquipo, registrarChip, registrarEquipo, registrarModem } from './regularizar';
+import { recibirFotoRegularizacion, registrarChip, registrarModem, releerFotoGuardada } from './regularizar';
 import { joinUrgente, ordenFecha, ordenUrgente } from './prioridad';
 
 export type ResultadoProceso = {
@@ -1069,26 +1069,11 @@ export class TareasService {
     if (contenido.length === 0 || contenido.length > 4 * 1024 * 1024) throw new BadRequestException('La foto pasa de 4 MB.');
     const foto = { nombre: datos.nombre?.trim() || 'foto.jpg', mime: datos.mime || 'image/jpeg', contenido };
     const origen = datos.zona === 'almacen' ? 'almacén' : 'técnico';
-    if (clase === 'chip') {
-      const lectura = await leerFotoChip(this.conexiones, foto);
-      if (!lectura) throw new BadRequestException('El lector no respondió. Manda la foto otra vez.');
-      const chip = chipParaGuardar(lectura.hallados);
-      if (!chip) throw new BadRequestException(lectura.paraWhatsapp);
-      await registrarChip(this.conexiones, hiloId, id, chip, autor, foto, origen, 'web');
-      return;
-    }
-    if (clase === 'modem') {
-      await registrarModem(this.conexiones, hiloId, id, { serie: '', imei: '' }, autor, foto, origen, 'web');
-      return;
-    }
-    const equipo = await leerFotoEquipo(foto);
-    if (!equipo) throw new BadRequestException('No pude leer un código en la foto. Escríbelo o manda otra imagen.');
-    const espera = clase === 'contenedor' ? 'contenedor' : 'serie';
-    if (equipo.clase !== espera) {
-      const visto = equipo.clase === 'contenedor' ? 'contenedor' : 'máquina';
-      throw new BadRequestException(`Esa foto se leyó como ${visto} ${equipo.codigo}. Súbela en el campo que corresponde.`);
-    }
-    await registrarEquipo(this.conexiones, hiloId, id, clase, equipo.codigo, autor, foto, 'web');
+    await recibirFotoRegularizacion(this.conexiones, id, hiloId, clase, autor, foto, 'web', origen);
+  }
+
+  async releerNota(id: string, notaId: string): Promise<string> {
+    return releerFotoGuardada(this.conexiones, id, notaId);
   }
 
   async tecnicos(): Promise<Array<{ correo: string; nombre: string }>> {
