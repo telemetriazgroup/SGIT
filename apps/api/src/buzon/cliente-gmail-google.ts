@@ -70,7 +70,22 @@ export class ClienteGmailGoogle implements ClienteGmail {
     return interpretarMensaje(json as { id: string; threadId: string; payload?: Parte });
   }
 
+  olvidarAcceso(): void {
+    this.accessToken = null;
+    this.vence = 0;
+  }
+
   async enviar(raw: string): Promise<void> {
+    try {
+      await this.publicar(raw);
+    } catch (error) {
+      if (!faltaPermiso(error)) throw error;
+      this.olvidarAcceso();
+      await this.publicar(raw);
+    }
+  }
+
+  private async publicar(raw: string): Promise<void> {
     const token = await this.token();
     const respuesta = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST',
@@ -198,6 +213,11 @@ async function canjear(config: Configuracion, extra: Record<string, string>): Pr
     throw new Error(`Google no aceptó el permiso: ${String(json.error ?? respuesta.status)}`);
   }
   return json;
+}
+
+function faltaPermiso(error: unknown): boolean {
+  const mensaje = error instanceof Error ? error.message : '';
+  return /insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT|gmail_sin_conectar/i.test(mensaje);
 }
 
 function costoDe(ruta: string): number {

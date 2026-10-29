@@ -5,6 +5,7 @@ import { Conexiones } from '../conexiones';
 import { AlmacenCorreo } from './almacen';
 import { cifrar, descifrar, firmarEstado } from './cifrado';
 import { ALCANCE_GMAIL, INTERVALO_SYNC_MS, LOTE_SYNC, consultaRecibidos, esEnviado, type ClienteGmail, type MensajeDescargado } from './cliente-gmail';
+import { olvidarAccesosGmail } from './registro-cliente';
 import { canjearCodigo } from './cliente-gmail-google';
 import { htmlSeguro } from './html-correo';
 import { fusionar, huecos, type Intervalo } from './rangos';
@@ -143,6 +144,7 @@ export class BuzonService {
              estado = 'conectado'`,
       [id, esperado, cifrar(refreshToken, this.config.claveCifrado)],
     );
+    olvidarAccesosGmail();
   }
 
   async cambiarCodigo(code: string): Promise<void> {
