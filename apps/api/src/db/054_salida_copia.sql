@@ -1,0 +1,2 @@
+ALTER TABLE salida_correo ADD COLUMN IF NOT EXISTS copia text NOT NULL DEFAULT '';
+ALTER TABLE salida_correo ADD COLUMN IF NOT EXISTS copia_oculta text NOT NULL DEFAULT '';

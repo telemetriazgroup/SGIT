@@ -119,13 +119,17 @@ curl -sS -X POST "$BASE/salida" \
 
 | Campo | Obligatorio | Regla |
 |---|---|---|
-| `direccion` | Sí | Destino. Tiene que ser un correo y no pasar de 180 caracteres. |
+| `direccion` o `para` | Sí | Uno o varios destinos. Se separan con coma, punto y coma o un salto de línea. Cada uno tiene que ser un correo de hasta 180 caracteres. Máximo 20 por lista. |
+| `copia` o `cc` | No | Misma regla. Si un correo ya está en Para, no se repite en copia. |
+| `copiaOculta`, `cco` o `bcc` | No | Misma regla. No se repite si ya está en Para o en copia. |
 | `asunto` | Sí | Hasta 180 caracteres. |
 | `cuerpo` | Sí | Texto plano. Hasta 8000 caracteres. |
 
-SGIT guarda cada correo y lo envía **de a uno**, con **20 segundos** entre un envío y el siguiente. No salen todos juntos. La hora prevista viene en `noEnviarAntes`.
+SGIT guarda cada correo y lo envía **de a uno**, con **20 segundos** entre un envío y el siguiente. No salen todos juntos. La hora prevista viene en `noEnviarAntes`. Un correo con varios destinos es un solo envío.
 
-El remitente es la casilla de SGIT (`telemetria@zgroup.com.pe`). Para que salga, esa casilla tiene que estar vinculada con permiso de envío de Gmail. Si solo tiene permiso de lectura, el correo queda en fallo y no se reintenta solo.
+El remitente es la casilla sincronizada (`telemetria@zgroup.com.pe`). El POST no inicia sesión en Gmail: usa el vínculo que ya tiene SGIT. Para que salga, esa casilla tiene que estar vinculada con permiso de envío. Si solo tiene permiso de lectura, el correo queda en fallo y no se reintenta solo.
+
+En Salida, el botón **Enviar correo** abre el mismo formulario (para, copia, copia oculta, asunto y cuerpo) y lo deja en esta cola. Quien está logueado no manda `x-salida-clave`: la sesión basta. La aplicación externa sigue mandando solo la clave.
 
 Ejemplo:
 
@@ -135,7 +139,9 @@ curl -sS -X POST "$BASE/salida" \
   -H "x-salida-clave: TU_CLAVE" \
   -d '{
     "correo": {
-      "direccion": "cliente@ejemplo.com",
+      "direccion": "cliente@ejemplo.com, otro@ejemplo.com",
+      "copia": "jefe@ejemplo.com",
+      "copiaOculta": "archivo@ejemplo.com",
       "asunto": "Programación de unidad",
       "cuerpo": "Su unidad ya está programada."
     }
@@ -150,7 +156,7 @@ Respuesta:
   "correos": [
     {
       "id": "uuid",
-      "direccion": "cliente@ejemplo.com",
+      "direccion": "cliente@ejemplo.com, otro@ejemplo.com",
       "estado": "en_cola",
       "noEnviarAntes": "2026-10-29T14:00:00.000Z"
     }
@@ -197,6 +203,9 @@ Motivos de rechazo:
 | Teléfono o contacto fuera de 8 a 15 dígitos | `El teléfono tiene entre 8 y 15 dígitos.` o `Falta el número al que debe contactarse.` |
 | Mensaje de WhatsApp vacío o de más de 4000 caracteres | `El mensaje es obligatorio y llega hasta 4000 caracteres.` |
 | Correo mal escrito | `La dirección de correo no es válida.` |
+| Copia mal escrita | `La copia no es un correo válido.` |
+| Copia oculta mal escrita | `La copia oculta no es un correo válido.` |
+| Más de 20 correos en una lista | `Cada lista admite hasta 20 correos.` |
 | Asunto vacío o de más de 180 caracteres | `El asunto es obligatorio y llega hasta 180 caracteres.` |
 | Cuerpo vacío o de más de 8000 caracteres | `El cuerpo es obligatorio y llega hasta 8000 caracteres.` |
 

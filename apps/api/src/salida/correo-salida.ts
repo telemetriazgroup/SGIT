@@ -40,9 +40,9 @@ export class CorreoSalida {
       const fila = await this.tomarPendiente();
       if (!fila) return;
       try {
-        const de = this.config.gmail?.correo;
+        const de = await this.remitente();
         if (!de) throw new Error('No hay una casilla de Gmail configurada.');
-        await this.cliente.enviar(correoRaw(de, fila.direccion, fila.asunto, fila.cuerpo));
+        await this.cliente.enviar(correoRaw(de, fila.direccion, fila.asunto, fila.cuerpo, fila.copia, fila.copiaOculta));
         await this.conexiones.pg.query(
           `UPDATE salida_correo SET estado = 'enviado', enviado_en = now(), error = NULL WHERE id = $1`,
           [fila.id],
@@ -61,12 +61,19 @@ export class CorreoSalida {
     }
   }
 
-  private async tomarPendiente(): Promise<{ id: string; direccion: string; asunto: string; cuerpo: string } | null> {
+  private async remitente(): Promise<string> {
+    const filas = await this.conexiones.pg.query<{ correo: string }>(
+      `SELECT correo FROM buzon WHERE refresh_token_cifrado IS NOT NULL ORDER BY creado_en LIMIT 1`,
+    );
+    return filas.rows[0]?.correo || this.config.gmail?.correo || '';
+  }
+
+  private async tomarPendiente(): Promise<{ id: string; direccion: string; copia: string; copiaOculta: string; asunto: string; cuerpo: string } | null> {
     const cliente = await this.conexiones.pg.connect();
     try {
       await cliente.query('BEGIN');
-      const pendiente = await cliente.query<{ id: string; direccion: string; asunto: string; cuerpo: string }>(
-        `SELECT id, direccion, asunto, cuerpo
+      const pendiente = await cliente.query<{ id: string; direccion: string; copia: string; copia_oculta: string; asunto: string; cuerpo: string }>(
+        `SELECT id, direccion, copia, copia_oculta, asunto, cuerpo
          FROM salida_correo
          WHERE estado = 'pendiente' AND no_enviar_antes <= now()
          ORDER BY no_enviar_antes, creado_en
@@ -80,7 +87,14 @@ export class CorreoSalida {
       }
       await cliente.query(`UPDATE salida_correo SET estado = 'enviando' WHERE id = $1`, [fila.id]);
       await cliente.query('COMMIT');
-      return fila;
+      return {
+        id: fila.id,
+        direccion: fila.direccion,
+        copia: fila.copia ?? '',
+        copiaOculta: fila.copia_oculta ?? '',
+        asunto: fila.asunto,
+        cuerpo: fila.cuerpo,
+      };
     } catch (error) {
       await cliente.query('ROLLBACK');
       throw error;

@@ -1,5 +1,6 @@
 export const PAUSA_CORREO_MS = 20_000;
 export const TOPE_SALIDA = 30;
+export const TOPE_DESTINOS = 20;
 
 export function telefonoSalida(valor: string): string {
   const limpio = valor.replace(/\D/g, '');
@@ -24,6 +25,25 @@ export function correoValido(valor: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(valor) && valor.length <= 180;
 }
 
+export function separarCorreos(valor: string): { correos: string[]; motivo: string | null } {
+  const trozos = valor
+    .split(/[,;\s]+/)
+    .map((pieza) => pieza.trim().toLowerCase())
+    .filter(Boolean);
+  if (trozos.length > TOPE_DESTINOS) {
+    return { correos: [], motivo: `Cada lista admite hasta ${TOPE_DESTINOS} correos.` };
+  }
+  const vistos = new Set<string>();
+  const correos: string[] = [];
+  for (const pieza of trozos) {
+    if (!correoValido(pieza)) return { correos: [], motivo: 'invalido' };
+    if (vistos.has(pieza)) continue;
+    vistos.add(pieza);
+    correos.push(pieza);
+  }
+  return { correos, motivo: null };
+}
+
 export function momentoCorreo(ultimo: Date | null, ahora: Date): Date {
   if (!ultimo || ultimo.getTime() < ahora.getTime()) return new Date(ahora.getTime());
   return new Date(ultimo.getTime() + PAUSA_CORREO_MS);
@@ -33,18 +53,18 @@ export function textoContacto(contacto: string): string {
   return `Para continuar, comunícate al ${contacto}.`;
 }
 
-export function correoRaw(de: string, para: string, asunto: string, cuerpo: string): string {
+export function correoRaw(de: string, para: string, asunto: string, cuerpo: string, copia = '', copiaOculta = ''): string {
   const texto = cuerpo.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
-  const mensaje = [
-    `From: ${unaLinea(de)}`,
-    `To: ${unaLinea(para)}`,
+  const cabeceras = [`From: ${unaLinea(de)}`, `To: ${unaLinea(para)}`];
+  if (copia.trim()) cabeceras.push(`Cc: ${unaLinea(copia)}`);
+  if (copiaOculta.trim()) cabeceras.push(`Bcc: ${unaLinea(copiaOculta)}`);
+  cabeceras.push(
     `Subject: ${asuntoCodificado(unaLinea(asunto))}`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=UTF-8',
     'Content-Transfer-Encoding: 8bit',
-    '',
-    texto,
-  ].join('\r\n');
+  );
+  const mensaje = [...cabeceras, '', texto].join('\r\n');
   return Buffer.from(mensaje, 'utf8').toString('base64url');
 }
 

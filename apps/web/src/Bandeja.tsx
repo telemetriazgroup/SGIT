@@ -11,6 +11,7 @@ import { PanelOdoo } from './Odoo';
 import { PanelRespaldo } from './Respaldo';
 import { PanelDiccionario, PanelTareas } from './Tareas';
 import { PanelSalida } from './Salida';
+import { PanelQr } from './Qr';
 
 type Avance = {
   fase: 'ocioso' | 'listando' | 'importando' | 'listo' | 'error';
@@ -129,7 +130,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
   const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'salida' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'cuenta'>(
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'salida' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
     editar && /\/servicio\/salida\/?$/.test(window.location.pathname) ? 'salida' : sistema ? 'recibidos' : 'tareas',
   );
   const [redactando, setRedactando] = useState(false);
@@ -507,6 +508,9 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
               Lector
             </button>
           ) : null}
+          <button type="button" className={vista === 'qr' ? 'activo' : ''} onClick={() => { setVista('qr'); setHilo(null); }}>
+            QR
+          </button>
           <button type="button" className={vista === 'cuenta' ? 'activo' : ''} onClick={() => { setVista('cuenta'); setHilo(null); }}>
             Mi cuenta
           </button>
@@ -598,6 +602,8 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             <PanelBot apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'salida' ? (
             <PanelSalida apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'qr' ? (
+            <PanelQr />
           ) : vista === 'enviados' ? (
             <VacioEnviados onRedactar={() => setRedactando(true)} />
           ) : hilo ? (

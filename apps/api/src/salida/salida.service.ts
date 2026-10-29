@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { Conexiones } from '../conexiones';
-import { candidatosTelefono, correoValido, listaDe, momentoCorreo, telefonoSalida, telefonoValido, TOPE_SALIDA } from './reglas';
+import { leerConfiguracion } from '../configuracion';
+import { candidatosTelefono, listaDe, momentoCorreo, separarCorreos, telefonoSalida, telefonoValido, TOPE_SALIDA } from './reglas';
 
 export type FilaWhatsapp = {
   id: string;
@@ -16,6 +17,8 @@ export type FilaWhatsapp = {
 export type FilaCorreo = {
   id: string;
   direccion: string;
+  copia: string;
+  copiaOculta: string;
   asunto: string;
   cuerpo: string;
   estado: string;
@@ -25,8 +28,20 @@ export type FilaCorreo = {
   creadoEn: string;
 };
 
+export type CasillaSalida = { correo: string; conectado: boolean };
+
 export type PiezaWhatsapp = { telefono?: string; mensaje?: string; cuerpo?: string; contacto?: string };
-export type PiezaCorreo = { direccion?: string; asunto?: string; cuerpo?: string };
+export type PiezaCorreo = {
+  direccion?: string;
+  para?: string;
+  copia?: string;
+  cc?: string;
+  copiaOculta?: string;
+  cco?: string;
+  bcc?: string;
+  asunto?: string;
+  cuerpo?: string;
+};
 
 export type ResultadoWhatsapp = { id: string; telefono: string; estado: 'en_cola' | 'en_espera' | 'rechazado'; aviso: string | null; motivo?: string };
 export type ResultadoCorreo = { id: string; direccion: string; estado: 'en_cola' | 'en_espera' | 'rechazado'; noEnviarAntes: string | null; motivo?: string };
@@ -34,7 +49,7 @@ export type ResultadoCorreo = { id: string; direccion: string; estado: 'en_cola'
 export class SalidaService {
   constructor(private readonly conexiones: Conexiones) {}
 
-  async registros(busqueda = ''): Promise<{ whatsapp: FilaWhatsapp[]; correos: FilaCorreo[] }> {
+  async registros(busqueda = ''): Promise<{ whatsapp: FilaWhatsapp[]; correos: FilaCorreo[]; casilla: CasillaSalida }> {
     const q = busqueda.trim().slice(0, 80);
     const whatsapp = await this.conexiones.pg.query<{
       id: string;
@@ -60,6 +75,8 @@ export class SalidaService {
     const correos = await this.conexiones.pg.query<{
       id: string;
       direccion: string;
+      copia: string;
+      copia_oculta: string;
       asunto: string;
       cuerpo: string;
       estado: string;
@@ -68,16 +85,19 @@ export class SalidaService {
       enviado_en: Date | null;
       creado_en: Date;
     }>(
-      `SELECT id, direccion, asunto, cuerpo, estado, error, no_enviar_antes, enviado_en, creado_en
+      `SELECT id, direccion, copia, copia_oculta, asunto, cuerpo, estado, error, no_enviar_antes, enviado_en, creado_en
        FROM salida_correo
        WHERE $1 = ''
           OR direccion ILIKE '%' || $1 || '%'
+          OR copia ILIKE '%' || $1 || '%'
+          OR copia_oculta ILIKE '%' || $1 || '%'
           OR asunto ILIKE '%' || $1 || '%'
           OR cuerpo ILIKE '%' || $1 || '%'
        ORDER BY creado_en DESC
        LIMIT 200`,
       [q],
     );
+    const casilla = await this.casilla();
     return {
       whatsapp: whatsapp.rows.map((fila) => ({
         id: fila.id,
@@ -91,6 +111,8 @@ export class SalidaService {
       correos: correos.rows.map((fila) => ({
         id: fila.id,
         direccion: fila.direccion,
+        copia: fila.copia ?? '',
+        copiaOculta: fila.copia_oculta ?? '',
         asunto: fila.asunto,
         cuerpo: fila.cuerpo,
         estado: fila.estado,
@@ -99,6 +121,22 @@ export class SalidaService {
         enviadoEn: fila.enviado_en ? new Date(fila.enviado_en).toISOString() : null,
         creadoEn: new Date(fila.creado_en).toISOString(),
       })),
+      casilla,
+    };
+  }
+
+  private async casilla(): Promise<CasillaSalida> {
+    const config = leerConfiguracion();
+    const filas = await this.conexiones.pg.query<{ correo: string; conectado: boolean }>(
+      `SELECT correo, refresh_token_cifrado IS NOT NULL AS conectado
+       FROM buzon
+       ORDER BY creado_en
+       LIMIT 1`,
+    );
+    const fila = filas.rows[0];
+    return {
+      correo: fila?.correo || config.gmail?.correo || '',
+      conectado: Boolean(fila?.conectado),
     };
   }
 
@@ -217,13 +255,14 @@ export class SalidaService {
     const salida: ResultadoCorreo[] = [];
     let cursor = await this.ultimoCorreo();
     for (const pieza of piezas) {
-      const direccion = (pieza.direccion ?? '').trim().toLowerCase();
-      const asunto = (pieza.asunto ?? '').trim();
-      const texto = (pieza.cuerpo ?? '').trim();
-      if (!correoValido(direccion)) {
-        salida.push({ id: '', direccion, estado: 'rechazado', noEnviarAntes: null, motivo: 'La dirección de correo no es válida.' });
+      const destinos = leerDestinos(pieza);
+      const direccion = destinos.direccion;
+      if (destinos.motivo) {
+        salida.push({ id: '', direccion, estado: 'rechazado', noEnviarAntes: null, motivo: destinos.motivo });
         continue;
       }
+      const asunto = (pieza.asunto ?? '').trim();
+      const texto = (pieza.cuerpo ?? '').trim();
       if (!asunto || asunto.length > 180) {
         salida.push({ id: '', direccion, estado: 'rechazado', noEnviarAntes: null, motivo: 'El asunto es obligatorio y llega hasta 180 caracteres.' });
         continue;
@@ -232,13 +271,7 @@ export class SalidaService {
         salida.push({ id: '', direccion, estado: 'rechazado', noEnviarAntes: null, motivo: 'El cuerpo es obligatorio y llega hasta 8000 caracteres.' });
         continue;
       }
-      const pendiente = await this.conexiones.pg.query<{ id: string; no_enviar_antes: Date }>(
-        `SELECT id, no_enviar_antes FROM salida_correo
-         WHERE direccion = $1 AND estado IN ('pendiente', 'enviando')
-         ORDER BY creado_en DESC LIMIT 1`,
-        [direccion],
-      );
-      const enCola = pendiente.rows[0];
+      const enCola = await this.correoEnEspera(destinos.para);
       if (enCola) {
         salida.push({
           id: enCola.id,
@@ -253,13 +286,29 @@ export class SalidaService {
       cursor = cuando;
       const id = randomUUID();
       await this.conexiones.pg.query(
-        `INSERT INTO salida_correo (id, direccion, asunto, cuerpo, estado, no_enviar_antes)
-         VALUES ($1, $2, $3, $4, 'pendiente', $5)`,
-        [id, direccion, asunto, texto, cuando.toISOString()],
+        `INSERT INTO salida_correo (id, direccion, copia, copia_oculta, asunto, cuerpo, estado, no_enviar_antes)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pendiente', $7)`,
+        [id, direccion, destinos.copia, destinos.copiaOculta, asunto, texto, cuando.toISOString()],
       );
       salida.push({ id, direccion, estado: 'en_cola', noEnviarAntes: cuando.toISOString() });
     }
     return salida;
+  }
+
+  private async correoEnEspera(destinos: string[]): Promise<{ id: string; no_enviar_antes: Date } | null> {
+    const pendientes = await this.conexiones.pg.query<{ id: string; direccion: string; no_enviar_antes: Date }>(
+      `SELECT id, direccion, no_enviar_antes
+       FROM salida_correo
+       WHERE estado IN ('pendiente', 'enviando')
+       ORDER BY creado_en DESC
+       LIMIT 200`,
+    );
+    const buscados = new Set(destinos);
+    for (const fila of pendientes.rows) {
+      const suyos = separarCorreos(fila.direccion).correos;
+      if (suyos.some((correo) => buscados.has(correo))) return fila;
+    }
+    return null;
   }
 
   private async ultimoCorreo(): Promise<Date | null> {
@@ -269,5 +318,30 @@ export class SalidaService {
     const ultimo = filas.rows[0]?.ultimo;
     return ultimo ? new Date(ultimo) : null;
   }
+}
+
+function leerDestinos(pieza: PiezaCorreo): { direccion: string; para: string[]; copia: string; copiaOculta: string; motivo: string | null } {
+  const vacio = { direccion: '', para: [] as string[], copia: '', copiaOculta: '', motivo: null as string | null };
+  const para = separarCorreos([pieza.direccion, pieza.para].filter(Boolean).join(','));
+  if (para.motivo === 'invalido') return { ...vacio, motivo: 'La dirección de correo no es válida.' };
+  if (para.motivo) return { ...vacio, motivo: para.motivo };
+  if (para.correos.length === 0) return { ...vacio, motivo: 'La dirección de correo no es válida.' };
+  const copia = separarCorreos([pieza.copia, pieza.cc].filter(Boolean).join(','));
+  if (copia.motivo) {
+    return { ...vacio, motivo: copia.motivo === 'invalido' ? 'La copia no es un correo válido.' : copia.motivo };
+  }
+  const oculta = separarCorreos([pieza.copiaOculta, pieza.cco, pieza.bcc].filter(Boolean).join(','));
+  if (oculta.motivo) {
+    return { ...vacio, motivo: oculta.motivo === 'invalido' ? 'La copia oculta no es un correo válido.' : oculta.motivo };
+  }
+  const enCopia = copia.correos.filter((correo) => !para.correos.includes(correo));
+  const enOculta = oculta.correos.filter((correo) => !para.correos.includes(correo) && !enCopia.includes(correo));
+  return {
+    direccion: para.correos.join(', '),
+    para: para.correos,
+    copia: enCopia.join(', '),
+    copiaOculta: enOculta.join(', '),
+    motivo: null,
+  };
 }
 
