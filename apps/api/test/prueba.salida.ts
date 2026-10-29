@@ -35,6 +35,16 @@ test('el correo crudo lleva destinatario y asunto', () => {
   assert.doesNotMatch(texto, /Bcc:/);
 });
 
+test('el correo con diseño sale como texto y como html', () => {
+  const raw = correoRaw('telemetria@zgroup.com.pe', 'cliente@ejemplo.com', 'Aviso', 'Hola en texto', '', '', '<p>Hola en diseño</p>');
+  const texto = Buffer.from(raw, 'base64url').toString('utf8');
+  assert.match(texto, /multipart\/alternative/);
+  assert.match(texto, /text\/plain/);
+  assert.match(texto, /text\/html/);
+  assert.match(texto, /Hola en texto/);
+  assert.match(texto, /Hola en diseño/);
+});
+
 test('el correo crudo incluye copia y copia oculta', () => {
   const raw = correoRaw('telemetria@zgroup.com.pe', 'cliente@ejemplo.com', 'Aviso', 'Hola', 'copia@ejemplo.com', 'oculta@ejemplo.com');
   const texto = Buffer.from(raw, 'base64url').toString('utf8');

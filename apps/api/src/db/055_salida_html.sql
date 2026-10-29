@@ -1,0 +1,1 @@
+ALTER TABLE salida_correo ADD COLUMN IF NOT EXISTS html text NOT NULL DEFAULT '';

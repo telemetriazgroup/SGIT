@@ -53,19 +53,29 @@ export function textoContacto(contacto: string): string {
   return `Para continuar, comunícate al ${contacto}.`;
 }
 
-export function correoRaw(de: string, para: string, asunto: string, cuerpo: string, copia = '', copiaOculta = ''): string {
+export function correoRaw(de: string, para: string, asunto: string, cuerpo: string, copia = '', copiaOculta = '', html = ''): string {
   const texto = cuerpo.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+  const diseno = html.trim().replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
   const cabeceras = [`From: ${unaLinea(de)}`, `To: ${unaLinea(para)}`];
   if (copia.trim()) cabeceras.push(`Cc: ${unaLinea(copia)}`);
   if (copiaOculta.trim()) cabeceras.push(`Bcc: ${unaLinea(copiaOculta)}`);
-  cabeceras.push(
-    `Subject: ${asuntoCodificado(unaLinea(asunto))}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
-  );
-  const mensaje = [...cabeceras, '', texto].join('\r\n');
+  cabeceras.push(`Subject: ${asuntoCodificado(unaLinea(asunto))}`, 'MIME-Version: 1.0');
+  const mensaje = diseno
+    ? [...cabeceras, `Content-Type: multipart/alternative; boundary="${borde(diseno)}"`, '', parteTexto(borde(diseno), texto), parteHtml(borde(diseno), diseno), `--${borde(diseno)}--`].join('\r\n')
+    : [...cabeceras, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: 8bit', '', texto].join('\r\n');
   return Buffer.from(mensaje, 'utf8').toString('base64url');
+}
+
+function borde(html: string): string {
+  return `sgit-${Buffer.from(html).toString('hex').slice(0, 24)}`;
+}
+
+function parteTexto(limite: string, texto: string): string {
+  return [`--${limite}`, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: 8bit', '', texto, ''].join('\r\n');
+}
+
+function parteHtml(limite: string, html: string): string {
+  return [`--${limite}`, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: 8bit', '', html, ''].join('\r\n');
 }
 
 function unaLinea(valor: string): string {

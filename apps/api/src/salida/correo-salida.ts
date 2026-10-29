@@ -42,7 +42,7 @@ export class CorreoSalida {
       try {
         const de = await this.remitente();
         if (!de) throw new Error('No hay una casilla de Gmail configurada.');
-        await this.cliente.enviar(correoRaw(de, fila.direccion, fila.asunto, fila.cuerpo, fila.copia, fila.copiaOculta));
+        await this.cliente.enviar(correoRaw(de, fila.direccion, fila.asunto, fila.cuerpo, fila.copia, fila.copiaOculta, fila.html));
         await this.conexiones.pg.query(
           `UPDATE salida_correo SET estado = 'enviado', enviado_en = now(), error = NULL WHERE id = $1`,
           [fila.id],
@@ -68,12 +68,12 @@ export class CorreoSalida {
     return filas.rows[0]?.correo || this.config.gmail?.correo || '';
   }
 
-  private async tomarPendiente(): Promise<{ id: string; direccion: string; copia: string; copiaOculta: string; asunto: string; cuerpo: string } | null> {
+  private async tomarPendiente(): Promise<{ id: string; direccion: string; copia: string; copiaOculta: string; asunto: string; cuerpo: string; html: string } | null> {
     const cliente = await this.conexiones.pg.connect();
     try {
       await cliente.query('BEGIN');
-      const pendiente = await cliente.query<{ id: string; direccion: string; copia: string; copia_oculta: string; asunto: string; cuerpo: string }>(
-        `SELECT id, direccion, copia, copia_oculta, asunto, cuerpo
+      const pendiente = await cliente.query<{ id: string; direccion: string; copia: string; copia_oculta: string; asunto: string; cuerpo: string; html: string }>(
+        `SELECT id, direccion, copia, copia_oculta, asunto, cuerpo, html
          FROM salida_correo
          WHERE estado = 'pendiente' AND no_enviar_antes <= now()
          ORDER BY no_enviar_antes, creado_en
@@ -94,6 +94,7 @@ export class CorreoSalida {
         copiaOculta: fila.copia_oculta ?? '',
         asunto: fila.asunto,
         cuerpo: fila.cuerpo,
+        html: fila.html ?? '',
       };
     } catch (error) {
       await cliente.query('ROLLBACK');

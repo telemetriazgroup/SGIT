@@ -41,6 +41,7 @@ export type PiezaCorreo = {
   bcc?: string;
   asunto?: string;
   cuerpo?: string;
+  html?: string;
 };
 
 export type ResultadoWhatsapp = { id: string; telefono: string; estado: 'en_cola' | 'en_espera' | 'rechazado'; aviso: string | null; motivo?: string };
@@ -263,6 +264,7 @@ export class SalidaService {
       }
       const asunto = (pieza.asunto ?? '').trim();
       const texto = (pieza.cuerpo ?? '').trim();
+      const html = (pieza.html ?? '').trim().slice(0, 20000);
       if (!asunto || asunto.length > 180) {
         salida.push({ id: '', direccion, estado: 'rechazado', noEnviarAntes: null, motivo: 'El asunto es obligatorio y llega hasta 180 caracteres.' });
         continue;
@@ -286,9 +288,9 @@ export class SalidaService {
       cursor = cuando;
       const id = randomUUID();
       await this.conexiones.pg.query(
-        `INSERT INTO salida_correo (id, direccion, copia, copia_oculta, asunto, cuerpo, estado, no_enviar_antes)
-         VALUES ($1, $2, $3, $4, $5, $6, 'pendiente', $7)`,
-        [id, direccion, destinos.copia, destinos.copiaOculta, asunto, texto, cuando.toISOString()],
+        `INSERT INTO salida_correo (id, direccion, copia, copia_oculta, asunto, cuerpo, html, estado, no_enviar_antes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pendiente', $8)`,
+        [id, direccion, destinos.copia, destinos.copiaOculta, asunto, texto, html, cuando.toISOString()],
       );
       salida.push({ id, direccion, estado: 'en_cola', noEnviarAntes: cuando.toISOString() });
     }
