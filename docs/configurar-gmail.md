@@ -23,9 +23,10 @@ Si la organización usa Google Workspace, el tipo de usuarios del permiso debe s
    - Tipo de usuario: **Interno**.
    - Nombre de la aplicación: `SGIT`.
    - Correo de asistencia: el de Luis o el del área.
-4. En los permisos (ámbito / data access) agrega solo este:
+4. En los permisos (ámbito / data access) agrega estos dos:
    `https://www.googleapis.com/auth/gmail.readonly`
-   Es lectura del buzón. El envío del reporte al comercial se agrega en el sprint 13, no ahora.
+   `https://www.googleapis.com/auth/gmail.send`
+   El primero lee el buzón. El segundo envía los correos que entran por la API de salida, de a uno y con 20 segundos entre cada envío. Si la casilla ya estaba vinculada solo con lectura, hay que volver a conectarla para que el envío quede autorizado.
 5. En **APIs y servicios → Credenciales → Crear credenciales → ID de cliente de OAuth**.
    - Tipo: **Aplicación web**.
    - Nombre: `SGIT local`.

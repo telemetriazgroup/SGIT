@@ -19,6 +19,7 @@ export type Configuracion = {
   };
   claveCifrado: string;
   iniciarSync: boolean;
+  salidaClave: string;
   gmail: {
     clientId: string;
     clientSecret: string;
@@ -85,6 +86,7 @@ export function leerConfiguracion(env: NodeJS.ProcessEnv = process.env): Configu
     },
     claveCifrado: env.CLAVE_CIFRADO?.trim() || env.SESION_SECRETO!.trim(),
     iniciarSync: env.INICIAR_SYNC === 'true',
+    salidaClave: env.SALIDA_CLAVE?.trim() ?? '',
     gmail:
       clientId && clientSecret
         ? {

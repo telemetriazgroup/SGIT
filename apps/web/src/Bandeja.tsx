@@ -10,6 +10,7 @@ import { PanelImprimir } from './Imprimir';
 import { PanelOdoo } from './Odoo';
 import { PanelRespaldo } from './Respaldo';
 import { PanelDiccionario, PanelTareas } from './Tareas';
+import { PanelSalida } from './Salida';
 
 type Avance = {
   fase: 'ocioso' | 'listando' | 'importando' | 'listo' | 'error';
@@ -128,7 +129,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
   const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'salida' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
   const [redactando, setRedactando] = useState(false);
   const [notaProceso, setNotaProceso] = useState<string | null>(null);
   const [tareaAbierta, setTareaAbierta] = useState<string | null>(null);
@@ -457,6 +458,18 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             Bot
           </button>
           ) : null}
+          {editar ? (
+          <button
+            type="button"
+            className={vista === 'salida' ? 'activo' : ''}
+            onClick={() => {
+              setVista('salida');
+              setHilo(null);
+            }}
+          >
+            Salida
+          </button>
+          ) : null}
           {sesion.usuario.rol === 'superusuario' ? (
             <button type="button" className={vista === 'equipo' ? 'activo' : ''} onClick={() => { setVista('equipo'); setHilo(null); }}>
               Cuentas
@@ -581,6 +594,8 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             <PanelDiccionario apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'bot' ? (
             <PanelBot apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'salida' ? (
+            <PanelSalida apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'enviados' ? (
             <VacioEnviados onRedactar={() => setRedactando(true)} />
           ) : hilo ? (

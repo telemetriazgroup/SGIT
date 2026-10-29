@@ -1,6 +1,6 @@
 export const INTERVALO_SYNC_MS = 3 * 60 * 1000;
 export const LOTE_SYNC = 5;
-export const ALCANCE_GMAIL = 'https://www.googleapis.com/auth/gmail.readonly';
+export const ALCANCE_GMAIL = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send';
 
 export type ParteAdjunto = {
   attachmentId: string;
@@ -46,4 +46,5 @@ export interface ClienteGmail {
   historial(inicio: string): Promise<{ ids: string[]; historyId: string }>;
   obtener(id: string): Promise<MensajeDescargado>;
   adjunto(mensajeId: string, attachmentId: string): Promise<Buffer>;
+  enviar(raw: string): Promise<void>;
 }

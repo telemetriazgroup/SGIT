@@ -1,0 +1,63 @@
+export const PAUSA_CORREO_MS = 20_000;
+export const TOPE_SALIDA = 30;
+
+export function telefonoSalida(valor: string): string {
+  const limpio = valor.replace(/\D/g, '');
+  if (limpio.length === 9) return `51${limpio}`;
+  return limpio;
+}
+
+export function telefonoValido(valor: string): boolean {
+  return valor.length >= 8 && valor.length <= 15;
+}
+
+export function candidatosTelefono(valor: string): string[] {
+  const base = valor.replace(/\D/g, '');
+  if (base.length < 8 || base.length > 15) return [];
+  const vistos = new Set<string>([base]);
+  if (base.length === 9) vistos.add(`51${base}`);
+  if (base.startsWith('51') && base.length === 11) vistos.add(base.slice(2));
+  return [...vistos];
+}
+
+export function correoValido(valor: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(valor) && valor.length <= 180;
+}
+
+export function momentoCorreo(ultimo: Date | null, ahora: Date): Date {
+  if (!ultimo || ultimo.getTime() < ahora.getTime()) return new Date(ahora.getTime());
+  return new Date(ultimo.getTime() + PAUSA_CORREO_MS);
+}
+
+export function textoContacto(contacto: string): string {
+  return `Para continuar, comunícate al ${contacto}.`;
+}
+
+export function correoRaw(de: string, para: string, asunto: string, cuerpo: string): string {
+  const texto = cuerpo.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+  const mensaje = [
+    `From: ${unaLinea(de)}`,
+    `To: ${unaLinea(para)}`,
+    `Subject: ${asuntoCodificado(unaLinea(asunto))}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    texto,
+  ].join('\r\n');
+  return Buffer.from(mensaje, 'utf8').toString('base64url');
+}
+
+function unaLinea(valor: string): string {
+  return valor.replace(/[\r\n]+/g, ' ').trim();
+}
+
+function asuntoCodificado(asunto: string): string {
+  if (/^[\x20-\x7E]*$/.test(asunto)) return asunto;
+  return `=?UTF-8?B?${Buffer.from(asunto, 'utf8').toString('base64')}?=`;
+}
+
+export function listaDe<T>(valor: T | T[] | undefined): T[] {
+  if (!valor) return [];
+  return Array.isArray(valor) ? valor : [valor];
+}

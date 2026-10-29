@@ -70,6 +70,19 @@ export class ClienteGmailGoogle implements ClienteGmail {
     return interpretarMensaje(json as { id: string; threadId: string; payload?: Parte });
   }
 
+  async enviar(raw: string): Promise<void> {
+    const token = await this.token();
+    const respuesta = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ raw }),
+    });
+    if (!respuesta.ok) {
+      const texto = await respuesta.text();
+      throw new Error(`Gmail ${respuesta.status} /messages/send: ${texto.slice(0, 240)}`);
+    }
+  }
+
   async adjunto(mensajeId: string, attachmentId: string): Promise<Buffer> {
     const url = new URL(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(mensajeId)}/attachments/${encodeURIComponent(attachmentId)}`,

@@ -47,6 +47,10 @@ class DobleGmail implements ClienteGmail {
     return Promise.resolve(mensaje);
   }
 
+  enviar(): Promise<void> {
+    return Promise.reject(new Error('El doble no envía correo.'));
+  }
+
   adjunto(_mensajeId: string, attachmentId: string): Promise<Buffer> {
     if (this.fallarAdjunto.has(attachmentId)) return Promise.reject(new Error('adjunto caído'));
     const bytes = this.bytes.get(attachmentId);

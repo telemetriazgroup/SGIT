@@ -13,6 +13,7 @@ import { esPdf, type CapturaMensaje } from '../impresion/reglas';
 import { ImpresionServicio } from '../impresion/servicio';
 import { joinUrgente, ordenFecha, ordenUrgente } from '../tareas/prioridad';
 import { anotarConexion } from '../conexion/bitacora';
+import { candidatosTelefono, textoContacto } from '../salida/reglas';
 import type { Conexiones } from '../conexiones';
 import {
   NO_HABILITADO,
@@ -744,7 +745,23 @@ export class BotService {
       [numero],
     );
     const quien = miembro.rows[0];
-    if (!quien) return this.dejar(numero, false, NO_HABILITADO);
+    if (!quien) {
+      const candidatos = candidatosTelefono(numero);
+      const salida = candidatos.length
+        ? await this.conexiones.pg.query<{ contacto: string }>(
+            `SELECT s.contacto
+             FROM salida_whatsapp s
+             JOIN aviso a ON a.id = s.aviso_id AND a.estado = 'enviado'
+             WHERE s.telefono = ANY($1::text[])
+             ORDER BY s.creado_en DESC
+             LIMIT 1`,
+            [candidatos],
+          )
+        : { rows: [] as Array<{ contacto: string }> };
+      const contacto = salida.rows[0]?.contacto;
+      if (contacto) return this.dejar(numero, true, textoContacto(contacto));
+      return this.dejar(numero, false, NO_HABILITADO);
+    }
 
     const charla = await this.charla(numero);
     const limpio = texto.trim();
