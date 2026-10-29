@@ -7,16 +7,16 @@ Guía para que una aplicación externa deje un mensaje de WhatsApp o un correo e
 | Dato | Valor |
 |---|---|
 | Método | `POST` |
-| URL en producción | `https://ztrack.app/servicio/salida` |
-| Ruta en la API | `/SGIT/salida` |
+| URL en producción | `https://ztrack.app/SGIT/servicio/salida` |
+| Ruta interna | `/SGIT/salida` |
 | Cuerpo | `application/json` |
 | Autenticación | Header `x-salida-clave` |
 
-La clave es el valor de `SALIDA_CLAVE` en el servidor de SGIT. No va en el cuerpo. En los ejemplos, `TU_CLAVE` es ese valor y `BASE` es `https://ztrack.app/servicio`.
+La ruta queda dentro de `/SGIT/`, que es el proyecto. La aplicación externa no inicia sesión. Solo manda la clave en el header. Esa clave es el valor de `SALIDA_CLAVE` en el servidor. No va en el cuerpo. En los ejemplos, `TU_CLAVE` es ese valor y `BASE` es `https://ztrack.app/SGIT/servicio`.
 
 Si la clave falta o no coincide, la respuesta es `401` y el texto `Falta la clave de salida.`
 
-Un usuario de SGIT con rol superusuario, administrador u operador también puede llamar esta ruta con su sesión (`Authorization: Bearer …`). La aplicación externa usa la clave.
+Abrir `https://ztrack.app/SGIT/servicio/salida` en el navegador, ya con la sesión iniciada, muestra la pantalla Salida. Eso es solo para administrar. Un `GET` no carga mensajes. La aplicación usa `POST` a esa misma ruta y no manda usuario ni contraseña de SGIT.
 
 ## Qué acepta
 

@@ -129,7 +129,9 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
   const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'salida' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'cuenta'>(sistema ? 'recibidos' : 'tareas');
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'salida' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'cuenta'>(
+    editar && /\/servicio\/salida\/?$/.test(window.location.pathname) ? 'salida' : sistema ? 'recibidos' : 'tareas',
+  );
   const [redactando, setRedactando] = useState(false);
   const [notaProceso, setNotaProceso] = useState<string | null>(null);
   const [tareaAbierta, setTareaAbierta] = useState<string | null>(null);

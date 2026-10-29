@@ -43,6 +43,16 @@ export default defineConfig({
     strictPort: true,
     allowedHosts: ['ztrack.app', 'localhost', '127.0.0.1', '161.132.53.51'],
     proxy: {
+      '/SGIT/servicio': {
+        target: process.env.API_INTERNO || 'http://api:18003',
+        rewrite: (ruta) => ruta.replace(/^\/SGIT\/servicio/, '/SGIT'),
+        timeout: 0,
+        proxyTimeout: 0,
+        bypass(pedido) {
+          const metodo = pedido.method ?? 'GET';
+          if (metodo === 'GET' || metodo === 'HEAD') return '/SGIT/index.html';
+        },
+      },
       '/servicio': {
         target: process.env.API_INTERNO || 'http://api:18003',
         rewrite: (ruta) => ruta.replace(/^\/servicio/, '/SGIT'),
