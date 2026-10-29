@@ -470,6 +470,10 @@ button:disabled {
   border-bottom: 1px solid #ece7df;
 }
 
+.herramientas button {
+  margin-top: 0;
+}
+
 .estado-buzon {
   color: #5c564c;
   font-size: 0.85rem;

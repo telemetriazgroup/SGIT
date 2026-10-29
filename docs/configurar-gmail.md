@@ -54,9 +54,17 @@ INICIAR_SYNC=true
 10. La bandeja queda en `conectado`. Importa desde hace 30 días hasta hoy. Los correos aparecen con sus imágenes y archivos.
 11. A partir de ahí, cada 5 minutos SGIT baja lo nuevo. Un correo enviado a `telemetria@zgroup.com.pe` se ve en el siguiente ciclo.
 
-## Si Google no devuelve la clave duradera
+## Si el envío dice que falta el permiso
 
-Vuelve a pulsar Conectar Gmail. El enlace pide el permiso otra vez (`prompt=consent`). Si la cuenta ya tenía un permiso viejo, en [https://myaccount.google.com/permissions](https://myaccount.google.com/permissions), con la sesión de `telemetria@`, quita el acceso de SGIT y conéctala de nuevo.
+La lectura puede estar bien y el envío no. El token viejo solo tenía `gmail.readonly`. Hay que autorizar otra vez, con la sesión de `telemetria@zgroup.com.pe`.
+
+1. En la pantalla de consentimiento de Google, confirma que está el permiso `https://www.googleapis.com/auth/gmail.send` junto con `gmail.readonly`.
+2. En SGIT, entra como superusuario u operador. En Recibidos pulsa **Volver a vincular**. Si la casilla figura sin conectar, el botón se llama **Conectar buzón**.
+3. Google abre la cuenta `telemetria@zgroup.com.pe`. Permite leer y enviar. Otra cuenta no sirve.
+4. Si Google no vuelve a preguntar, entra en [https://myaccount.google.com/permissions](https://myaccount.google.com/permissions) con `telemetria@`, quita SGIT y pulsa **Volver a vincular** otra vez.
+5. El correo que quedó en «No se envió» no se reintenta. En Salida, encola otro.
+
+En ztrack.app la redirección del cliente OAuth es `https://ztrack.app/servicio/buzon/oauth/callback`.
 
 ## Qué no va en el acta ni en git
 

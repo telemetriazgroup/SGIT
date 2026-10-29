@@ -530,6 +530,11 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
                 {resumen?.ultimaSync ? ` · sync ${fechaCorta(resumen.ultimaSync)}` : ''}
               </span>
             )}
+            {resumen?.conectado ? (
+              <button type="button" onClick={() => void conectar()}>
+                Volver a vincular
+              </button>
+            ) : null}
             {resumen ? (
               <button
                 type="button"
