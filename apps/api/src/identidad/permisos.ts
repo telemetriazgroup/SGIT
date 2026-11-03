@@ -10,6 +10,10 @@ export function puedeEditarTarea(rol: Rol): boolean {
   return rol === 'administrador' || rol === 'superusuario' || rol === 'operador';
 }
 
+export function puedeAtenderTarea(rol: Rol): boolean {
+  return puedeEditarTarea(rol) || rol === 'tecnico';
+}
+
 export function puedeOperarSistema(rol: Rol): boolean {
   return rol === 'superusuario' || rol === 'operador';
 }

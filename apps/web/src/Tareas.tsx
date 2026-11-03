@@ -241,6 +241,7 @@ export function PanelTareas({
   tareaId,
   editar,
   anotar,
+  atender,
   sistema,
   prioridad,
 }: {
@@ -249,6 +250,7 @@ export function PanelTareas({
   tareaId: string | null;
   editar: boolean;
   anotar: boolean;
+  atender: boolean;
   sistema: boolean;
   prioridad: boolean;
 }) {
@@ -604,7 +606,7 @@ export function PanelTareas({
             Pasar a campaña
           </button>
         ) : null}
-        {ficha.campana ? <TiendasCampana apiUrl={apiUrl} token={token} ficha={ficha} editar={editar} alGuardar={setFicha} alFallar={setAviso} /> : null}
+        {ficha.campana ? <TiendasCampana apiUrl={apiUrl} token={token} ficha={ficha} editar={editar} atender={atender} alGuardar={setFicha} alFallar={setAviso} /> : null}
         <h3>Datos de la cotización</h3>
         <dl>
           <Campo nombre="Ticket" valor={ficha.ticket} />
@@ -649,7 +651,7 @@ export function PanelTareas({
             fabricaciones={ficha.fabricaciones ?? []}
             notas={ficha.notas ?? []}
             cantidad={ficha.cantidad}
-            editar={editar}
+            editar={atender}
             alGuardar={setFicha}
             alFallar={setAviso}
           />
@@ -1405,6 +1407,7 @@ function TiendasCampana({
   token,
   ficha,
   editar,
+  atender,
   alGuardar,
   alFallar,
 }: {
@@ -1412,6 +1415,7 @@ function TiendasCampana({
   token: string;
   ficha: Tarea;
   editar: boolean;
+  atender: boolean;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
 }) {
@@ -1423,7 +1427,7 @@ function TiendasCampana({
       {(ficha.tiendas ?? []).length === 0 ? <p>Todavía no hay tiendas en los correos de esta cotización.</p> : null}
       <ul className="tiendas">
         {(ficha.tiendas ?? []).map((tienda) => (
-          <TarjetaTienda key={tienda.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} tienda={tienda} editar={editar} alGuardar={alGuardar} alFallar={alFallar} />
+          <TarjetaTienda key={tienda.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} tienda={tienda} editar={editar} atender={atender} alGuardar={alGuardar} alFallar={alFallar} />
         ))}
       </ul>
     </section>
@@ -1592,6 +1596,7 @@ function TarjetaTienda({
   tareaId,
   tienda,
   editar,
+  atender,
   alGuardar,
   alFallar,
 }: {
@@ -1600,6 +1605,7 @@ function TarjetaTienda({
   tareaId: string;
   tienda: TiendaCampana;
   editar: boolean;
+  atender: boolean;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
 }) {
@@ -1689,7 +1695,7 @@ function TarjetaTienda({
           )}
         />
       ) : null}
-      {editar && tienda.estado !== 'resuelta' ? (
+      {atender && tienda.estado !== 'resuelta' ? (
         <form
           className="cuenta-alta"
           onSubmit={(evento) => {
@@ -1711,7 +1717,7 @@ function TarjetaTienda({
           </label>
           <div className="bitacora-acciones">
             <button type="submit">Anotar seguimiento</button>
-            {tienda.estado === 'pendiente' || tienda.estado === 'en_seguimiento' ? (
+            {editar && (tienda.estado === 'pendiente' || tienda.estado === 'en_seguimiento') ? (
               <button
                 type="button"
                 onClick={() => {
@@ -1740,6 +1746,8 @@ function TarjetaTienda({
               Anotar incidente
             </button>
           </div>
+          {editar ? (
+            <>
           <label>
             Código de telemetría
             <input value={codigo} onChange={(evento) => setCodigo(evento.target.value)} />
@@ -1758,6 +1766,8 @@ function TarjetaTienda({
           >
             Marcar tienda realizada
           </button>
+            </>
+          ) : null}
         </form>
       ) : null}
       <div className="tienda-abrir">
@@ -1792,7 +1802,7 @@ function TarjetaTienda({
             fabricaciones={hija.fabricaciones ?? []}
             notas={hija.notas ?? []}
             cantidad={hija.cantidad}
-            editar={editar}
+            editar={atender}
             alGuardar={setHija}
             alFallar={alFallar}
           />
@@ -2789,7 +2799,7 @@ function Bitacora({
         <p>Esta tarea está resuelta y ya no se lista entre las abiertas.</p>
       ) : anotar || editar ? (
       <div className="bitacora-acciones">
-        {editar && !ficha.responsable_nombre ? (
+        {(editar || anotar) && !ficha.responsable_nombre ? (
           <button type="button" className="primario" onClick={() => void tomar().catch((error: unknown) => alFallar(texto(error)))}>
             Tomar tarea
           </button>

@@ -14,7 +14,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { IdentidadService } from '../identidad/identidad.service';
-import { puedeEditarTarea, puedeOperarSistema } from '../identidad/permisos';
+import { puedeAtenderTarea, puedeEditarTarea, puedeOperarSistema } from '../identidad/permisos';
 import { TareasService } from './tareas.service';
 
 @Controller()
@@ -219,7 +219,7 @@ export class TareasController {
     @Param('id') id: string,
     @Body() cuerpo: { cantidad?: number },
   ) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     await this.tareas.fijarHilos(id, Number(cuerpo?.cantidad), usuario);
     return this.fichaDe(id);
@@ -241,7 +241,7 @@ export class TareasController {
       zona?: 'almacen' | 'tecnico' | 'despacho';
     },
   ) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     await this.tareas.corregirHilo(id, hiloId, cuerpo ?? {}, usuario);
     return this.fichaDe(id);
@@ -254,7 +254,7 @@ export class TareasController {
     @Param('hiloId') hiloId: string,
     @Body() cuerpo: { accion?: string; motivo?: string; comentario?: string; equipo?: string; fotos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
   ) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     const mensaje = await this.tareas.accionHilo(id, hiloId, cuerpo ?? {}, usuario);
     const ficha = await this.fichaDe(id);
@@ -268,7 +268,7 @@ export class TareasController {
     @Param('hiloId') hiloId: string,
     @Body() cuerpo: { clase?: string; nombre?: string; mime?: string; contenido?: string; zona?: string },
   ) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     await this.tareas.regularizarFoto(id, hiloId, usuario, cuerpo ?? {});
     return this.fichaDe(id);
@@ -280,7 +280,7 @@ export class TareasController {
     @Param('id') id: string,
     @Param('notaId') notaId: string,
   ) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     await this.tareas.releerNota(id, notaId);
     return this.fichaDe(id);
@@ -419,7 +419,7 @@ export class TareasController {
 
   @Post('tareas/:id/tomar')
   async tomar(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.tomar(id, usuario);
     return this.fichaDe(id);
   }
@@ -580,6 +580,12 @@ export class TareasController {
   private async exigirEdicion(autorizacion?: string) {
     const usuario = await this.exigir(autorizacion);
     if (!puedeEditarTarea(usuario.rol)) throw new ForbiddenException('No tienes permiso para editar la tarea.');
+    return usuario;
+  }
+
+  private async exigirAtencion(autorizacion?: string) {
+    const usuario = await this.exigir(autorizacion);
+    if (!puedeAtenderTarea(usuario.rol)) throw new ForbiddenException('No tienes permiso para trabajar la tarea.');
     return usuario;
   }
 

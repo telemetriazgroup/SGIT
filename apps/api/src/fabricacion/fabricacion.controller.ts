@@ -1,7 +1,7 @@
 import { Body, Controller, ForbiddenException, Get, Headers, Inject, NotFoundException, Param, Post, UnauthorizedException } from '@nestjs/common';
 import { Conexiones } from '../conexiones';
 import { IdentidadService } from '../identidad/identidad.service';
-import { puedeEditarTarea } from '../identidad/permisos';
+import { puedeAtenderTarea } from '../identidad/permisos';
 import { ImpresionServicio } from '../impresion/servicio';
 import { TareasService } from '../tareas/tareas.service';
 import { FabricacionServicio } from './servicio';
@@ -22,7 +22,7 @@ export class FabricacionController {
     @Param('id') id: string,
     @Param('hiloId') hiloId: string,
   ) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     const pedido = await this.fabricacion.pedir(hiloId, '', usuario);
     const ficha = await this.tareas.ficha(id);
@@ -36,7 +36,7 @@ export class FabricacionController {
     @Param('id') id: string,
     @Param('hiloId') hiloId: string,
   ) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     return { texto: await this.fabricacion.pedirReporte(hiloId) };
   }
@@ -47,7 +47,7 @@ export class FabricacionController {
     @Param('id') id: string,
     @Param('hiloId') hiloId: string,
   ) {
-    const usuario = await this.exigirEdicion(autorizacion);
+    const usuario = await this.exigirAtencion(autorizacion);
     await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
     const leido = await this.fabricacion.leerReporte(hiloId);
     if (!leido.ok) return { texto: leido.texto };
@@ -66,11 +66,11 @@ export class FabricacionController {
     return { texto: await this.fabricacion.proponer(token, cuerpo ?? {}) };
   }
 
-  private async exigirEdicion(autorizacion?: string) {
+  private async exigirAtencion(autorizacion?: string) {
     const token = autorizacion?.startsWith('Bearer ') ? autorizacion.slice('Bearer '.length).trim() : '';
     if (!token) throw new UnauthorizedException('Sesión no válida.');
     const usuario = await this.identidad.actual(token);
-    if (!puedeEditarTarea(usuario.rol)) throw new ForbiddenException('No tienes permiso para editar la tarea.');
+    if (!puedeAtenderTarea(usuario.rol)) throw new ForbiddenException('No tienes permiso para trabajar la tarea.');
     return usuario;
   }
 }
