@@ -20,9 +20,25 @@ type Pagina = {
   resumen: { disponibles: number; fabricados: number; salidas: number; producto: string };
 };
 
+type NotaOrden = { fecha: string; autor: string; texto: string; imagenes: Array<{ id: string; nombre: string; mime: string; datos?: string }> };
+
+type OrdenVista = {
+  nombre: string;
+  producto: string;
+  estado: string;
+  pasos: string[];
+  ficha: Array<{ nombre: string; valor: string; lado: 'izq' | 'der' }>;
+  componentes: Array<{ producto: string; porConsumir: number; consumido: number; unidad: string; desde: string; serie: string }>;
+  notas: NotaOrden[];
+  leido_en: string | null;
+};
+
 type Detalle = Modem & {
   movimientos: Array<{ fecha: string | null; referencia: string; desde: string; hacia: string; cantidad: number | null; estado: string }>;
+  orden: OrdenVista | null;
 };
+
+type FotoNota = { id: string; nombre: string; mime: string; datos: string };
 
 const ESTADOS: Record<string, string> = { disponible: 'Disponible', fabricado: 'Fabricado', salida: 'Salida', done: 'Hecho' };
 
@@ -41,6 +57,11 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
   useEffect(() => {
     void cargar(1, '', '').catch((error: unknown) => setAviso(texto(error)));
   }, [apiUrl, token]);
+
+  useEffect(() => {
+    if (!elegido) return;
+    document.getElementById('modem-elegido')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [elegido?.id]);
 
   async function cargar(siguiente: number, textoBusqueda: string, filtro = estado) {
     const datos = await pedir<Pagina>(apiUrl, token, `/modems?pagina=${siguiente}&q=${encodeURIComponent(textoBusqueda)}&estado=${encodeURIComponent(filtro)}`);
@@ -70,10 +91,37 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
     setOcupado(true);
     setAviso(null);
     try {
-      setElegido(await pedir<Detalle>(apiUrl, token, `/modems/${modem.id}`));
+      const detalle = await pedir<Detalle>(apiUrl, token, `/modems/${modem.id}`);
+      setElegido(detalle);
+      if (!detalle.orden) return;
+      const imagenes = await pedir<FotoNota[]>(apiUrl, token, `/modems/${modem.id}/orden/imagenes`).catch(() => []);
+      if (imagenes.length === 0) return;
+      const porId = new Map(imagenes.map((imagen) => [imagen.id, imagen.datos]));
+      setElegido({
+        ...detalle,
+        orden: {
+          ...detalle.orden,
+          notas: detalle.orden.notas.map((nota) => ({
+            ...nota,
+            imagenes: nota.imagenes.map((imagen) => ({ ...imagen, datos: porId.get(imagen.id) ?? imagen.datos })),
+          })),
+        },
+      });
     } catch (error: unknown) {
       setAviso(texto(error));
     } finally {
+      setOcupado(false);
+    }
+  }
+
+  async function refrescarOrden(modem: Detalle) {
+    setOcupado(true);
+    setAviso(null);
+    try {
+      await pedir(apiUrl, token, `/modems/${modem.id}/orden`, { method: 'POST', body: '{}' });
+      await abrir(modem);
+    } catch (error: unknown) {
+      setAviso(texto(error));
       setOcupado(false);
     }
   }
@@ -85,12 +133,17 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
     <section className="ficha">
       <h2>M2M</h2>
       <p>
-        USR-G786-G Global Frequency Industrial M2M. Consultar Odoo trae cada número de serie y sus movimientos: los que siguen en existencia, los que entraron a una orden de fabricación y los que salieron a un cliente. En una orden fabricada queda también el número del chip de esa telemetría.
+        USR-G786-G. Cada 5 minutos se guardan los módems y, si tienen orden de fabricación, la ficha, los componentes, las notas y las imágenes. Abrir uno lee la base. Si Odoo no cambió la orden, no se vuelve a pedir.
       </p>
       <button id="consultar-modems" type="button" disabled={ocupado} onClick={() => void consultar()}>
         Consultar Odoo
       </button>
       {aviso ? <p className={aviso.startsWith('No se') || aviso.includes('no tiene') ? 'error' : 'bajada'}>{aviso}</p> : null}
+      {elegido ? (
+        <div id="modem-elegido" className="zona-elegida">
+          <OrdenModem detalle={elegido} ocupado={ocupado} onCerrar={() => setElegido(null)} onActualizar={() => void refrescarOrden(elegido)} />
+        </div>
+      ) : null}
       {resumen ? (
         <p className="meta">
           {resumen.disponibles} disponibles · {resumen.fabricados} fabricados · {resumen.salidas} salidas
@@ -122,44 +175,6 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
           </button>
         ))}
       </div>
-      {elegido ? (
-        <article className="odoo-hoja">
-          <header className="odoo-cabeza">
-            <p className="odoo-kicker">{ESTADOS[elegido.estado] ?? elegido.estado}</p>
-            <h3>{elegido.serie}</h3>
-            <p className="meta">
-              {[elegido.orden_mo, elegido.chip ? `Chip ${elegido.chip}` : '', elegido.salida].filter(Boolean).join(' · ')}
-            </p>
-            <button type="button" className="secundario" onClick={() => setElegido(null)}>
-              Volver
-            </button>
-          </header>
-          <table className="odoo-lineas">
-            <thead>
-              <tr>
-                <th>Fecha</th>
-                <th>Referencia</th>
-                <th>Desde</th>
-                <th>A</th>
-                <th>Cantidad</th>
-                <th>Estado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {elegido.movimientos.map((movimiento, indice) => (
-                <tr key={`${movimiento.referencia}-${indice}`}>
-                  <td>{movimiento.fecha ?? ''}</td>
-                  <td>{movimiento.referencia}</td>
-                  <td>{movimiento.desde}</td>
-                  <td>{movimiento.hacia}</td>
-                  <td>{movimiento.cantidad ?? ''}</td>
-                  <td>{ESTADOS[movimiento.estado] ?? movimiento.estado}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </article>
-      ) : null}
       <p className="meta">{total === 0 ? 'Todavía no hay módems. Consulta Odoo para traerlos.' : `${desde}–${hasta} de ${total}`}</p>
       {modems.length > 0 ? (
         <table className="tabla-chips">
@@ -175,7 +190,14 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
           </thead>
           <tbody>
             {modems.map((modem) => (
-              <tr key={modem.id}>
+              <tr
+                key={modem.id}
+                className={elegido?.id === modem.id ? 'elegida' : ''}
+                onClick={(evento) => {
+                  if ((evento.target as HTMLElement).closest('button')) return;
+                  void abrir(modem);
+                }}
+              >
                 <td>
                   <button type="button" className="enlace" onClick={() => void abrir(modem)}>
                     {modem.serie}
@@ -219,4 +241,169 @@ async function pedir<T>(apiUrl: string, token: string, ruta: string, init?: Requ
 
 function texto(error: unknown): string {
   return error instanceof Error ? error.message : 'No se pudo completar la operación.';
+}
+
+function OrdenModem({ detalle, ocupado, onCerrar, onActualizar }: { detalle: Detalle; ocupado: boolean; onCerrar: () => void; onActualizar: () => void }) {
+  const orden = detalle.orden;
+  const [foto, setFoto] = useState<number | null>(null);
+  const fotos: FotoNota[] = (orden?.notas ?? []).flatMap((nota) => nota.imagenes.filter((imagen): imagen is FotoNota => Boolean(imagen.datos)));
+  return (
+    <article className="odoo-hoja orden-hoja">
+      <header className="odoo-cabeza">
+        <p className="odoo-kicker">
+          {ESTADOS[detalle.estado] ?? detalle.estado} · {detalle.serie}
+        </p>
+        <h3>{orden?.nombre || detalle.orden_mo || detalle.serie}</h3>
+        <p className="meta">{[detalle.orden_mo, detalle.chip ? `Chip ${detalle.chip}` : '', detalle.salida].filter(Boolean).join(' · ')}</p>
+        {orden && orden.pasos.length > 0 ? (
+          <div className="odoo-pasos">
+            {orden.pasos.map((paso) => (
+              <span key={paso} className={paso === orden.estado ? 'actual' : ''}>
+                {ETIQUETA_ORDEN[paso] ?? paso}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="bitacora-acciones">
+          <button type="button" className="secundario" onClick={onCerrar}>
+            Cerrar
+          </button>
+          {detalle.orden_mo ? (
+            <button type="button" disabled={ocupado} onClick={onActualizar}>
+              Actualizar de Odoo
+            </button>
+          ) : null}
+        </div>
+      </header>
+      {detalle.orden_mo && !orden ? <p className="bajada">La orden todavía no está en la base. La sincronización la trae cada 5 minutos, o pulsa Actualizar de Odoo.</p> : null}
+      {orden ? (
+        <div className="odoo-cuerpo">
+          <div className="odoo-formulario">
+            <dl>
+              {orden.ficha.filter((campo) => campo.lado === 'izq').map((campo) => (
+                <div key={campo.nombre}>
+                  <dt>{campo.nombre}</dt>
+                  <dd>{fechaOrden(campo.valor)}</dd>
+                </div>
+              ))}
+            </dl>
+            <dl>
+              {orden.ficha.filter((campo) => campo.lado === 'der').map((campo) => (
+                <div key={campo.nombre}>
+                  <dt>{campo.nombre}</dt>
+                  <dd>{fechaOrden(campo.valor)}</dd>
+                </div>
+              ))}
+            </dl>
+            <h4>Componentes</h4>
+            <table className="odoo-lineas">
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th>Por consumir</th>
+                  <th>Consumido</th>
+                  <th>Unidad</th>
+                  <th>Desde</th>
+                  <th>Serie</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orden.componentes.map((linea) => (
+                  <tr key={linea.producto}>
+                    <td>{linea.producto}</td>
+                    <td>{linea.porConsumir}</td>
+                    <td>{linea.consumido}</td>
+                    <td>{linea.unidad}</td>
+                    <td>{linea.desde}</td>
+                    <td>{linea.serie}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <aside className="odoo-chatter">
+            <h4>Notas</h4>
+            {orden.notas.length === 0 ? <p className="meta">Sin notas.</p> : null}
+            <ol>
+              {orden.notas.map((nota, indice) => (
+                <li key={`${nota.fecha}-${indice}`}>
+                  <div>
+                    <strong>{nota.autor || 'Odoo'}</strong>
+                    <time>{nota.fecha ? fechaOrden(nota.fecha) : ''}</time>
+                  </div>
+                  {nota.texto ? <p>{nota.texto}</p> : null}
+                  {nota.imagenes.some((imagen) => imagen.datos) ? (
+                    <div className="orden-fotos">
+                      {nota.imagenes.map((imagen) =>
+                        imagen.datos ? (
+                          <button key={imagen.id} type="button" className="miniatura" onClick={() => setFoto(fotos.findIndex((fotoNota) => fotoNota.id === imagen.id))} title="Ver la imagen">
+                            <img src={`data:${imagen.mime};base64,${imagen.datos}`} alt={imagen.nombre} />
+                          </button>
+                        ) : null,
+                      )}
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          </aside>
+        </div>
+      ) : null}
+      <h4>Movimientos</h4>
+      <table className="odoo-lineas">
+        <thead>
+          <tr>
+            <th>Fecha</th>
+            <th>Referencia</th>
+            <th>Desde</th>
+            <th>A</th>
+            <th>Cantidad</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          {detalle.movimientos.map((movimiento, indice) => (
+            <tr key={`${movimiento.referencia}-${indice}`}>
+              <td>{movimiento.fecha ?? ''}</td>
+              <td>{movimiento.referencia}</td>
+              <td>{movimiento.desde}</td>
+              <td>{movimiento.hacia}</td>
+              <td>{movimiento.cantidad ?? ''}</td>
+              <td>{ESTADOS[movimiento.estado] ?? movimiento.estado}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {foto != null && fotos[foto] ? (
+        <div className="foto-modal" role="dialog" aria-modal="true" aria-label={fotos[foto].nombre} onClick={() => setFoto(null)}>
+          <div className="foto-marco" onClick={(evento) => evento.stopPropagation()}>
+            <img src={`data:${fotos[foto].mime};base64,${fotos[foto].datos}`} alt={fotos[foto].nombre} />
+            <div className="foto-controles">
+              <button type="button" onClick={() => setFoto(null)}>
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+const ETIQUETA_ORDEN: Record<string, string> = {
+  draft: 'Borrador',
+  confirmed: 'Confirmada',
+  progress: 'En progreso',
+  to_close: 'Por cerrar',
+  done: 'Hecho',
+  cancel: 'Cancelada',
+};
+
+function fechaOrden(valor: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(valor)) return valor;
+  const normal = valor.includes('T') ? valor : valor.replace(' ', 'T');
+  const conZona = /z$/i.test(normal) || /[+-]\d{2}/.test(normal) ? normal : `${normal}Z`;
+  const fecha = new Date(conZona);
+  if (Number.isNaN(fecha.getTime())) return valor;
+  return new Intl.DateTimeFormat('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(fecha);
 }

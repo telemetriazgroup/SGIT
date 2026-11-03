@@ -29,6 +29,18 @@ export class ModemsController {
     return this.modems.consultar();
   }
 
+  @Get('modems/:id/orden/imagenes')
+  async imagenes(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    await this.exigir(autorizacion);
+    return this.modems.imagenesDeOrden(id);
+  }
+
+  @Post('modems/:id/orden')
+  async orden(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    await this.exigir(autorizacion);
+    return this.modems.verOrden(id, true);
+  }
+
   @Get('modems/:id')
   async ver(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     await this.exigir(autorizacion);

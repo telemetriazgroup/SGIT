@@ -1556,6 +1556,29 @@ function FormasTienda({
   );
 }
 
+const CLAVE_TIENDAS = 'sgit-tiendas-abiertas';
+
+function tiendasVistas(): Set<string> {
+  try {
+    const raw = sessionStorage.getItem(CLAVE_TIENDAS);
+    const lista = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(lista) ? lista.filter((item): item is string => typeof item === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function guardarTiendaVista(clave: string, abierta: boolean) {
+  const vistas = tiendasVistas();
+  if (abierta) vistas.add(clave);
+  else vistas.delete(clave);
+  try {
+    sessionStorage.setItem(CLAVE_TIENDAS, JSON.stringify([...vistas]));
+  } catch {
+    /* la sesión del navegador no dejó guardar la tienda abierta */
+  }
+}
+
 function etiquetaTienda(estado: string): string {
   if (estado === 'resuelta') return 'Realizada';
   if (estado === 'atendida') return 'Atendida';
@@ -1580,27 +1603,55 @@ function TarjetaTienda({
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
 }) {
+  const claveVista = `${tareaId}:${tienda.id}`;
   const [nota, setNota] = useState('');
   const [codigo, setCodigo] = useState(tienda.codigo_equipo ?? '');
   const [hija, setHija] = useState<Tarea | null>(null);
+  const [abierta, setAbierta] = useState(() => tiendasVistas().has(claveVista));
+  const hijaId = useRef<string | null>(null);
   const [abriendo, setAbriendo] = useState(false);
+  const [revision, setRevision] = useState(0);
   const entrega = [tienda.entrega_fecha ? tienda.entrega_fecha.slice(0, 10).split('-').reverse().join('/') : '', tienda.entrega_hora].filter(Boolean).join(' ');
   const hilos = hija?.hilos?.length ?? tienda.hilos ?? 0;
+  const notasTienda = [...(tienda.notas ?? [])].sort((a, b) => String(b.creado_en).localeCompare(String(a.creado_en)));
+  hijaId.current = hija?.id ?? tienda.tarea_hija_id ?? null;
 
-  async function abrirTienda() {
+  useEffect(() => {
+    if (!abierta) return;
+    let vivo = true;
     setAbriendo(true);
-    try {
-      let id = tienda.tarea_hija_id ?? hija?.id ?? null;
-      if (!id) {
-        const respuesta = await pedir<{ tareaId: string }>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/abrir`, { method: 'POST', body: '{}' });
-        id = respuesta.tareaId;
+    void (async () => {
+      try {
+        let id = hijaId.current;
+        if (!id) {
+          const respuesta = await pedir<{ tareaId: string }>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/abrir`, { method: 'POST', body: '{}' });
+          id = respuesta.tareaId;
+          hijaId.current = id;
+        }
+        const tarea = await pedir<Tarea>(apiUrl, token, `/tareas/${id}`);
+        if (vivo) setHija(tarea);
+      } catch (error: unknown) {
+        if (vivo) alFallar(texto(error));
+      } finally {
+        if (vivo) setAbriendo(false);
       }
-      setHija(await pedir<Tarea>(apiUrl, token, `/tareas/${id}`));
-    } catch (error: unknown) {
-      alFallar(texto(error));
-    } finally {
-      setAbriendo(false);
-    }
+    })();
+    return () => {
+      vivo = false;
+    };
+  }, [abierta, revision, apiUrl, token, tareaId, tienda.id]);
+
+  function abrirTienda() {
+    guardarTiendaVista(claveVista, true);
+    setAbierta(true);
+    setRevision((valor) => valor + 1);
+  }
+
+  function cerrarTienda() {
+    guardarTiendaVista(claveVista, false);
+    setAbierta(false);
+    setHija(null);
+    hijaId.current = null;
   }
 
   return (
@@ -1620,19 +1671,23 @@ function TarjetaTienda({
         <Campo nombre="Servicio externo" valor={[tienda.odoo_nombre, tienda.odoo_estado].filter(Boolean).join(' · ') || null} />
         <Campo nombre="Telemetría" valor={tienda.codigo_equipo} />
       </dl>
-      {(tienda.notas ?? []).length > 0 ? (
-        <ol className="bitacora-tiempo">
-          {tienda.notas?.map((item) => (
-            <li key={item.id} className={item.tipo}>
+      {notasTienda.length > 0 ? (
+        <ListaVerMas
+          titulo="Seguimientos"
+          items={notasTienda}
+          clave={(item) => item.id}
+          claseItem={(item) => item.tipo}
+          render={(item) => (
+            <>
               <div className="bitacora-evento">
                 <time>{cuando(item.creado_en)}</time>
                 <strong>{item.tipo === 'incidente' ? 'Incidente' : 'Seguimiento'}</strong>
                 <span>{item.autor_nombre}</span>
               </div>
               <p>{item.texto}</p>
-            </li>
-          ))}
-        </ol>
+            </>
+          )}
+        />
       ) : null}
       {editar && tienda.estado !== 'resuelta' ? (
         <form
@@ -1706,11 +1761,16 @@ function TarjetaTienda({
         </form>
       ) : null}
       <div className="tienda-abrir">
-        <button type="button" className="primario" disabled={abriendo} onClick={() => void abrirTienda()}>
-          {hija ? 'Actualizar tienda' : abriendo ? 'Abriendo…' : 'Abrir tienda'}
+        <button type="button" className="primario" disabled={abriendo} onClick={abrirTienda}>
+          {abierta && hija ? 'Actualizar tienda' : abriendo ? 'Abriendo…' : 'Abrir tienda'}
         </button>
+        {abierta ? (
+          <button type="button" className="secundario" onClick={cerrarTienda}>
+            Cerrar tienda
+          </button>
+        ) : null}
       </div>
-      {hija ? (
+      {abierta && hija ? (
         <div className="tienda-ficha">
           <h4>Datos de la tienda</h4>
           <dl>
@@ -2078,6 +2138,23 @@ function HilosCotizacion({
                 {editar && fabricaciones.some((item) => item.hiloId === hilo.id) ? (
                   <button
                     type="button"
+                    onClick={() => {
+                      if (!window.confirm('¿Confirmar la orden de fabricación? Los materiales marcados quedan como consumidos.')) return;
+                      setReporte('');
+                      void pedir<Tarea & { mensaje?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/accion`, { method: 'POST', body: JSON.stringify({ accion: 'confirmar-orden' }) })
+                        .then((tarea) => {
+                          setReporte(tarea.mensaje ?? 'La orden quedó confirmada.');
+                          alGuardar(tarea);
+                        })
+                        .catch((error: unknown) => alFallar(texto(error)));
+                    }}
+                  >
+                    Confirmar orden
+                  </button>
+                ) : null}
+                {editar && fabricaciones.some((item) => item.hiloId === hilo.id) ? (
+                  <button
+                    type="button"
                     disabled={imprimiendo}
                     onClick={() => {
                       setImprimiendo(true);
@@ -2112,6 +2189,26 @@ function HilosCotizacion({
   );
 }
 
+const MOTIVOS_SIN_INSTALAR = [
+  'La máquina es Carrier o Daikin.',
+  'Control interno. Se priorizan los pedidos regulares.',
+  'No hay stock de telemetría o de chip.',
+];
+
+function leerFotos(lista: FileList): Promise<Array<{ nombre: string; mime: string; contenido: string }>> {
+  return Promise.all(
+    [...lista].slice(0, 8).map(
+      (archivo) =>
+        new Promise<{ nombre: string; mime: string; contenido: string }>((resolver, rechazar) => {
+          const lector = new FileReader();
+          lector.onload = () => resolver({ nombre: archivo.name, mime: archivo.type || 'image/jpeg', contenido: String(lector.result).split(',')[1] ?? '' });
+          lector.onerror = () => rechazar(new Error('No pude leer la foto.'));
+          lector.readAsDataURL(archivo);
+        }),
+    ),
+  );
+}
+
 function CorregirHilo({
   apiUrl,
   token,
@@ -2138,6 +2235,11 @@ function CorregirHilo({
   const [modemImeiTecnico, setModemImeiTecnico] = useState(hilo.modem_imei ?? '');
   const [modemSerieTecnico, setModemSerieTecnico] = useState(hilo.modem_serie ?? '');
   const [fotosInstalacion, setFotosInstalacion] = useState(false);
+  const [notaAccion, setNotaAccion] = useState('');
+  const [motivoFijo, setMotivoFijo] = useState(MOTIVOS_SIN_INSTALAR[0]);
+  const [motivoLibre, setMotivoLibre] = useState('');
+  const [comentario, setComentario] = useState('');
+  const [comentarioAlmacen, setComentarioAlmacen] = useState('');
   const [ampliaInstalacion, setAmpliaInstalacion] = useState<{ url: string; nombre: string; pie: string } | null>(null);
   const fotosSinCodigo = useMemo(
     () =>
@@ -2182,6 +2284,27 @@ function CorregirHilo({
       .catch((error: unknown) => alFallar(texto(error)));
   }
 
+  function actuar(accion: string, extra: Record<string, unknown> = {}) {
+    setNotaAccion('');
+    void pedir<Tarea & { mensaje?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/accion`, {
+      method: 'POST',
+      body: JSON.stringify({ accion, ...extra }),
+    })
+      .then((tarea) => {
+        setNotaAccion(tarea.mensaje ?? 'Quedó registrado.');
+        if (accion === 'comentario-instalacion') setComentario('');
+        alGuardar(tarea);
+      })
+      .catch((error: unknown) => alFallar(texto(error)));
+  }
+
+  function subir(accion: string, archivos: FileList | null, comentarioFoto = '') {
+    if (!archivos || archivos.length === 0) return;
+    void leerFotos(archivos)
+      .then((fotos) => actuar(accion, { fotos, comentario: comentarioFoto }))
+      .catch((error: unknown) => alFallar(texto(error)));
+  }
+
   function releer(notaId: string) {
     setLeyendo(notaId);
     void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas/${notaId}/releer`, {
@@ -2195,6 +2318,7 @@ function CorregirHilo({
 
   return (
     <div className="zonas">
+      {notaAccion ? <p className="bajada zona-aviso">{notaAccion}</p> : null}
       {fotosSinCodigo.length > 0 ? (
         <div className="zona-accion">
           <h4>Fotos guardadas sin código</h4>
@@ -2218,7 +2342,15 @@ function CorregirHilo({
         }}
       >
         <h4>Despacho</h4>
-        <p>Contenedor, máquina y sus fotos. Entran al inicio del registro.</p>
+        <p>{hilo.despacho_validado ? 'Lo que envió despacho ya está validado.' : 'Valida el contenedor y la máquina, o pídeselos ahora. También puedes escribirlos o subir la foto.'}</p>
+        <div className="zona-botones">
+          <button type="button" disabled={hilo.despacho_validado} onClick={() => actuar('validar-despacho')}>
+            Validar lo que envió despacho
+          </button>
+          <button type="button" className="secundario" onClick={() => actuar('pedir-despacho')}>
+            Pedir contenedor y máquina
+          </button>
+        </div>
         <label htmlFor={`contenedor-${hilo.id}`}>Contenedor</label>
         <input id={`contenedor-${hilo.id}`} value={contenedor} onChange={(evento) => setContenedor(evento.target.value)} />
         <label htmlFor={`maquina-${hilo.id}`}>Máquina</label>
@@ -2240,7 +2372,13 @@ function CorregirHilo({
         }}
       >
         <h4>Almacén</h4>
-        <p>Número de chip y IMEI del módulo 4G. Quedan en el mismo registro del hilo.</p>
+        <p>Pide el chip o el módulo, registra la entrega y la recepción, o escribe el número si ya lo tienes. Lo que envió despacho está en este hilo.</p>
+        {hilo.despacho_texto ? <p>{hilo.despacho_texto}</p> : <p>Despacho todavía no dejó texto de este equipo.</p>}
+        <div className="zona-botones">
+          <button type="button" onClick={() => actuar('pedir-chip')}>Pedir chip</button>
+          <button type="button" onClick={() => actuar('pedir-modulo')}>Pedir módulo 4G</button>
+          <button type="button" className="secundario" onClick={() => actuar('estado-retiro')}>Consultar retiro de insumos</button>
+        </div>
         <label htmlFor={`chip-almacen-${hilo.id}`}>Número de chip (celular)</label>
         <input
           id={`chip-almacen-${hilo.id}`}
@@ -2267,6 +2405,12 @@ function CorregirHilo({
         <button type="submit">Guardar chip y módulo</button>
         <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="chip" zona="almacen" etiqueta="Foto del chip" alGuardar={alGuardar} alFallar={alFallar} />
         <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="modem" zona="almacen" etiqueta="Foto del módulo 4G" alGuardar={alGuardar} alFallar={alFallar} />
+        <label htmlFor={`comentario-almacen-${hilo.id}`}>Comentario de la entrega o la recepción</label>
+        <input id={`comentario-almacen-${hilo.id}`} value={comentarioAlmacen} onChange={(evento) => setComentarioAlmacen(evento.target.value)} />
+        <label htmlFor={`entrega-${hilo.id}`}>Entrega de la solicitud firmada</label>
+        <input id={`entrega-${hilo.id}`} type="file" accept="image/*" onChange={(evento) => { subir('entrega-almacen', evento.target.files, comentarioAlmacen); evento.target.value = ''; }} />
+        <label htmlFor={`recepcion-${hilo.id}`}>Recepción de insumos</label>
+        <input id={`recepcion-${hilo.id}`} type="file" accept="image/*" multiple onChange={(evento) => { subir('recepcion-almacen', evento.target.files, comentarioAlmacen); evento.target.value = ''; }} />
       </form>
       <form
         className="zona-accion"
@@ -2280,8 +2424,8 @@ function CorregirHilo({
           });
         }}
       >
-        <h4>Técnico</h4>
-        <p>Valida o corrige el celular y el IMEI del módulo 4G. Si cambia algo, sube la foto. Queda en el seguimiento.</p>
+        <h4>Instalación</h4>
+        <p>Regulariza el chip y el módulo, sube las fotos de la instalación, deja un comentario o pide validar la conexión. Si esta telemetría no se instala, anota el motivo.</p>
         <label htmlFor={`celular-tecnico-${hilo.id}`}>Número de celular</label>
         <input
           id={`celular-tecnico-${hilo.id}`}
@@ -2313,6 +2457,34 @@ function CorregirHilo({
         </p>
         <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="chip" zona="tecnico" etiqueta="Foto del chip (si se modifica)" alGuardar={alGuardar} alFallar={alFallar} />
         <FotoRegularizar apiUrl={apiUrl} token={token} tareaId={tareaId} hiloId={hilo.id} clase="modem" zona="tecnico" etiqueta="Foto del módulo 4G (si se modifica)" alGuardar={alGuardar} alFallar={alFallar} />
+        <div className="zona-botones">
+          <button type="button" onClick={() => actuar('asimilar-orden')}>Asimilar orden de fabricación</button>
+          <button type="button" className="secundario" onClick={() => actuar('validar-senal', { equipo: 'Starcool' })}>Validar Starcool</button>
+          <button type="button" className="secundario" onClick={() => actuar('validar-senal', { equipo: 'Thermoking' })}>Validar Thermoking</button>
+          <button type="button" className="secundario" onClick={() => actuar('validar-senal', { equipo: 'Genset' })}>Validar Genset</button>
+        </div>
+        <label htmlFor={`fotos-instalacion-${hilo.id}`}>Fotos de la instalación</label>
+        <input id={`fotos-instalacion-${hilo.id}`} type="file" accept="image/*" multiple onChange={(evento) => { subir('fotos-instalacion', evento.target.files, comentario); evento.target.value = ''; }} />
+        <label htmlFor={`comentario-instalacion-${hilo.id}`}>Comentario de la instalación</label>
+        <textarea id={`comentario-instalacion-${hilo.id}`} value={comentario} onChange={(evento) => setComentario(evento.target.value)} />
+        <button type="button" onClick={() => actuar('comentario-instalacion', { comentario })}>Guardar comentario</button>
+        <label htmlFor={`motivo-${hilo.id}`}>Esta telemetría no se instala</label>
+        <select id={`motivo-${hilo.id}`} value={motivoFijo} onChange={(evento) => setMotivoFijo(evento.target.value)}>
+          {MOTIVOS_SIN_INSTALAR.map((motivo) => (
+            <option key={motivo} value={motivo}>{motivo}</option>
+          ))}
+          <option value="otra">Otra razón</option>
+        </select>
+        {motivoFijo === 'otra' ? (
+          <input value={motivoLibre} onChange={(evento) => setMotivoLibre(evento.target.value)} placeholder="Escribe la razón" />
+        ) : null}
+        <button
+          type="button"
+          className="secundario"
+          onClick={() => actuar('sin-instalacion', { motivo: motivoFijo === 'otra' ? motivoLibre : motivoFijo })}
+        >
+          Anotar que no se instala
+        </button>
       </form>
       {fotosInstalacion ? (
         <Cuadro

@@ -37,6 +37,8 @@ export type CargaChips = {
 };
 
 const TAMANO = 40;
+const CINCO_MINUTOS = 5 * 60 * 1000;
+const ORDENES_POR_VUELTA = 12;
 
 export class PulsoChips {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -47,7 +49,7 @@ export class PulsoChips {
   onModuleInit(): void {
     this.timer = setInterval(() => {
       void this.correr();
-    }, 180_000);
+    }, CINCO_MINUTOS);
   }
 
   onModuleDestroy(): void {
@@ -57,11 +59,17 @@ export class PulsoChips {
   private async correr(): Promise<void> {
     if (this.ocupado) return;
     this.ocupado = true;
+    const servicio = new ChipsService(this.conexiones);
+    const pasos = [() => servicio.consultarOdoo(), () => servicio.vigilarOrdenes(), () => servicio.completarOrdenes()];
     try {
-      await new ChipsService(this.conexiones).vigilarOrdenes();
-    } catch (error) {
-      const mensaje = error instanceof Error ? error.message : 'falló la vigilancia de órdenes';
-      console.error(`Chips: ${mensaje}`);
+      for (const paso of pasos) {
+        try {
+          await paso();
+        } catch (error) {
+          const mensaje = error instanceof Error ? error.message : 'falló la sincronización de chips';
+          console.error(`Chips: ${mensaje}`);
+        }
+      }
     } finally {
       this.ocupado = false;
     }
@@ -213,6 +221,10 @@ export class ChipsService {
       else if (lectura.estado === 'ocupado') ocupados += 1;
       else sinDato += 1;
       const cuando = instante(lectura.ocupadoEn);
+      if (chip.orden_mo !== lectura.orden) {
+        await this.conexiones.pg.query(`DELETE FROM chip_orden_imagen WHERE chip_id = $1`, [chip.id]);
+        await this.conexiones.pg.query(`DELETE FROM chip_orden WHERE chip_id = $1`, [chip.id]);
+      }
       if (chip.estado !== lectura.estado || chip.telemetria !== lectura.telemetria || chip.orden_mo !== lectura.orden) {
         await this.conexiones.pg.query(`INSERT INTO chip_cambio (id, chip_id, texto) VALUES ($1, $2, $3)`, [
           randomUUID(),
@@ -235,6 +247,35 @@ export class ChipsService {
       }
     }
     return { leidos: chips.rows.length, disponibles, ocupados, sinDato };
+  }
+
+  async ordenLocal(id: string): Promise<CopiaOrden & { trazas: TrazaOrden[]; leido_en: string | null }> {
+    const chip = await this.uno(id);
+    if (!chip.orden_mo) throw new BadRequestException('Ese chip no tiene una orden de fabricación.');
+    const guardada = await this.ordenGuardada(chip.id);
+    if (!guardada?.nombre) throw new NotFoundException('La orden todavía no está en la base. La sincronización la trae cada 5 minutos, o pulsa Actualizar de Odoo.');
+    return guardada;
+  }
+
+  async completarOrdenes(): Promise<number> {
+    const filas = await this.conexiones.pg.query<{ id: string }>(
+      `SELECT c.id
+       FROM chip c
+       WHERE NOT c.archivado AND c.estado = 'ocupado' AND c.orden_mo <> ''
+         AND NOT EXISTS (SELECT 1 FROM chip_orden o WHERE o.chip_id = c.id AND o.nombre <> '')
+       LIMIT $1`,
+      [ORDENES_POR_VUELTA],
+    );
+    let hechas = 0;
+    for (const fila of filas.rows) {
+      try {
+        await this.verOrden(fila.id, true);
+        hechas += 1;
+      } catch {
+        continue;
+      }
+    }
+    return hechas;
   }
 
   async verOrden(id: string, forzar = false): Promise<CopiaOrden & { trazas: TrazaOrden[]; leido_en: string | null }> {

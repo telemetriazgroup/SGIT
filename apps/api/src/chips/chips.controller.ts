@@ -62,7 +62,7 @@ export class ChipsController {
   @Get('chips/:id/orden')
   async orden(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     await this.exigir(autorizacion);
-    return this.chips.verOrden(id, false);
+    return this.chips.ordenLocal(id);
   }
 
   @Post('chips/:id/orden')

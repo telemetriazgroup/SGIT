@@ -49,10 +49,16 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
   const [borrador, setBorrador] = useState<Borrador | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  const [alta, setAlta] = useState(false);
 
   useEffect(() => {
     void cargar(1, '', false, '').catch((error: unknown) => setAviso(texto(error)));
   }, [apiUrl, token]);
+
+  useEffect(() => {
+    if (!orden) return;
+    document.getElementById('chip-elegido')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [orden?.id]);
 
   async function cargar(siguiente: number, textoBusqueda: string, verArchivados = archivados, filtro = estado, corte = periodo) {
     const datos = await pedir<Pagina>(
@@ -82,6 +88,7 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
       setMarca('');
       setImei('');
       setCelular('');
+      setAlta(false);
       setAviso(reemplazar ? 'Eliminé el chip anterior y guardé este.' : 'El chip quedó cargado.');
       await cargar(1, consulta);
     } catch (error: unknown) {
@@ -91,6 +98,7 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
         setMarca('');
         setImei('');
         setCelular('');
+        setAlta(false);
         setAviso('Eliminé el chip anterior y guardé este.');
         await cargar(1, consulta);
         return;
@@ -153,6 +161,7 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
           method: 'POST',
           body: JSON.stringify({ nombre: nombre ?? archivo?.name, contenido: base64, reemplazar: true }),
         });
+        setAlta(false);
         setAviso(`Entraron ${segunda.creados} chips nuevos. Se reemplazaron ${segunda.reemplazados}.`);
         await cargar(1, consulta);
         return;
@@ -160,6 +169,7 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
       const fallos = carga.rechazados.slice(0, 8).map((fila) => `Fila ${fila.fila}: ${fila.motivo}`);
       const extra = carga.rechazados.length > 8 ? ` Y ${carga.rechazados.length - 8} más.` : '';
       const choque = carga.conflictos.length ? ` ${carga.conflictos.length} IMEI ya existían y no se tocaron.` : '';
+      setAlta(false);
       setAviso([`Entraron ${carga.creados} chips nuevos. Se reemplazaron ${carga.reemplazados}.${choque}`, fallos.length ? `No entraron ${carga.rechazados.length}. ${fallos.join(' ')}${extra}` : null].filter(Boolean).join(' '));
       await cargar(1, consulta);
     } catch (error: unknown) {
@@ -198,46 +208,36 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
   return (
     <section className="ficha">
       <h2>Chips</h2>
-      <p>Carga el Excel o agrega uno. El celular se puede repetir. El IMEI no: si ya existe, hay que eliminar el anterior. Consultar Odoo busca cada celular como número de serie. Si el CHIP ya no está a la mano y pasó a una telemetría, queda ocupado. Si sigue como chip, queda disponible.</p>
-      <button id="consultar-odoo" type="button" disabled={ocupado} onClick={() => void consultar()}>
-        Consultar Odoo
-      </button>
-      <form className="chips-alta" onSubmit={(evento) => void agregar(evento)}>
-        <label htmlFor="chip-producto">
-          Producto
-          <input id="chip-producto" value={producto} onChange={(evento) => setProducto(evento.target.value)} required />
-        </label>
-        <label htmlFor="chip-marca">
-          Marca
-          <input id="chip-marca" value={marca} onChange={(evento) => setMarca(evento.target.value)} required />
-        </label>
-        <label htmlFor="chip-imei">
-          IMEI
-          <input id="chip-imei" value={imei} onChange={(evento) => setImei(evento.target.value)} inputMode="numeric" required />
-        </label>
-        <label htmlFor="chip-celular">
-          Celular
-          <input id="chip-celular" value={celular} onChange={(evento) => setCelular(evento.target.value)} inputMode="tel" required />
-        </label>
-        <button type="submit" className="primario" disabled={ocupado}>
+      <p>Odoo se sincroniza solo cada 5 minutos y deja en la base el estado, la orden y las imágenes. Abrir un chip lee eso. Si Odoo no cambió la orden, no se vuelve a pedir. El celular se puede repetir. El IMEI no.</p>
+      <div className="chips-barra">
+        <button id="consultar-odoo" type="button" disabled={ocupado} onClick={() => void consultar()}>
+          Consultar Odoo
+        </button>
+        <button type="button" className="secundario" onClick={() => setAlta(true)}>
           Agregar
         </button>
-      </form>
-      <label className="chips-archivo" htmlFor="chip-excel">
-        Excel
-        <input
-          id="chip-excel"
-          type="file"
-          accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
-          disabled={ocupado}
-          onChange={(evento) => {
-            const archivo = evento.target.files?.[0];
-            evento.target.value = '';
-            void cargarExcel(archivo);
-          }}
-        />
-      </label>
+      </div>
       {aviso ? <p className={aviso.startsWith('No se') || aviso.includes('no es válido') || aviso.includes('ya está') ? 'error' : 'bajada'}>{aviso}</p> : null}
+      {orden ? (
+        <div id="chip-elegido" className="zona-elegida">
+          {orden.estado === 'ocupado' && orden.orden_mo ? (
+            <OrdenFabricacion apiUrl={apiUrl} token={token} chip={orden} onCerrar={() => setOrden(null)} />
+          ) : (
+            <article className="odoo-hoja">
+              <header className="odoo-cabeza">
+                <p className="odoo-kicker">{etiquetaEstado(orden)}</p>
+                <h3>{orden.celular}</h3>
+                <p className="meta">
+                  {orden.producto} · {orden.marca} · IMEI {orden.imei}
+                </p>
+                <button type="button" className="secundario" onClick={() => setOrden(null)}>
+                  Cerrar
+                </button>
+              </header>
+            </article>
+          )}
+        </div>
+      ) : null}
       <form
         className="chips-buscar"
         onSubmit={(evento) => {
@@ -299,7 +299,6 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
           </button>
         ))}
       </div>
-      {orden ? <OrdenFabricacion apiUrl={apiUrl} token={token} chip={orden} onCerrar={() => setOrden(null)} /> : null}
       <p className="meta">{total === 0 ? (archivados ? 'No hay chips archivados.' : 'Todavía no hay chips.') : `${desde}–${hasta} de ${total}`}</p>
       {chips.length > 0 ? (
         <table className="tabla-chips">
@@ -316,7 +315,7 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
           <tbody>
             {chips.map((chip) =>
               edicion === chip.id && borrador ? (
-                <tr key={chip.id}>
+                <tr key={chip.id} className={orden?.id === chip.id ? 'elegida' : ''}>
                   <td><input aria-label="Producto" value={borrador.producto} onChange={(evento) => setBorrador({ ...borrador, producto: evento.target.value })} /></td>
                   <td><input aria-label="Marca" value={borrador.marca} onChange={(evento) => setBorrador({ ...borrador, marca: evento.target.value })} /></td>
                   <td><input aria-label="IMEI" value={borrador.imei} onChange={(evento) => setBorrador({ ...borrador, imei: evento.target.value })} /></td>
@@ -328,18 +327,21 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
                   </td>
                 </tr>
               ) : (
-                <tr key={chip.id}>
+                <tr
+                  key={chip.id}
+                  className={orden?.id === chip.id ? 'elegida' : ''}
+                  onClick={(evento) => {
+                    if ((evento.target as HTMLElement).closest('button, input')) return;
+                    setOrden(chip);
+                  }}
+                >
                   <td>{chip.producto}</td>
                   <td>{chip.marca}</td>
                   <td>{chip.imei}</td>
                   <td>
-                    {chip.estado === 'ocupado' ? (
-                      <button type="button" className="enlace" onClick={() => setOrden(chip)}>
-                        {chip.celular}
-                      </button>
-                    ) : (
-                      chip.celular
-                    )}
+                    <button type="button" className="enlace" onClick={() => setOrden(chip)}>
+                      {chip.celular}
+                    </button>
                   </td>
                   <td>{etiquetaEstado(chip)}</td>
                   <td className="chips-acciones">
@@ -370,6 +372,53 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
           ›
         </button>
       </div>
+      {alta ? (
+        <div className="foto-modal" role="dialog" aria-modal="true" aria-label="Agregar chip" onClick={() => setAlta(false)}>
+          <form className="alta-marco" onClick={(evento) => evento.stopPropagation()} onSubmit={(evento) => void agregar(evento)}>
+            <h3>Agregar chip</h3>
+            <div className="chips-alta">
+              <label htmlFor="chip-producto">
+                Producto
+                <input id="chip-producto" value={producto} onChange={(evento) => setProducto(evento.target.value)} required />
+              </label>
+              <label htmlFor="chip-marca">
+                Marca
+                <input id="chip-marca" value={marca} onChange={(evento) => setMarca(evento.target.value)} required />
+              </label>
+              <label htmlFor="chip-imei">
+                IMEI
+                <input id="chip-imei" value={imei} onChange={(evento) => setImei(evento.target.value)} inputMode="numeric" required />
+              </label>
+              <label htmlFor="chip-celular">
+                Celular
+                <input id="chip-celular" value={celular} onChange={(evento) => setCelular(evento.target.value)} inputMode="tel" required />
+              </label>
+            </div>
+            <label className="chips-archivo" htmlFor="chip-excel">
+              Excel
+              <input
+                id="chip-excel"
+                type="file"
+                accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                disabled={ocupado}
+                onChange={(evento) => {
+                  const archivo = evento.target.files?.[0];
+                  evento.target.value = '';
+                  void cargarExcel(archivo);
+                }}
+              />
+            </label>
+            <div className="chips-barra">
+              <button type="submit" className="primario" disabled={ocupado}>
+                Agregar
+              </button>
+              <button type="button" className="secundario" onClick={() => setAlta(false)}>
+                Cerrar
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </section>
   );
 }

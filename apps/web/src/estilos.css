@@ -623,6 +623,31 @@ button:disabled {
   white-space: nowrap;
 }
 
+.chips-barra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chips-barra button {
+  margin-top: 0;
+}
+
+.alta-marco {
+  width: min(720px, 94vw);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 20px;
+  border-radius: 12px;
+  background: #f7f3ea;
+  color: #1c1812;
+}
+
+.alta-marco h3 {
+  margin: 0 0 12px;
+}
+
 .chips-alta,
 .chips-buscar {
   display: grid;
@@ -630,6 +655,23 @@ button:disabled {
   gap: 8px;
   align-items: end;
   margin-bottom: 12px;
+}
+
+.alta-marco .chips-alta {
+  grid-template-columns: 1fr 1fr;
+}
+
+.zona-elegida {
+  scroll-margin-top: 12px;
+  margin-bottom: 16px;
+}
+
+.tabla-chips tbody tr {
+  cursor: pointer;
+}
+
+.tabla-chips tbody tr.elegida td {
+  background: #d7ebe0;
 }
 
 .chips-alta button,
@@ -1295,6 +1337,28 @@ button.enlace:disabled {
 .zona-accion input {
   width: 100%;
   min-width: 0;
+}
+
+.zona-aviso {
+  grid-column: 1 / -1;
+  white-space: pre-line;
+}
+
+.zona-botones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.zona-botones button,
+.zona-accion select,
+.zona-accion textarea {
+  margin-top: 0;
+}
+
+.zona-accion textarea {
+  width: 100%;
+  min-height: 4.5rem;
 }
 
 .zona-accion > button {

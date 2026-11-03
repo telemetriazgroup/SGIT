@@ -247,6 +247,20 @@ export class TareasController {
     return this.fichaDe(id);
   }
 
+  @Post('tareas/:id/hilos/:hiloId/accion')
+  async accionHilo(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('hiloId') hiloId: string,
+    @Body() cuerpo: { accion?: string; motivo?: string; comentario?: string; equipo?: string; fotos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    const mensaje = await this.tareas.accionHilo(id, hiloId, cuerpo ?? {}, usuario);
+    const ficha = await this.fichaDe(id);
+    return { ...ficha, mensaje };
+  }
+
   @Post('tareas/:id/hilos/:hiloId/foto')
   async regularizarFoto(
     @Headers('authorization') autorizacion: string | undefined,

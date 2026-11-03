@@ -8,12 +8,16 @@ import { AlmacenCorreo } from '../buzon/almacen';
 import { barridoCorre, entraHoraria } from './barrido';
 import { evaluarCita, type Cita } from './cita';
 import { cotsDe, normalizarFecha, plano } from './texto';
+import { preguntaHilosPendientes } from '../bot/avisos';
 import { BotService } from '../bot/bot.service';
+import { TurnoDespacho } from '../bot/turno-despacho';
+import { ChipsService } from '../chips/chips.service';
+import { serieChipDe, serieCoincide } from '../chips/orden';
 import { OdooServicio, type LecturaTarea } from '../odoo/servicio';
 import { claveTienda, coincideTienda, columnasValidas, PLANTILLA_BASE, tiendasDeHtml, tiendasDeTexto, type ColumnaTienda, type TiendaLeida } from './campana';
 import { catalogoFechas, plegarCita } from './fechas';
 import { vincularHijas } from './hijas';
-import { ajustarHilos, corregirEquipo, listarHilos } from './hilos';
+import { ajustarHilos, anotarSinInstalacion, corregirEquipo, listarHilos, marcarInstalada, validarDespacho } from './hilos';
 import { FabricacionServicio } from '../fabricacion/servicio';
 import { recibirFotoRegularizacion, registrarChip, registrarModem, releerFotoGuardada } from './regularizar';
 import { joinUrgente, ordenFecha, ordenUrgente } from './prioridad';
@@ -1295,8 +1299,231 @@ export class TareasService {
     await recibirFotoRegularizacion(this.conexiones, id, hiloId, clase, autor, foto, 'web', origen);
   }
 
+  async accionHilo(
+    id: string,
+    hiloId: string,
+    cuerpo: { accion?: string; motivo?: string; comentario?: string; equipo?: string; fotos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
+    autor: Autor,
+  ): Promise<string> {
+    const hilos = await listarHilos(this.conexiones.pg, id);
+    const hilo = hilos.find((item) => item.id === hiloId);
+    if (!hilo) throw new NotFoundException('Ese hilo no está en la cotización.');
+    const accion = cuerpo.accion ?? '';
+    if (accion === 'validar-despacho') {
+      try {
+        await validarDespacho(this.conexiones.pg, hiloId);
+      } catch (error) {
+        throw new BadRequestException(error instanceof Error ? error.message : 'No pude validar despacho.');
+      }
+      return 'Quedó validado lo que envió despacho.';
+    }
+    if (accion === 'pedir-despacho') {
+      const faltan = hilos.filter((item) => !item.despacho_texto && !item.contenedor && !item.maquina).length;
+      const pedido = [preguntaHilosPendientes(Math.max(faltan, 1)), `Confirma ahora el equipo ${hilo.orden}.`].join(' ');
+      const resultado = await new TurnoDespacho(this.conexiones).consultarAhora(id, pedido, hilo.orden);
+      if (resultado === 'sin_coordinador') return 'No hay un coordinador de despacho con WhatsApp. El pedido quedó anotado.';
+      if (resultado === 'ocupado') return 'Ya le avisé a despacho. Está cerrando otra cotización y esta queda primera apenas la suelte.';
+      return 'Ya le consulté a despacho. Le llegó ahora el pedido del contenedor y la máquina.';
+    }
+    if (accion === 'sin-instalacion') {
+      const motivo = (cuerpo.motivo ?? '').trim();
+      if (motivo.length < 4) throw new BadRequestException('Escribe por qué no se instala.');
+      await anotarSinInstalacion(this.conexiones.pg, hiloId);
+      await this.notaHilo(id, autor, `Hilo ${hilo.orden}. Esta telemetría no se instala.\n${motivo}`);
+      return `Quedó anotado: ${motivo}`;
+    }
+    if (accion === 'pedir-chip') return this.pedirPieza(id, hiloId, autor, 'chip', hilo.orden);
+    if (accion === 'pedir-modulo') return this.pedirPieza(id, hiloId, autor, 'modem', hilo.orden);
+    if (accion === 'entrega-almacen' || accion === 'recepcion-almacen' || accion === 'fotos-instalacion') {
+      const frase = accion === 'entrega-almacen'
+        ? 'Entrega de la solicitud firmada a almacén.'
+        : accion === 'recepcion-almacen'
+          ? 'Recepción de insumos de almacén.'
+          : 'Imágenes de la instalación.';
+      const carpeta = accion === 'entrega-almacen' ? 'entrega-almacen' : accion === 'recepcion-almacen' ? 'recepcion-almacen' : 'instalacion';
+      const fotos = this.fotosDe(cuerpo.fotos ?? []);
+      if (fotos.length === 0) throw new BadRequestException('Sube al menos una foto.');
+      await this.guardarFotosHilo(id, autor, fotos, `Hilo ${hilo.orden}. ${frase}`, carpeta, cuerpo.comentario ?? '');
+      return accion === 'entrega-almacen' ? 'Quedó la foto de la solicitud firmada.' : `Quedaron ${fotos.length} ${fotos.length === 1 ? 'foto' : 'fotos'}.`;
+    }
+    if (accion === 'comentario-instalacion') {
+      const texto = (cuerpo.comentario ?? '').trim();
+      if (texto.length < 2) throw new BadRequestException('Escribe el comentario de la instalación.');
+      await this.notaHilo(id, autor, `Hilo ${hilo.orden}. Instalación.\n${texto}`);
+      return 'Quedó el comentario.';
+    }
+    if (accion === 'estado-retiro') return this.consultarRetiro(id, hiloId, autor, hilo.orden);
+    if (accion === 'validar-senal') return this.pedirSenal(id, autor, hilo, cuerpo.equipo ?? '');
+    if (accion === 'asimilar-orden') return this.asimilarOrden(id, hiloId, autor, hilo);
+    if (accion === 'confirmar-orden') {
+      const fila = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM fabricacion WHERE hilo_id = $1`, [hiloId]);
+      if (!fila.rows[0]) throw new BadRequestException('Primero pide el insumo.');
+      return new FabricacionServicio(this.conexiones).confirmar(fila.rows[0].id);
+    }
+    throw new BadRequestException('Esa acción no está en el hilo.');
+  }
+
   async releerNota(id: string, notaId: string): Promise<string> {
     return releerFotoGuardada(this.conexiones, id, notaId);
+  }
+
+  private async pedirPieza(tareaId: string, hiloId: string, autor: Autor, clase: 'chip' | 'modem', orden: number): Promise<string> {
+    const telefono = await this.telefonoDe(autor.correo);
+    const cot = await this.conexiones.pg.query<{ cot: string }>(`SELECT cot FROM tarea WHERE id = $1`, [tareaId]);
+    const linea = cot.rows[0]?.cot ? `Cotización ${cot.rows[0].cot}` : 'Cotización';
+    if (clase === 'chip') {
+      const previa = await this.conexiones.pg.query<{ id: string }>(
+        `SELECT id FROM consulta_chip WHERE tarea_id = $1 AND tecnico_telefono = $2 AND estado = 'pendiente' AND clase = 'chip' ORDER BY creado_en DESC LIMIT 1`,
+        [tareaId, telefono],
+      );
+      const consultaId = previa.rows[0]?.id ?? randomUUID();
+      if (!previa.rows[0]) {
+        await this.conexiones.pg.query(
+          `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id, clase) VALUES ($1, $2, $3, $4, $5, 'chip')`,
+          [consultaId, tareaId, telefono, autor.nombre, hiloId],
+        );
+      } else {
+        await this.conexiones.pg.query(`UPDATE consulta_chip SET hilo_id = $2 WHERE id = $1`, [consultaId, hiloId]);
+      }
+      await marcarInstalada(this.conexiones.pg, hiloId);
+    } else {
+      await this.conexiones.pg.query(
+        `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id, clase) VALUES ($1, $2, $3, $4, $5, 'modem')`,
+        [randomUUID(), tareaId, telefono, autor.nombre, hiloId],
+      );
+    }
+    const cuerpo = clase === 'chip'
+      ? `${linea}\nHilo ${orden}. Pedido de chip. Manda la foto de la tarjeta.`
+      : `${linea}\nHilo ${orden}. Pedido de módulo 4G. Manda las fotos de la etiqueta ZTRACK. Ahí se lee el SN y el IMEI.`;
+    const avisados = await this.avisarRol('almacen', tareaId, cuerpo);
+    await this.notaHilo(tareaId, autor, `Hilo ${orden}. ${clase === 'chip' ? 'Pedido de chip a almacén.' : 'Pedido de módulo 4G a almacén.'}`);
+    if (clase === 'chip' && avisados === 0) return 'Anoté el pedido y que esta telemetría se instala, pero no hay un usuario de almacén con WhatsApp.';
+    if (avisados === 0) return 'Anoté el pedido del módulo 4G, pero no hay un usuario de almacén con WhatsApp.';
+    return clase === 'chip' ? 'Pedí el chip a almacén. Esta telemetría se instala. Cuando manden la foto queda el celular.' : 'Pedí el módulo 4G a almacén.';
+  }
+
+  private async consultarRetiro(tareaId: string, hiloId: string, autor: Autor, orden: number): Promise<string> {
+    const vista = await new FabricacionServicio(this.conexiones).vista(hiloId);
+    const historial = await this.conexiones.pg.query<{ clase: string; estado: string; detalle: string }>(
+      `SELECT clase, estado, detalle FROM consulta_chip WHERE hilo_id = $1 ORDER BY creado_en DESC LIMIT 5`,
+      [hiloId],
+    );
+    const lineas = historial.rows.map((fila) => `${nombreClase(fila.clase)}: ${fila.estado}${fila.detalle ? ` · ${fila.detalle}` : ''}`);
+    if (!vista) {
+      const vacio = 'Todavía no hay orden de fabricación. Pide el insumo antes de consultar el retiro.';
+      return lineas.length ? `${vacio}\n${lineas.join('\n')}` : vacio;
+    }
+    const telefono = await this.telefonoDe(autor.correo);
+    const previa = await this.conexiones.pg.query<{ id: string }>(
+      `SELECT id FROM consulta_chip WHERE hilo_id = $1 AND clase = 'retiro' AND estado = 'pendiente' ORDER BY creado_en DESC LIMIT 1`,
+      [hiloId],
+    );
+    if (!previa.rows[0]) {
+      await this.conexiones.pg.query(
+        `INSERT INTO consulta_chip (id, tarea_id, tecnico_telefono, tecnico_nombre, hilo_id, clase) VALUES ($1, $2, $3, $4, $5, 'retiro')`,
+        [randomUUID(), tareaId, telefono, autor.nombre, hiloId],
+      );
+    }
+    const cot = await this.conexiones.pg.query<{ cot: string }>(`SELECT cot FROM tarea WHERE id = $1`, [tareaId]);
+    const pregunta = [`Cotización ${cot.rows[0]?.cot ?? ''}`, `Hilo ${orden}`, `¿Ya están listos para retirar los insumos de ${vista.nombre}?`, ...vista.lineas, '1. Sí, ya está listo', '2. Falta'].filter(Boolean).join('\n');
+    const avisados = await this.avisarRol('almacen', tareaId, pregunta);
+    const aviso = avisados ? `Consulté a almacén si los insumos de ${vista.nombre} ya están listos para retirar.` : 'No hay un usuario de almacén con WhatsApp para consultar el retiro. El pedido quedó anotado.';
+    return [aviso, ...lineas].filter(Boolean).join('\n');
+  }
+
+  private async pedirSenal(tareaId: string, autor: Autor, hilo: { orden: number; modem_serie?: string | null; modem_imei?: string | null }, equipo: string): Promise<string> {
+    const nombre = equipo === 'Starcool' || equipo === 'Thermoking' || equipo === 'Genset' ? equipo : '';
+    if (!nombre) throw new BadRequestException('Elige Starcool, Thermoking o Genset.');
+    const serie = hilo.modem_serie?.trim() ?? '';
+    const imei = hilo.modem_imei?.trim() ?? '';
+    if (!imei) {
+      throw new BadRequestException(serie ? `El módulo está por el SN ${serie}, pero falta el IMEI de la etiqueta.` : `Falta el IMEI del módulo 4G antes de validar ${nombre}.`);
+    }
+    const texto = `Hilo ${hilo.orden}. Se pidió validar la conexión ${nombre}. Todavía no está implementada. Usará el IMEI ${imei}${serie ? `. SN ${serie}.` : '.'}`;
+    await this.notaHilo(tareaId, autor, texto);
+    return texto;
+  }
+
+  private async asimilarOrden(tareaId: string, hiloId: string, autor: Autor, hilo: { chip_celular: string | null; chip_imei?: string | null }): Promise<string> {
+    const celular = hilo.chip_celular?.trim() ?? '';
+    const imei = hilo.chip_imei?.trim() ?? '';
+    if (!celular && !imei) throw new BadRequestException('Primero regulariza el chip. Sin el número no se asimila la orden.');
+    const chip = await this.conexiones.pg.query<{ id: string; orden_mo: string }>(
+      `SELECT id, orden_mo FROM chip WHERE NOT archivado AND (($1 <> '' AND celular = $1) OR ($2 <> '' AND imei = $2)) ORDER BY CASE WHEN celular = $1 AND $1 <> '' THEN 0 ELSE 1 END LIMIT 1`,
+      [celular, imei],
+    );
+    const fila = chip.rows[0];
+    if (!fila?.orden_mo) throw new BadRequestException('Ese chip no tiene una orden de fabricación guardada.');
+    const orden = await new ChipsService(this.conexiones).verOrden(fila.id, false);
+    const serie = serieChipDe(orden.componentes);
+    if (!serieCoincide(serie, celular, imei)) {
+      throw new BadRequestException(`El chip del hilo es ${celular || imei} y ${orden.nombre} tiene ${serie || 'otro número'}. No coincide.`);
+    }
+    const odoo = await this.conexiones.pg.query<{ odoo_id: number | null }>(`SELECT odoo_id FROM chip_orden WHERE chip_id = $1`, [fila.id]);
+    const odooId = odoo.rows[0]?.odoo_id ?? 0;
+    if (!odooId) throw new BadRequestException(`La orden ${orden.nombre} no tiene identificador de Odoo.`);
+    return new FabricacionServicio(this.conexiones).asimilar(hiloId, odooId, orden.nombre, autor);
+  }
+
+  private async telefonoDe(correo: string): Promise<string> {
+    const fila = await this.conexiones.pg.query<{ telefono: string }>(
+      `SELECT regexp_replace(coalesce(telefono, ''), '\\D', '', 'g') AS telefono FROM usuario WHERE correo = $1`,
+      [correo],
+    );
+    return fila.rows[0]?.telefono || 'web';
+  }
+
+  private async avisarRol(rol: 'almacen' | 'despacho', tareaId: string, cuerpo: string): Promise<number> {
+    const destinos = await this.conexiones.pg.query<{ telefono: string }>(
+      `SELECT regexp_replace(telefono, '\\D', '', 'g') AS telefono
+       FROM usuario
+       WHERE activo AND rol = $1 AND regexp_replace(coalesce(telefono, ''), '\\D', '', 'g') <> ''`,
+      [rol],
+    );
+    for (const destino of destinos.rows) {
+      await this.conexiones.pg.query(
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes) VALUES ($1, 'consulta_chip', $2, $3, $4, 'pendiente', now())`,
+        [randomUUID(), tareaId, destino.telefono, cuerpo],
+      );
+    }
+    return destinos.rows.length;
+  }
+
+  private fotosDe(entradas: Array<{ nombre?: string; mime?: string; contenido?: string }>): ArchivoNota[] {
+    const fotos: ArchivoNota[] = [];
+    for (const entrada of entradas.slice(0, 8)) {
+      const contenido = Buffer.from(entrada.contenido ?? '', 'base64');
+      if (contenido.length === 0 || contenido.length > 4 * 1024 * 1024) throw new BadRequestException('Cada foto tiene que pesar menos de 4 MB.');
+      const mime = (entrada.mime || 'image/jpeg').toLowerCase();
+      if (!mime.startsWith('image/')) throw new BadRequestException('La foto tiene que ser una imagen.');
+      fotos.push({ nombre: (entrada.nombre ?? 'foto').slice(0, 180), mime, contenido });
+    }
+    return fotos;
+  }
+
+  private async guardarFotosHilo(tareaId: string, autor: Autor, fotos: ArchivoNota[], frase: string, carpeta: string, comentario: string): Promise<void> {
+    const notaId = randomUUID();
+    const extra = comentario.trim() ? `\n${comentario.trim()}` : '';
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre) VALUES ($1, $2, 'seguimiento', 'web', $3, $4, $5)`,
+      [notaId, tareaId, `${frase}${extra}`, autor.correo, autor.nombre],
+    );
+    const almacen = new AlmacenCorreo(this.conexiones);
+    for (const [indice, foto] of fotos.entries()) {
+      const clave = `${carpeta}/${notaId}/${randomUUID()}`;
+      await almacen.guardar(clave, foto.contenido, foto.mime);
+      await this.conexiones.pg.query(
+        `INSERT INTO nota_archivo (id, nota_id, clave, mime, nombre, orden) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [randomUUID(), notaId, clave, foto.mime, foto.nombre, indice],
+      );
+    }
+  }
+
+  private async notaHilo(tareaId: string, autor: Autor, texto: string): Promise<void> {
+    await this.conexiones.pg.query(
+      `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre) VALUES ($1, $2, 'seguimiento', 'web', $3, $4, $5)`,
+      [randomUUID(), tareaId, texto, autor.correo, autor.nombre],
+    );
   }
 
   async tecnicos(): Promise<Array<{ correo: string; nombre: string }>> {
@@ -2184,6 +2411,12 @@ function valorCampo(campo: string, valor: string): string | number {
     return iso;
   }
   return limpio;
+}
+
+function nombreClase(clase: string): string {
+  if (clase === 'modem') return 'Módulo 4G';
+  if (clase === 'retiro') return 'Retiro';
+  return 'Chip';
 }
 
 function valorExtraido(extraccion: Extraccion | null, campo: string): string | number | null {
