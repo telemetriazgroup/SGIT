@@ -20,4 +20,5 @@ export type UsuarioPublico = {
 export type SesionPublica = {
   token: string;
   usuario: UsuarioPublico;
+  virtual?: { nombre: string; correo: string };
 };

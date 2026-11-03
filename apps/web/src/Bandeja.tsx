@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import type { SesionPublica } from '@sgit/shared';
 import { PanelBot } from './Bot';
-import { MiCuenta, PanelEquipo } from './Equipo';
+import { MiCuenta, PanelEquipo, PanelVirtual } from './Equipo';
 import { Logo } from './Logo';
 import { PanelChips } from './Chips';
 import { PanelModems } from './Modems';
@@ -9,9 +9,9 @@ import { PanelLector } from './Lector';
 import { PanelImprimir } from './Imprimir';
 import { PanelOdoo } from './Odoo';
 import { PanelRespaldo } from './Respaldo';
-import { PanelDiccionario, PanelFechas, PanelTareas } from './Tareas';
 import { PanelSalida } from './Salida';
 import { PanelQr } from './Qr';
+import { PanelDiccionario, PanelFechas, PanelTareas } from './Tareas';
 
 type Avance = {
   fase: 'ocioso' | 'listando' | 'importando' | 'listo' | 'error';
@@ -91,6 +91,7 @@ type Props = {
   sesion: SesionPublica;
   onSalir: () => void;
   onNombre: (nombre: string) => void;
+  onSesion: (sesion: SesionPublica) => void;
 };
 
 function operaElSistema(rol: string): boolean {
@@ -110,7 +111,7 @@ function etiquetaRol(rol: string): string {
   return 'Operador';
 }
 
-export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
+export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) {
   const sistema = operaElSistema(sesion.usuario.rol);
   const editar = editaTareas(sesion.usuario.rol);
   const [resumen, setResumen] = useState<Resumen | null>(null);
@@ -131,7 +132,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
   const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'virtual' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
     editar && /\/servicio\/salida\/?$/.test(window.location.pathname) ? 'salida' : sistema ? 'recibidos' : 'tareas',
   );
   const [redactando, setRedactando] = useState(false);
@@ -334,9 +335,32 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const inicio = totalLista === 0 ? 0 : (pagina - 1) * 25 + 1;
   const fin = Math.min(pagina * 25, totalLista);
 
+  async function volverCuenta() {
+    const respuesta = await fetch(`${apiUrl}/sesion/volver`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sesion.token}` },
+    });
+    const cuerpo = (await respuesta.json().catch(() => null)) as (SesionPublica & { message?: string }) | null;
+    if (!respuesta.ok || !cuerpo?.token) {
+      setAviso(cuerpo?.message ?? 'No se pudo volver a tu cuenta.');
+      return;
+    }
+    onSesion(cuerpo);
+  }
+
   return (
     <div className="correo-app">
       <p className="sr">Sesión iniciada</p>
+      {sesion.virtual ? (
+        <div className="virtual-banda" role="status">
+          <p>
+            Soporte en la cuenta de <strong>{sesion.usuario.nombre}</strong> ({etiquetaRol(sesion.usuario.rol)}). Lo que hagas queda a nombre de esta cuenta.
+          </p>
+          <button type="button" className="primario" onClick={() => void volverCuenta()}>
+            Volver a tu cuenta
+          </button>
+        </div>
+      ) : null}
       <header className="barra">
         <Logo />
         {sistema ? (
@@ -491,6 +515,11 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
               Cuentas
             </button>
           ) : null}
+          {sesion.usuario.rol === 'superusuario' ? (
+            <button type="button" className={vista === 'virtual' ? 'activo' : ''} onClick={() => { setVista('virtual'); setHilo(null); }}>
+              Virtualización
+            </button>
+          ) : null}
           {editar ? (
             <>
               <button type="button" className={vista === 'chips' ? 'activo' : ''} onClick={() => { setVista('chips'); setHilo(null); }}>
@@ -599,7 +628,9 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
           {vista === 'tareas' ? (
             <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} atender={editar || sesion.usuario.rol === 'tecnico'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} />
           ) : vista === 'equipo' ? (
-            <PanelEquipo apiUrl={apiUrl} token={sesion.token} />
+            <PanelEquipo apiUrl={apiUrl} token={sesion.token} onEntrar={onSesion} />
+          ) : vista === 'virtual' ? (
+            <PanelVirtual apiUrl={apiUrl} token={sesion.token} onEntrar={onSesion} />
           ) : vista === 'chips' ? (
             <PanelChips apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'modems' ? (

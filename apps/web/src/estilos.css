@@ -364,6 +364,26 @@ button:disabled {
   font-size: 0.78rem;
 }
 
+.virtual-banda {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: #f3e2b8;
+  color: #3d3424;
+  border-bottom: 1px solid #e0c98a;
+}
+
+.virtual-banda p {
+  margin: 0;
+}
+
+.virtual-banda button {
+  margin: 0;
+  flex: none;
+}
+
 .cuenta {
   margin-left: auto;
   display: flex;
@@ -2375,6 +2395,11 @@ button.enlace:disabled {
 .cuenta-tarjeta.activa {
   border-color: #1f4d3a;
   background: #f3faf6;
+}
+
+.cuenta-tarjeta .primario {
+  grid-column: 1 / -1;
+  margin-top: 6px;
 }
 
 .cuenta-tarjeta strong,

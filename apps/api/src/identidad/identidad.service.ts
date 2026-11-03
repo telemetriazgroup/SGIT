@@ -13,7 +13,7 @@ export type Cuenta = {
   telefono: string | null;
   consulta_despacho: boolean;
 };
-import { emitirToken, leerToken } from './token';
+import { emitirToken, leerToken, origenVirtual } from './token';
 
 type FilaUsuario = {
   nombre: string;
@@ -52,6 +52,43 @@ export class IdentidadService {
       token: emitirToken(usuario, this.conexiones.sesionSecreto),
       usuario,
     };
+  }
+
+  async virtualizar(actorCorreo: string, destinoCorreo: string): Promise<SesionPublica> {
+    const destino = destinoCorreo.trim().toLowerCase();
+    if (destino === actorCorreo) throw new BadRequestException('Ya estás en tu cuenta.');
+    const origen = await this.cuenta(actorCorreo);
+    if (!origen || !origen.activo || origen.rol !== 'superusuario') {
+      throw new UnauthorizedException('Sesión no válida.');
+    }
+    const cuenta = await this.cuenta(destino);
+    if (!cuenta || !cuenta.activo) throw new BadRequestException('Esa cuenta no está activa.');
+    const usuario: UsuarioPublico = { nombre: cuenta.nombre, correo: cuenta.correo, rol: cuenta.rol };
+    return {
+      token: emitirToken(usuario, this.conexiones.sesionSecreto, Date.now(), origen.correo),
+      usuario,
+      virtual: { nombre: origen.nombre, correo: origen.correo },
+    };
+  }
+
+  async volver(token: string): Promise<SesionPublica> {
+    const correo = origenVirtual(token, this.conexiones.sesionSecreto);
+    if (!correo) throw new BadRequestException('No hay una cuenta de soporte abierta.');
+    const origen = await this.cuenta(correo);
+    if (!origen || !origen.activo || origen.rol !== 'superusuario') {
+      throw new UnauthorizedException('La cuenta de soporte ya no está disponible.');
+    }
+    const usuario: UsuarioPublico = { nombre: origen.nombre, correo: origen.correo, rol: origen.rol };
+    return { token: emitirToken(usuario, this.conexiones.sesionSecreto), usuario };
+  }
+
+  async estado(token: string): Promise<UsuarioPublico & { virtual?: { nombre: string; correo: string } }> {
+    const usuario = await this.actual(token);
+    const correo = origenVirtual(token, this.conexiones.sesionSecreto);
+    if (!correo) return usuario;
+    const origen = await this.cuenta(correo);
+    if (!origen || !origen.activo || origen.rol !== 'superusuario') return usuario;
+    return { ...usuario, virtual: { nombre: origen.nombre, correo: origen.correo } };
   }
 
   async actual(token: string): Promise<UsuarioPublico> {

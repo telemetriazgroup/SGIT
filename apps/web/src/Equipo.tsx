@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import type { SesionPublica } from '@sgit/shared';
 
 type Cuenta = {
   nombre: string;
@@ -9,7 +10,7 @@ type Cuenta = {
   consulta_despacho: boolean;
 };
 
-export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }) {
+export function PanelEquipo({ apiUrl, token, onEntrar }: { apiUrl: string; token: string; onEntrar?: (sesion: SesionPublica) => void }) {
   const [cuentas, setCuentas] = useState<Cuenta[]>([]);
   const [elegida, setElegida] = useState<string | null>(null);
   const [nombre, setNombre] = useState('');
@@ -112,6 +113,7 @@ export function PanelEquipo({ apiUrl, token }: { apiUrl: string; token: string }
             apiUrl={apiUrl}
             token={token}
             cuenta={cuenta}
+            onEntrar={onEntrar}
             alGuardar={(lista, mensaje) => {
               setCuentas(lista);
               setAviso(mensaje);
@@ -128,12 +130,14 @@ function Editor({
   apiUrl,
   token,
   cuenta,
+  onEntrar,
   alGuardar,
   alFallar,
 }: {
   apiUrl: string;
   token: string;
   cuenta: Cuenta;
+  onEntrar?: (sesion: SesionPublica) => void;
   alGuardar: (cuentas: Cuenta[], mensaje: string) => void;
   alFallar: (mensaje: string) => void;
 }) {
@@ -247,8 +251,83 @@ function Editor({
           Reiniciar contraseña
         </button>
       </form>
+      {onEntrar && !superusuario ? (
+        <button
+          type="button"
+          disabled={guardando || !cuenta.activo}
+          onClick={() => {
+            setGuardando(true);
+            void entrarComo(apiUrl, token, cuenta.correo)
+              .then(onEntrar)
+              .catch((error: unknown) => alFallar(texto(error)))
+              .finally(() => setGuardando(false));
+          }}
+        >
+          {cuenta.activo ? 'Entrar como esta cuenta' : 'La cuenta está inactiva'}
+        </button>
+      ) : null}
     </article>
   );
+}
+
+export function PanelVirtual({ apiUrl, token, onEntrar }: { apiUrl: string; token: string; onEntrar: (sesion: SesionPublica) => void }) {
+  const [cuentas, setCuentas] = useState<Cuenta[]>([]);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [entrando, setEntrando] = useState<string | null>(null);
+
+  useEffect(() => {
+    void pedir<Cuenta[]>(apiUrl, token, '/usuarios')
+      .then(setCuentas)
+      .catch((error: unknown) => setAviso(texto(error)));
+  }, [apiUrl, token]);
+
+  return (
+    <section className="ficha cuentas">
+      <h2>Virtualización</h2>
+      <p>Entras con los menús y permisos de esa cuenta, sin su contraseña. Lo que hagas queda a nombre de esa persona. Arriba puedes volver a tu cuenta de superusuario.</p>
+      {aviso ? <p className="error">{aviso}</p> : null}
+      <ul className="cuenta-lista">
+        {cuentas.map((cuenta) => (
+          <li key={cuenta.correo}>
+            <div className="cuenta-tarjeta">
+              <span className="cuenta-avatar" aria-hidden="true">
+                {iniciales(cuenta.nombre)}
+              </span>
+              <span>
+                <strong>{cuenta.nombre}</strong>
+                <small>{cuenta.correo}</small>
+              </span>
+              <em>{etiquetaRol(cuenta.rol)}{cuenta.activo ? '' : ' · inactiva'}</em>
+              <button
+                type="button"
+                className="primario"
+                disabled={!cuenta.activo || cuenta.rol === 'superusuario' || entrando !== null}
+                onClick={() => {
+                  setEntrando(cuenta.correo);
+                  setAviso(null);
+                  void entrarComo(apiUrl, token, cuenta.correo)
+                    .then(onEntrar)
+                    .catch((error: unknown) => {
+                      setAviso(texto(error));
+                      setEntrando(null);
+                    });
+                }}
+              >
+                {entrando === cuenta.correo ? 'Entrando…' : cuenta.rol === 'superusuario' ? 'Tu cuenta' : 'Entrar'}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+async function entrarComo(apiUrl: string, token: string, correo: string): Promise<SesionPublica> {
+  return pedir<SesionPublica>(apiUrl, token, '/sesion/virtual', {
+    method: 'POST',
+    body: JSON.stringify({ correo }),
+  });
 }
 
 export function MiCuenta({

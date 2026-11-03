@@ -15,12 +15,23 @@ export function App() {
     let vigente = true;
     fetch(`${apiUrl}/sesion`, {
       headers: { authorization: `Bearer ${sesion.token}` },
-    }).then((respuesta) => {
+    }).then(async (respuesta) => {
       if (!vigente) return;
       if (!respuesta.ok) {
         olvidarSesion();
         setSesion(null);
+        return;
       }
+      const cuerpo = (await respuesta.json().catch(() => null)) as { virtual?: SesionPublica['virtual'] } | null;
+      setSesion((actual) => {
+        if (!actual) return actual;
+        const viene = cuerpo?.virtual?.correo ?? '';
+        const tenia = actual.virtual?.correo ?? '';
+        if (viene === tenia) return actual;
+        const siguiente = cuerpo?.virtual ? { ...actual, virtual: cuerpo.virtual } : { token: actual.token, usuario: actual.usuario };
+        guardarSesion(siguiente);
+        return siguiente;
+      });
     });
     return () => {
       vigente = false;
@@ -33,11 +44,16 @@ export function App() {
   if (sesion && apiUrl) {
     return (
       <Bandeja
+        key={sesion.usuario.correo}
         apiUrl={apiUrl}
         sesion={sesion}
         onSalir={() => {
           olvidarSesion();
           setSesion(null);
+        }}
+        onSesion={(nueva) => {
+          guardarSesion(nueva);
+          setSesion(nueva);
         }}
         onNombre={(nombre) => {
           setSesion((actual) => {

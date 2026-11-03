@@ -36,7 +36,24 @@ export class IdentidadController {
     if (!token) {
       throw new UnauthorizedException('Sesión no válida.');
     }
-    return this.identidad.actual(token);
+    return this.identidad.estado(token);
+  }
+
+  @Post('sesion/virtual')
+  async virtual(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Body() cuerpo: { correo?: string },
+  ) {
+    const actor = await this.exigirSuperusuario(autorizacion);
+    if (!cuerpo?.correo?.trim()) throw new BadRequestException('Indica la cuenta.');
+    return this.identidad.virtualizar(actor.correo, cuerpo.correo);
+  }
+
+  @Post('sesion/volver')
+  volver(@Headers('authorization') autorizacion?: string) {
+    const token = bearer(autorizacion);
+    if (!token) throw new UnauthorizedException('Sesión no válida.');
+    return this.identidad.volver(token);
   }
 
   @Get('cuenta')
