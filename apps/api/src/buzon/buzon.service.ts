@@ -228,25 +228,32 @@ export class BuzonService {
       mensajes: number;
       extracto: string;
     }>(
-      `WITH hilos AS (
-         SELECT DISTINCT gmail_thread_id
+      `WITH pagina AS (
+         SELECT gmail_thread_id
          FROM mensaje_correo
          ${donde}
+         GROUP BY gmail_thread_id
+         ORDER BY max(fecha) DESC NULLS LAST
+         LIMIT $${limiteParam} OFFSET $${offsetParam}
        )
        SELECT u.id, u.asunto, u.de, u.fecha, u.replica, u.mensajes, u.extracto
-       FROM hilos h
+       FROM pagina p
        JOIN LATERAL (
-         SELECT id, de, fecha, replica,
-                first_value(asunto) OVER (ORDER BY fecha ASC NULLS LAST, creado_en ASC) AS asunto,
-                count(*) OVER ()::int AS mensajes,
-                left(regexp_replace(coalesce(texto, ''), '[[:space:]]+', ' ', 'g'), 180) AS extracto
+         SELECT m.id, m.de, m.fecha, m.replica,
+                (
+                  SELECT asunto FROM mensaje_correo a
+                  WHERE a.gmail_thread_id = p.gmail_thread_id
+                  ORDER BY a.fecha ASC NULLS LAST, a.creado_en ASC
+                  LIMIT 1
+                ) AS asunto,
+                (SELECT count(*)::int FROM mensaje_correo c WHERE c.gmail_thread_id = p.gmail_thread_id) AS mensajes,
+                left(regexp_replace(coalesce(m.texto, ''), '[[:space:]]+', ' ', 'g'), 180) AS extracto
          FROM mensaje_correo m
-         WHERE m.gmail_thread_id = h.gmail_thread_id
-         ORDER BY fecha DESC NULLS LAST, creado_en DESC
+         WHERE m.gmail_thread_id = p.gmail_thread_id
+         ORDER BY m.fecha DESC NULLS LAST, m.creado_en DESC
          LIMIT 1
        ) u ON true
-       ORDER BY u.fecha DESC NULLS LAST
-       LIMIT $${limiteParam} OFFSET $${offsetParam}`,
+       ORDER BY u.fecha DESC NULLS LAST`,
       [...parametros, limite, (actual - 1) * limite],
     );
     return { mensajes: resultado.rows, total: cantidad, pagina: actual, paginas, tamano: limite };
@@ -266,7 +273,7 @@ export class BuzonService {
       const pieza = hermano.id === ancla.id ? ancla : await this.detalle(hermano.id);
       if (pieza) mensajes.push(pieza);
     }
-    return { asunto: mensajes[0]?.asunto || ancla.asunto, mensajes };
+    return { asunto: mensajes[0]?.asunto || ancla.asunto, gmailThreadId: ancla.gmail_thread_id, mensajes };
   }
 
   async detalle(id: string) {

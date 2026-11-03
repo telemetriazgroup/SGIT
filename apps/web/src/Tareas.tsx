@@ -120,8 +120,28 @@ type TiendaCampana = {
   codigo_equipo: string | null;
   odoo_nombre: string;
   odoo_estado: string;
+  tarea_hija_id?: string | null;
+  hilos?: number;
   notas?: Array<{ id: string; tipo: string; texto: string; autor_nombre: string; creado_en: string }>;
 };
+
+type ColumnaTienda = { alias: string; campo: string };
+type PlantillaTienda = { id: string; nombre: string; activa: boolean; columnas: ColumnaTienda[] };
+type FormaFecha = { nombre: string; ejemplo: string; queda: string; nota: string; reconocida: boolean };
+
+const CAMPOS_TIENDA = [
+  ['orden', 'Número'],
+  ['cadena', 'Cadena'],
+  ['tienda', 'Tienda'],
+  ['contacto', 'Contacto'],
+  ['celular', 'Celular'],
+  ['entregaFecha', 'Fecha de entrega'],
+  ['entregaHora', 'Hora de entrega'],
+  ['status', 'Status'],
+  ['tamano', 'Tamaño'],
+  ['direccion', 'Dirección'],
+  ['mapa', 'Mapa'],
+] as const;
 
 type ServicioCampana = { odoo_id: number; nombre: string; estado: string; tienda_id: string | null };
 
@@ -619,18 +639,21 @@ export function PanelTareas({
           }}
           alFallar={setAviso}
         />
-        <HilosCotizacion
-          apiUrl={apiUrl}
-          token={token}
-          tareaId={ficha.id}
-          hilos={ficha.hilos ?? []}
-          fabricaciones={ficha.fabricaciones ?? []}
-          notas={ficha.notas ?? []}
-          cantidad={ficha.cantidad}
-          editar={editar}
-          alGuardar={setFicha}
-          alFallar={setAviso}
-        />
+        {!ficha.campana || (ficha.hilos ?? []).length > 0 ? (
+          <HilosCotizacion
+            apiUrl={apiUrl}
+            token={token}
+            tareaId={ficha.id}
+            titulo={ficha.campana ? 'Telemetrías de la cotización' : 'Telemetrías'}
+            hilos={ficha.hilos ?? []}
+            fabricaciones={ficha.fabricaciones ?? []}
+            notas={ficha.notas ?? []}
+            cantidad={ficha.cantidad}
+            editar={editar}
+            alGuardar={setFicha}
+            alFallar={setAviso}
+          />
+        ) : null}
         <Bitacora
           apiUrl={apiUrl}
           token={token}
@@ -958,6 +981,71 @@ export function PanelDiccionario({ apiUrl, token }: { apiUrl: string; token: str
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+export function PanelFechas({ apiUrl, token }: { apiUrl: string; token: string }) {
+  const [formas, setFormas] = useState<FormaFecha[]>([]);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+
+  useEffect(() => {
+    void pedir<{ formas: FormaFecha[] }>(apiUrl, token, '/fechas')
+      .then((respuesta) => setFormas(respuesta.formas))
+      .catch((fallo: unknown) => setError(texto(fallo)));
+  }, [apiUrl, token]);
+
+  async function procesar(hilo?: string) {
+    if (!hilo && !window.confirm('Se vuelven a leer las fechas de todos los correos guardados. Puede tardar. ¿Sigo?')) return;
+    setOcupado(true);
+    setAviso(null);
+    setError(null);
+    try {
+      const resultado = await pedir<{ correos: number; tareas: number; actualizadas: number; sinFecha: number; protegidas: number; tiendas: number }>(
+        apiUrl,
+        token,
+        '/fechas/procesar',
+        { method: 'POST', body: JSON.stringify(hilo ? { hilo } : {}) },
+      );
+      setAviso(`Leí ${resultado.correos} correos. ${resultado.actualizadas} tareas cambiaron de fecha, ${resultado.sinFecha} siguen sin fecha y ${resultado.protegidas} tienen una fecha corregida a mano. Tiendas releídas: ${resultado.tiendas}.`);
+    } catch (fallo: unknown) {
+      setError(texto(fallo));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  return (
+    <section className="ficha">
+      <h2>Fechas</h2>
+      <p>Estas son las formas que el sistema reconoce al leer una cita. Un campo corregido a mano no se vuelve a pisar.</p>
+      {error ? <p className="error">{error}</p> : null}
+      {aviso ? <p className="bajada">{aviso}</p> : null}
+      <button type="button" className="primario" disabled={ocupado} onClick={() => void procesar()}>
+        {ocupado ? 'Leyendo…' : 'Procesar todos los correos'}
+      </button>
+      <table className="odoo-lineas">
+        <thead>
+          <tr>
+            <th>Forma</th>
+            <th>Ejemplo</th>
+            <th>Queda</th>
+            <th>Nota</th>
+          </tr>
+        </thead>
+        <tbody>
+          {formas.map((forma) => (
+            <tr key={forma.nombre}>
+              <td>{forma.nombre}</td>
+              <td>{forma.ejemplo}</td>
+              <td>{forma.reconocida ? forma.queda : 'No reconocida'}</td>
+              <td>{forma.nota}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </section>
   );
 }
@@ -1330,7 +1418,8 @@ function TiendasCampana({
   return (
     <section className="campana">
       <h3>Tiendas de la campaña</h3>
-      <p>Cada tienda se consulta sola a despacho, con esta cotización y el nombre de la cadena y la tienda. Mientras esté pendiente o en seguimiento sigue en la cola. Atendida o realizada, sale.</p>
+      <p>La campaña agrupa tiendas. Cada tienda se abre como una cotización y ahí se crean sus hilos, uno o varios, desde esta ficha o por WhatsApp. Mientras esté pendiente o en seguimiento sigue en la cola de despacho.</p>
+      {editar ? <FormasTienda apiUrl={apiUrl} token={token} tareaId={ficha.id} alGuardar={alGuardar} alFallar={alFallar} /> : null}
       {(ficha.tiendas ?? []).length === 0 ? <p>Todavía no hay tiendas en los correos de esta cotización.</p> : null}
       <ul className="tiendas">
         {(ficha.tiendas ?? []).map((tienda) => (
@@ -1338,6 +1427,132 @@ function TiendasCampana({
         ))}
       </ul>
     </section>
+  );
+}
+
+function FormasTienda({
+  apiUrl,
+  token,
+  tareaId,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  tareaId: string;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (aviso: string) => void;
+}) {
+  const [plantillas, setPlantillas] = useState<PlantillaTienda[]>([]);
+  const [abierta, setAbierta] = useState(false);
+  const [nombre, setNombre] = useState('');
+  const [columnas, setColumnas] = useState<ColumnaTienda[]>([
+    { alias: 'cadena', campo: 'cadena' },
+    { alias: 'tienda', campo: 'tienda' },
+  ]);
+
+  async function cargar() {
+    setPlantillas(await pedir<PlantillaTienda[]>(apiUrl, token, '/campana/plantillas'));
+  }
+
+  useEffect(() => {
+    if (!abierta) return;
+    void cargar().catch((error: unknown) => alFallar(texto(error)));
+  }, [abierta, apiUrl, token]);
+
+  async function crear(evento: FormEvent) {
+    evento.preventDefault();
+    await pedir(apiUrl, token, '/campana/plantillas', { method: 'POST', body: JSON.stringify({ nombre, columnas }) });
+    setNombre('');
+    await cargar();
+  }
+
+  async function guardar(plantilla: PlantillaTienda, cambio: Partial<PlantillaTienda>) {
+    await pedir(apiUrl, token, `/campana/plantillas/${plantilla.id}`, {
+      method: 'POST',
+      body: JSON.stringify(cambio),
+    });
+    await cargar();
+  }
+
+  return (
+    <div className="formas-tienda">
+      <button type="button" onClick={() => setAbierta((actual) => !actual)}>
+        {abierta ? 'Ocultar formas de tienda' : 'Formas de tienda'}
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/releer`, { method: 'POST', body: '{}' })
+            .then(alGuardar)
+            .catch((error: unknown) => alFallar(texto(error)));
+        }}
+      >
+        Volver a leer las tiendas
+      </button>
+      {abierta ? (
+        <>
+          <p>Cada forma dice cómo vienen las columnas del cronograma. Al leer los correos se usa la forma activa que reconozca más tiendas.</p>
+          {plantillas.map((plantilla) => (
+            <form
+              key={plantilla.id}
+              className="forma-tienda"
+              onSubmit={(evento) => {
+                evento.preventDefault();
+                const datos = new FormData(evento.currentTarget);
+                const leidas = plantilla.columnas.map((columna, indice) => ({
+                  alias: String(datos.get(`alias-${indice}`) ?? ''),
+                  campo: String(datos.get(`campo-${indice}`) ?? columna.campo),
+                }));
+                void guardar(plantilla, { nombre: String(datos.get('nombre') ?? plantilla.nombre), columnas: leidas }).catch((error: unknown) => alFallar(texto(error)));
+              }}
+            >
+              <input name="nombre" defaultValue={plantilla.nombre} aria-label="Nombre de la forma" />
+              <button type="button" className={plantilla.activa ? 'sync-auto activa' : 'sync-auto'} onClick={() => void guardar(plantilla, { activa: !plantilla.activa }).catch((error: unknown) => alFallar(texto(error)))}>
+                {plantilla.activa ? 'Activa' : 'Inactiva'}
+              </button>
+              <ul>
+                {plantilla.columnas.map((columna, indice) => (
+                  <li key={`${plantilla.id}-${indice}`}>
+                    <input name={`alias-${indice}`} defaultValue={columna.alias} aria-label="Alias de la columna" />
+                    <select name={`campo-${indice}`} defaultValue={columna.campo} aria-label="Dato de la tienda">
+                      {CAMPOS_TIENDA.map(([campo, etiqueta]) => (
+                        <option key={campo} value={campo}>{etiqueta}</option>
+                      ))}
+                    </select>
+                  </li>
+                ))}
+              </ul>
+              <button type="submit">Guardar forma</button>
+            </form>
+          ))}
+          <form className="forma-tienda" onSubmit={(evento) => void crear(evento).catch((error: unknown) => alFallar(texto(error)))}>
+            <h4>Nueva forma</h4>
+            <label htmlFor="forma-nombre">Nombre</label>
+            <input id="forma-nombre" value={nombre} onChange={(evento) => setNombre(evento.target.value)} required />
+            <ul>
+              {columnas.map((columna, indice) => (
+                <li key={indice}>
+                  <input value={columna.alias} aria-label="Alias de la columna" onChange={(evento) => setColumnas((actual) => actual.map((item, posicion) => posicion === indice ? { ...item, alias: evento.target.value } : item))} />
+                  <select value={columna.campo} aria-label="Dato de la tienda" onChange={(evento) => setColumnas((actual) => actual.map((item, posicion) => posicion === indice ? { ...item, campo: evento.target.value } : item))}>
+                    {CAMPOS_TIENDA.map(([campo, etiqueta]) => (
+                      <option key={campo} value={campo}>{etiqueta}</option>
+                    ))}
+                  </select>
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              onClick={() => setColumnas((actual) => [...actual, { alias: '', campo: 'status' }])}
+            >
+              Agregar columna
+            </button>
+            <button type="submit" className="primario">Crear forma</button>
+          </form>
+        </>
+      ) : null}
+    </div>
   );
 }
 
@@ -1367,12 +1582,32 @@ function TarjetaTienda({
 }) {
   const [nota, setNota] = useState('');
   const [codigo, setCodigo] = useState(tienda.codigo_equipo ?? '');
+  const [hija, setHija] = useState<Tarea | null>(null);
+  const [abriendo, setAbriendo] = useState(false);
   const entrega = [tienda.entrega_fecha ? tienda.entrega_fecha.slice(0, 10).split('-').reverse().join('/') : '', tienda.entrega_hora].filter(Boolean).join(' ');
+  const hilos = hija?.hilos?.length ?? tienda.hilos ?? 0;
+
+  async function abrirTienda() {
+    setAbriendo(true);
+    try {
+      let id = tienda.tarea_hija_id ?? hija?.id ?? null;
+      if (!id) {
+        const respuesta = await pedir<{ tareaId: string }>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/abrir`, { method: 'POST', body: '{}' });
+        id = respuesta.tareaId;
+      }
+      setHija(await pedir<Tarea>(apiUrl, token, `/tareas/${id}`));
+    } catch (error: unknown) {
+      alFallar(texto(error));
+    } finally {
+      setAbriendo(false);
+    }
+  }
+
   return (
     <li className={tienda.estado === 'resuelta' ? 'tienda-lista' : ''}>
       <header>
         <strong>{[tienda.cadena, tienda.nombre].filter(Boolean).join(' · ')}</strong>
-        <span>{etiquetaTienda(tienda.estado)}</span>
+        <span>{etiquetaTienda(tienda.estado)}{hilos > 0 ? ` · ${hilos} hilo${hilos === 1 ? '' : 's'}` : ''}</span>
       </header>
       <dl>
         <Campo nombre="Contacto" valor={tienda.contacto || null} />
@@ -1469,6 +1704,39 @@ function TarjetaTienda({
             Marcar tienda realizada
           </button>
         </form>
+      ) : null}
+      <div className="tienda-abrir">
+        <button type="button" className="primario" disabled={abriendo} onClick={() => void abrirTienda()}>
+          {hija ? 'Actualizar tienda' : abriendo ? 'Abriendo…' : 'Abrir tienda'}
+        </button>
+      </div>
+      {hija ? (
+        <div className="tienda-ficha">
+          <h4>Datos de la tienda</h4>
+          <dl>
+            <Campo nombre="Ticket" valor={hija.ticket} />
+            <Campo nombre="Cliente" valor={hija.cliente} />
+            <Campo nombre="Lugar" valor={hija.lugar} />
+            <Campo nombre="Cita" valor={cita(hija.cita_fecha, hija.cita_hora)} />
+            <Campo nombre="Dirección" valor={direccionLimpia(hija.cita_direccion)} />
+            <Campo nombre="Mapa" valor={hija.cita_mapa} enlace />
+            <Campo nombre="Telemetrías" valor={hija.cantidad === null ? null : String(hija.cantidad)} />
+            <Campo nombre="Contacto" valor={[hija.comercial_nombre, hija.comercial_telefono].filter(Boolean).join(' · ') || null} />
+          </dl>
+          <HilosCotizacion
+            apiUrl={apiUrl}
+            token={token}
+            tareaId={hija.id}
+            titulo="Telemetrías"
+            hilos={hija.hilos ?? []}
+            fabricaciones={hija.fabricaciones ?? []}
+            notas={hija.notas ?? []}
+            cantidad={hija.cantidad}
+            editar={editar}
+            alGuardar={setHija}
+            alFallar={alFallar}
+          />
+        </div>
       ) : null}
     </li>
   );
@@ -1686,6 +1954,7 @@ function HilosCotizacion({
   apiUrl,
   token,
   tareaId,
+  titulo = 'Telemetrías',
   hilos,
   fabricaciones,
   notas,
@@ -1697,6 +1966,7 @@ function HilosCotizacion({
   apiUrl: string;
   token: string;
   tareaId: string;
+  titulo?: string;
   hilos: HiloFicha[];
   fabricaciones: Array<{ hiloId: string; orden: string; estado: string; enlace: string; ejecutor: string }>;
   notas: NotaBitacora[];
@@ -1710,8 +1980,15 @@ function HilosCotizacion({
   const [imprimiendo, setImprimiendo] = useState(false);
   return (
     <section>
-      <h3>Telemetrías</h3>
-      <p>{cantidad ? `La cotización trae ${cantidad}.` : 'La cotización no trae una cantidad.'} {hilos.length === 0 ? 'El técnico confirma el número en WhatsApp y se abre un hilo por telemetría.' : `${hilos.length} hilo${hilos.length === 1 ? '' : 's'}.`}</p>
+      <h3>{titulo}</h3>
+      <p>
+        {cantidad ? `La cotización trae ${cantidad}. ` : 'Indica cuántas telemetrías son. '}
+        {hilos.length === 0
+          ? editar
+            ? 'Escribe el número y ábrelos aquí. También se puede hacer por WhatsApp.'
+            : 'Quien edita la tarea abre los hilos aquí. También se puede hacer por WhatsApp.'
+          : `${hilos.length} hilo${hilos.length === 1 ? '' : 's'}.`}
+      </p>
       {editar ? (
         <form
           className="cantidad-hilos"
@@ -1722,9 +1999,9 @@ function HilosCotizacion({
               .catch((error: unknown) => alFallar(texto(error)));
           }}
         >
-          <label htmlFor="cantidad-hilos">Corregir la cantidad de hilos</label>
-          <input id="cantidad-hilos" value={numero} onChange={(evento) => setNumero(evento.target.value)} inputMode="numeric" />
-          <button type="submit">Guardar cantidad</button>
+          <label htmlFor={`cantidad-hilos-${tareaId}`}>Cantidad de hilos</label>
+          <input id={`cantidad-hilos-${tareaId}`} value={numero} onChange={(evento) => setNumero(evento.target.value)} inputMode="numeric" />
+          <button type="submit">{hilos.length === 0 ? 'Abrir hilos' : 'Guardar cantidad'}</button>
         </form>
       ) : null}
       {hilos.length > 0 ? (

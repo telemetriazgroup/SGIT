@@ -1,3 +1,5 @@
+import { normalizarFecha, normalizarHora } from './texto';
+
 export type TiendaLeida = {
   orden: number | null;
   cadena: string;
@@ -12,22 +14,43 @@ export type TiendaLeida = {
   mapa: string;
 };
 
-const COLUMNAS: Array<[string, keyof TiendaLeida]> = [
-  ['n', 'orden'],
-  ['cadena', 'cadena'],
-  ['tienda', 'tienda'],
-  ['contacto', 'contacto'],
-  ['celular', 'celular'],
-  ['fecha de entrega', 'entregaFecha'],
-  ['hora de entrega', 'entregaHora'],
-  ['status', 'status'],
-  ['tamano reefer', 'tamano'],
-  ['direccion de entrega', 'direccion'],
-  ['maps', 'mapa'],
-  ['mapa', 'mapa'],
+export type CampoTienda = 'orden' | 'cadena' | 'tienda' | 'contacto' | 'celular' | 'entregaFecha' | 'entregaHora' | 'status' | 'tamano' | 'direccion' | 'mapa';
+
+export type ColumnaTienda = { alias: string; campo: CampoTienda };
+
+export const CAMPOS_TIENDA: CampoTienda[] = ['orden', 'cadena', 'tienda', 'contacto', 'celular', 'entregaFecha', 'entregaHora', 'status', 'tamano', 'direccion', 'mapa'];
+
+export const PLANTILLA_BASE: ColumnaTienda[] = [
+  { alias: 'n', campo: 'orden' },
+  { alias: 'cadena', campo: 'cadena' },
+  { alias: 'tienda', campo: 'tienda' },
+  { alias: 'contacto', campo: 'contacto' },
+  { alias: 'celular', campo: 'celular' },
+  { alias: 'fecha de entrega', campo: 'entregaFecha' },
+  { alias: 'hora de entrega', campo: 'entregaHora' },
+  { alias: 'status', campo: 'status' },
+  { alias: 'tamano reefer', campo: 'tamano' },
+  { alias: 'direccion de entrega', campo: 'direccion' },
+  { alias: 'maps', campo: 'mapa' },
+  { alias: 'mapa', campo: 'mapa' },
 ];
 
-export function tiendasDeHtml(html: string): TiendaLeida[] {
+export function columnasValidas(entrada: unknown): ColumnaTienda[] | null {
+  if (!Array.isArray(entrada) || entrada.length === 0) return null;
+  const columnas: ColumnaTienda[] = [];
+  for (const item of entrada) {
+    if (!item || typeof item !== 'object') return null;
+    const alias = plano(String((item as { alias?: unknown }).alias ?? ''));
+    const campo = String((item as { campo?: unknown }).campo ?? '');
+    if (!alias || !CAMPOS_TIENDA.includes(campo as CampoTienda)) return null;
+    columnas.push({ alias, campo: campo as CampoTienda });
+  }
+  const campos = new Set(columnas.map((columna) => columna.campo));
+  if (!campos.has('cadena') || !campos.has('tienda')) return null;
+  return columnas;
+}
+
+export function tiendasDeHtml(html: string, plantillas: ColumnaTienda[][] = [PLANTILLA_BASE]): TiendaLeida[] {
   const tablas = html.split(/<table\b/i).slice(1);
   const halladas: TiendaLeida[] = [];
   for (const tabla of tablas) {
@@ -41,29 +64,20 @@ export function tiendasDeHtml(html: string): TiendaLeida[] {
           .slice(1)
           .map((celda) => textoCelda(celda.replace(/^[^>]*>/, '').split(/<\/td>/i)[0] ?? '')),
       );
-    halladas.push(...tiendasDeFilas(filas));
+    halladas.push(...tiendasConPlantillas(filas, plantillas));
   }
   return unicas(halladas);
 }
 
-export function tiendasDeTexto(texto: string): TiendaLeida[] {
+export function tiendasDeTexto(texto: string, plantillas: ColumnaTienda[][] = [PLANTILLA_BASE]): TiendaLeida[] {
   const lineas = texto.split(/\r?\n/).map((linea) => linea.trim());
-  const inicio = lineas.findIndex((linea, indice) => plano(linea) === 'cadena' && lineas.slice(indice, indice + 8).some((siguiente) => plano(siguiente) === 'tienda'));
-  if (inicio < 0) return [];
-  const cabezas: string[] = [];
-  let cursor = inicio;
-  while (cursor < lineas.length && cabezas.length < 30) {
-    if (lineas[cursor]) cabezas.push(lineas[cursor]);
-    if (plano(lineas[cursor]) === 'maps' || plano(lineas[cursor]) === 'mapa') {
-      cursor += 1;
-      break;
-    }
-    cursor += 1;
+  const activas = plantillas.length > 0 ? plantillas : [PLANTILLA_BASE];
+  let mejor: TiendaLeida[] = [];
+  for (const columnas of activas) {
+    const halladas = tiendasEnLineas(lineas, columnas);
+    if (halladas.length > mejor.length) mejor = halladas;
   }
-  const celdas = lineas.slice(cursor).filter((linea) => linea && !/^nota:/i.test(linea) && !/^cotizaci/i.test(linea));
-  const filas: string[][] = [];
-  for (let i = 0; i < celdas.length; i += cabezas.length) filas.push(celdas.slice(i, i + cabezas.length));
-  return unicas(tiendasDeFilas([cabezas, ...filas]));
+  return mejor;
 }
 
 export function claveTienda(cadena: string, tienda: string): string {
@@ -76,15 +90,57 @@ export function coincideTienda(nombreServicio: string, tienda: string): boolean 
   return new RegExp(`(^|[^A-Z0-9])${buscada}([^A-Z0-9]|$)`).test(plano(nombreServicio));
 }
 
-function tiendasDeFilas(filas: string[][]): TiendaLeida[] {
+function tiendasConPlantillas(filas: string[][], plantillas: ColumnaTienda[][]): TiendaLeida[] {
+  const activas = plantillas.length > 0 ? plantillas : [PLANTILLA_BASE];
+  let mejor: TiendaLeida[] = [];
+  for (const columnas of activas) {
+    const halladas = tiendasDeFilas(filas, columnas);
+    if (halladas.length > mejor.length) mejor = halladas;
+  }
+  return mejor;
+}
+
+function tiendasEnLineas(lineas: string[], columnas: ColumnaTienda[]): TiendaLeida[] {
+  const alias = new Set(columnas.map((columna) => columna.alias));
+  const aliasCadena = new Set(columnas.filter((columna) => columna.campo === 'cadena').map((columna) => columna.alias));
+  const aliasTienda = new Set(columnas.filter((columna) => columna.campo === 'tienda').map((columna) => columna.alias));
+  const inicio = lineas.findIndex(
+    (linea, indice) => aliasCadena.has(plano(linea)) && lineas.slice(indice, indice + columnas.length + 2).some((siguiente) => aliasTienda.has(plano(siguiente))),
+  );
+  if (inicio < 0) return [];
+  const cabezas: string[] = [];
+  let cursor = inicio;
+  while (cursor < lineas.length && cabezas.length < columnas.length) {
+    if (!lineas[cursor]) {
+      cursor += 1;
+      continue;
+    }
+    if (!alias.has(plano(lineas[cursor]))) break;
+    cabezas.push(lineas[cursor]);
+    cursor += 1;
+  }
+  if (!cabezas.some((cabeza) => aliasCadena.has(plano(cabeza))) || !cabezas.some((cabeza) => aliasTienda.has(plano(cabeza)))) return [];
+  const celdas = lineas.slice(cursor).filter((linea) => linea && !/^nota:/i.test(linea) && !/^cotizaci/i.test(linea));
+  const filas: string[][] = [];
+  for (let i = 0; i < celdas.length; i += cabezas.length) {
+    const fila = celdas.slice(i, i + cabezas.length);
+    if (fila.length < cabezas.length) break;
+    filas.push(fila);
+  }
+  return tiendasDeFilas([cabezas, ...filas], columnas);
+}
+
+function tiendasDeFilas(filas: string[][], columnas: ColumnaTienda[]): TiendaLeida[] {
   const cabezas = filas[0]?.map(plano) ?? [];
-  const tiendaEn = cabezas.findIndex((cabeza) => cabeza === 'tienda');
-  const cadenaEn = cabezas.findIndex((cabeza) => cabeza === 'cadena');
+  const aliasTienda = new Set(columnas.filter((columna) => columna.campo === 'tienda').map((columna) => columna.alias));
+  const aliasCadena = new Set(columnas.filter((columna) => columna.campo === 'cadena').map((columna) => columna.alias));
+  const tiendaEn = cabezas.findIndex((cabeza) => aliasTienda.has(cabeza));
+  const cadenaEn = cabezas.findIndex((cabeza) => aliasCadena.has(cabeza));
   if (tiendaEn < 0 || cadenaEn < 0) return [];
   const indice = new Map<keyof TiendaLeida, number>();
   cabezas.forEach((cabeza, posicion) => {
-    const columna = COLUMNAS.find(([alias]) => cabeza === alias);
-    if (columna && !indice.has(columna[1])) indice.set(columna[1], posicion);
+    const columna = columnas.find((item) => item.alias === cabeza);
+    if (columna && !indice.has(columna.campo)) indice.set(columna.campo, posicion);
   });
   return filas.slice(1).flatMap((fila) => {
     const tienda = fila[tiendaEn]?.trim() ?? '';
@@ -133,17 +189,11 @@ function textoCelda(fragmento: string): string {
 }
 
 function fechaDe(valor: string): string | null {
-  const hallado = valor.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (!hallado) return null;
-  const dia = hallado[1].padStart(2, '0');
-  const mes = hallado[2].padStart(2, '0');
-  return `${hallado[3]}-${mes}-${dia}`;
+  return normalizarFecha(valor).iso;
 }
 
 function horaDe(valor: string): string {
-  const hallado = valor.match(/(\d{1,2}):(\d{2})/);
-  if (!hallado) return '';
-  return `${hallado[1].padStart(2, '0')}:${hallado[2]}`;
+  return normalizarHora(valor) ?? '';
 }
 
 function mapaDe(valor: string): string {

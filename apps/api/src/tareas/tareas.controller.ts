@@ -311,6 +311,65 @@ export class TareasController {
     return this.fichaDe(id);
   }
 
+  @Get('fechas')
+  async fechas(@Headers('authorization') autorizacion: string | undefined) {
+    await this.exigirEdicion(autorizacion);
+    return { formas: this.tareas.formasFecha() };
+  }
+
+  @Post('fechas/procesar')
+  async procesarFechas(@Headers('authorization') autorizacion: string | undefined, @Body() cuerpo: { hilo?: string }) {
+    await this.exigirEdicion(autorizacion);
+    const hilo = cuerpo?.hilo?.trim() ?? '';
+    if (hilo.length > 80) throw new BadRequestException('Ese hilo no es válido.');
+    return this.tareas.procesarFechas(hilo || null);
+  }
+
+  @Get('campana/plantillas')
+  async plantillas(@Headers('authorization') autorizacion: string | undefined) {
+    await this.exigirEdicion(autorizacion);
+    return this.tareas.plantillasCampana();
+  }
+
+  @Post('campana/plantillas')
+  async crearPlantilla(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Body() cuerpo: { nombre?: string; columnas?: unknown },
+  ) {
+    await this.exigirEdicion(autorizacion);
+    return this.tareas.crearPlantilla(cuerpo?.nombre ?? '', cuerpo?.columnas);
+  }
+
+  @Post('campana/plantillas/:id')
+  async fijarPlantilla(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { nombre?: string; activa?: boolean; columnas?: unknown },
+  ) {
+    await this.exigirEdicion(autorizacion);
+    await this.tareas.fijarPlantilla(id, cuerpo ?? {});
+    return { id };
+  }
+
+  @Post('tareas/:id/tiendas/releer')
+  async releerTiendas(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    await this.exigirEdicion(autorizacion);
+    await this.tareas.releerTiendas(id);
+    const ficha = await this.tareas.ficha(id);
+    if (!ficha) throw new NotFoundException('No está esa tarea.');
+    return ficha;
+  }
+
+  @Post('tareas/:id/tiendas/:tiendaId/abrir')
+  async abrirTienda(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('tiendaId') tiendaId: string,
+  ) {
+    await this.exigirEdicion(autorizacion);
+    return { tareaId: await this.tareas.abrirTienda(id, tiendaId) };
+  }
+
   @Post('tareas/:id/campana')
   async campana(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     const usuario = await this.exigirEdicion(autorizacion);

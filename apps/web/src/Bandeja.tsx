@@ -9,7 +9,7 @@ import { PanelLector } from './Lector';
 import { PanelImprimir } from './Imprimir';
 import { PanelOdoo } from './Odoo';
 import { PanelRespaldo } from './Respaldo';
-import { PanelDiccionario, PanelTareas } from './Tareas';
+import { PanelDiccionario, PanelFechas, PanelTareas } from './Tareas';
 import { PanelSalida } from './Salida';
 import { PanelQr } from './Qr';
 
@@ -82,6 +82,7 @@ type Detalle = Mensaje & {
 
 type Hilo = {
   asunto: string;
+  gmailThreadId?: string;
   mensajes: Detalle[];
 };
 
@@ -130,7 +131,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
   const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'bot' | 'salida' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
     editar && /\/servicio\/salida\/?$/.test(window.location.pathname) ? 'salida' : sistema ? 'recibidos' : 'tareas',
   );
   const [redactando, setRedactando] = useState(false);
@@ -449,6 +450,18 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             Diccionario
           </button>
           ) : null}
+          {editar ? (
+          <button
+            type="button"
+            className={vista === 'fechas' ? 'activo' : ''}
+            onClick={() => {
+              setVista('fechas');
+              setHilo(null);
+            }}
+          >
+            Fechas
+          </button>
+          ) : null}
           {sistema ? (
           <button
             type="button"
@@ -603,6 +616,8 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
             <MiCuenta apiUrl={apiUrl} token={sesion.token} alCambiarNombre={onNombre} />
           ) : vista === 'diccionario' ? (
             <PanelDiccionario apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'fechas' ? (
+            <PanelFechas apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'bot' ? (
             <PanelBot apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'salida' ? (
@@ -619,6 +634,18 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre }: Props) {
               enfocado={enfocado}
               nota={notaProceso}
               onProcesar={(id) => void procesar(id).catch((error: unknown) => setAviso(texto(error)))}
+              onFechas={
+                editar && hilo.gmailThreadId
+                  ? () => {
+                      void pedir<{ correos: number; actualizadas: number; sinFecha: number }>(apiUrl, sesion.token, '/fechas/procesar', {
+                        method: 'POST',
+                        body: JSON.stringify({ hilo: hilo.gmailThreadId }),
+                      })
+                        .then((resultado) => setNotaProceso(`Fechas de este hilo: ${resultado.correos} correos, ${resultado.actualizadas} tareas actualizadas, ${resultado.sinFecha} sin fecha.`))
+                        .catch((error: unknown) => setAviso(texto(error)));
+                    }
+                  : undefined
+              }
               onVerTarea={() => {
                 setVista('tareas');
                 setHilo(null);
@@ -704,6 +731,7 @@ function Lectura({
   enfocado,
   nota,
   onProcesar,
+  onFechas,
   onVerTarea,
   onIr,
   onAlternar,
@@ -715,6 +743,7 @@ function Lectura({
   enfocado: number;
   nota: string | null;
   onProcesar: (id: string) => void;
+  onFechas?: () => void;
   onVerTarea: () => void;
   onIr: (indice: number) => void;
   onAlternar: (mensaje: Detalle, indice: number) => void;
@@ -729,6 +758,11 @@ function Lectura({
           <button type="button" className="primario" onClick={() => onProcesar(hilo.mensajes[0]?.id ?? '')}>
             Procesar
           </button>
+          {onFechas ? (
+            <button type="button" onClick={onFechas}>
+              Procesar fechas
+            </button>
+          ) : null}
           {nota ? (
             <span>
               {nota}{' '}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { claveTienda, coincideTienda, tiendasDeHtml, tiendasDeTexto } from '../src/tareas/campana';
+import { claveTienda, coincideTienda, columnasValidas, tiendasDeHtml, tiendasDeTexto, type ColumnaTienda } from '../src/tareas/campana';
 
 const html = `
 <table>
@@ -31,4 +31,22 @@ test('un correo posterior no duplica la tienda y el servicio se ata por el nombr
   assert.equal(coincideTienda('#2336 - DONOFRIO // METRO BARRANCA - Done', 'BARRANCA'), true);
   assert.equal(coincideTienda('#2336 - DONOFRIO // METRO BREÑA - New', 'BRENA'), true);
   assert.equal(coincideTienda('#2336 - DONOFRIO // METRO BREÑA - New', 'BARRANCA'), false);
+});
+
+test('otra forma de columnas lee la tienda y la fecha escrita', () => {
+  const forma: ColumnaTienda[] = [
+    { alias: 'grupo', campo: 'cadena' },
+    { alias: 'local', campo: 'tienda' },
+    { alias: 'dia', campo: 'entregaFecha' },
+    { alias: 'llegada', campo: 'entregaHora' },
+  ];
+  const texto = ['GRUPO', 'LOCAL', 'DIA', 'LLEGADA', 'METRO', 'COLONIAL', '31 de octubre de 2026', '8 AM'].join('\n');
+  const tiendas = tiendasDeTexto(texto, [forma]);
+  assert.equal(tiendas.length, 1);
+  assert.equal(tiendas[0]?.cadena, 'METRO');
+  assert.equal(tiendas[0]?.tienda, 'COLONIAL');
+  assert.equal(tiendas[0]?.entregaFecha, '2026-10-31');
+  assert.equal(tiendas[0]?.entregaHora, '08:00');
+  assert.equal(columnasValidas([{ alias: 'Cadena', campo: 'cadena' }]), null);
+  assert.ok(columnasValidas(forma));
 });

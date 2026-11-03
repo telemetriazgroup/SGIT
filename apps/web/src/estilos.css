@@ -2574,6 +2574,35 @@ button.enlace:disabled {
   opacity: 0.75;
 }
 
+.formas-tienda,
+.tienda-abrir,
+.tienda-ficha {
+  margin-top: 12px;
+}
+
+.forma-tienda {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #e6e1d8;
+  border-radius: 8px;
+}
+
+.forma-tienda ul {
+  list-style: none;
+  padding: 0;
+}
+
+.forma-tienda li {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.tienda-ficha {
+  padding-top: 12px;
+  border-top: 1px solid #e6e1d8;
+}
+
 .odoo-copia {
   margin-top: 20px;
 }

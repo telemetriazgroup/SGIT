@@ -10,7 +10,8 @@ import { evaluarCita, type Cita } from './cita';
 import { cotsDe, normalizarFecha, plano } from './texto';
 import { BotService } from '../bot/bot.service';
 import { OdooServicio, type LecturaTarea } from '../odoo/servicio';
-import { claveTienda, coincideTienda, tiendasDeHtml, tiendasDeTexto, type TiendaLeida } from './campana';
+import { claveTienda, coincideTienda, columnasValidas, PLANTILLA_BASE, tiendasDeHtml, tiendasDeTexto, type ColumnaTienda, type TiendaLeida } from './campana';
+import { catalogoFechas, plegarCita } from './fechas';
 import { vincularHijas } from './hijas';
 import { ajustarHilos, corregirEquipo, listarHilos } from './hilos';
 import { FabricacionServicio } from '../fabricacion/servicio';
@@ -405,6 +406,218 @@ export class TareasService {
     return lectura;
   }
 
+  formasFecha() {
+    return catalogoFechas();
+  }
+
+  async procesarFechas(hilo: string | null): Promise<{ correos: number; tareas: number; actualizadas: number; sinFecha: number; protegidas: number; tiendas: number }> {
+    const hiloId = hilo?.trim() || null;
+    const tareas = await this.conexiones.pg.query<{
+      id: string;
+      mensaje_id: string | null;
+      gmail_thread_id: string | null;
+      campos_corregidos: string[] | null;
+      cita_fecha: string | null;
+      cita_hora: string | null;
+      cita_direccion: string | null;
+      campana: boolean;
+      cot: string;
+    }>(
+      `SELECT t.id, t.mensaje_id, m.gmail_thread_id, t.campos_corregidos,
+              to_char(t.cita_fecha, 'YYYY-MM-DD') AS cita_fecha, t.cita_hora, t.cita_direccion, t.campana, t.cot
+       FROM tarea t
+       LEFT JOIN mensaje_correo m ON m.id = t.mensaje_id
+       WHERE t.padre_id IS NULL`,
+    );
+    const porMensaje = new Map<string, Set<string>>();
+    const porHilo = new Map<string, Set<string>>();
+    const ficha = new Map(tareas.rows.map((fila) => [fila.id, fila]));
+    const sumar = (mapa: Map<string, Set<string>>, clave: string | null, tareaId: string) => {
+      if (!clave) return;
+      const grupo = mapa.get(clave) ?? new Set<string>();
+      grupo.add(tareaId);
+      mapa.set(clave, grupo);
+    };
+    for (const fila of tareas.rows) {
+      sumar(porMensaje, fila.mensaje_id, fila.id);
+      sumar(porHilo, fila.gmail_thread_id, fila.id);
+    }
+    const situaciones = await this.conexiones.pg.query<{ tarea_id: string; mensaje_id: string; gmail_thread_id: string }>(
+      `SELECT s.tarea_id, s.mensaje_id, m.gmail_thread_id
+       FROM situacion_hilo s
+       JOIN mensaje_correo m ON m.id = s.mensaje_id
+       JOIN tarea t ON t.id = s.tarea_id
+       WHERE t.padre_id IS NULL`,
+    );
+    for (const fila of situaciones.rows) {
+      sumar(porMensaje, fila.mensaje_id, fila.tarea_id);
+      sumar(porHilo, fila.gmail_thread_id, fila.tarea_id);
+    }
+    const acum = new Map<string, Cita>();
+    const tocadas = new Set<string>();
+    let correos = 0;
+    const plegarMensaje = (mensaje: { id: string; gmail_thread_id: string; asunto: string; texto: string; fecha: Date | null }) => {
+      correos += 1;
+      const ids = new Set<string>([...(porMensaje.get(mensaje.id) ?? []), ...(porHilo.get(mensaje.gmail_thread_id) ?? [])]);
+      if (ids.size === 0) return;
+      const lectura = extraer(mensaje.asunto, mensaje.texto ?? '', anioLima(mensaje.fecha));
+      for (const tareaId of ids) {
+        const tarea = ficha.get(tareaId);
+        if (!tarea) continue;
+        tocadas.add(tareaId);
+        const protegidos = new Set(tarea.campos_corregidos ?? []);
+        const vigente = acum.get(tareaId) ?? {
+          fecha: protegidos.has('cita_fecha') ? tarea.cita_fecha : null,
+          hora: protegidos.has('cita_hora') ? tarea.cita_hora : null,
+          direccion: protegidos.has('cita_direccion') ? tarea.cita_direccion : null,
+        };
+        acum.set(
+          tareaId,
+          plegarCita(vigente, {
+            fecha: protegidos.has('cita_fecha') ? null : isoDe(lectura.fecha.fragmento, lectura.fecha.valor),
+            hora: protegidos.has('cita_hora') ? null : lectura.hora.valor,
+            direccion: protegidos.has('cita_direccion') ? null : lectura.direccion.valor,
+          }),
+        );
+      }
+    };
+    let cursorFecha: Date | null = null;
+    let cursorId = '00000000-0000-0000-0000-000000000000';
+    for (;;) {
+      const pagina = await this.conexiones.pg.query<{ id: string; gmail_thread_id: string; asunto: string; texto: string; fecha: Date }>(
+        `SELECT id, gmail_thread_id, asunto, texto, fecha
+         FROM mensaje_correo
+         WHERE fecha IS NOT NULL
+           AND ($1::text IS NULL OR gmail_thread_id = $1)
+           AND (fecha, id) > ($2::timestamptz, $3::uuid)
+         ORDER BY fecha ASC, id
+         LIMIT 200`,
+        [hiloId, cursorFecha ?? new Date(0), cursorId],
+      );
+      if (pagina.rows.length === 0) break;
+      for (const mensaje of pagina.rows) plegarMensaje(mensaje);
+      const ultimo = pagina.rows[pagina.rows.length - 1];
+      cursorFecha = ultimo.fecha;
+      cursorId = ultimo.id;
+      if (pagina.rows.length < 200) break;
+    }
+    cursorId = '00000000-0000-0000-0000-000000000000';
+    for (;;) {
+      const pagina = await this.conexiones.pg.query<{ id: string; gmail_thread_id: string; asunto: string; texto: string; fecha: null }>(
+        `SELECT id, gmail_thread_id, asunto, texto, fecha
+         FROM mensaje_correo
+         WHERE fecha IS NULL
+           AND ($1::text IS NULL OR gmail_thread_id = $1)
+           AND id > $2::uuid
+         ORDER BY id
+         LIMIT 200`,
+        [hiloId, cursorId],
+      );
+      if (pagina.rows.length === 0) break;
+      for (const mensaje of pagina.rows) plegarMensaje(mensaje);
+      cursorId = pagina.rows[pagina.rows.length - 1].id;
+      if (pagina.rows.length < 200) break;
+    }
+    let actualizadas = 0;
+    let sinFecha = 0;
+    let protegidas = 0;
+    const campanas = new Set<string>();
+    for (const tareaId of tocadas) {
+      const tarea = ficha.get(tareaId);
+      const cita = acum.get(tareaId);
+      if (!tarea || !cita) continue;
+      const protegidos = new Set(tarea.campos_corregidos ?? []);
+      if (protegidos.has('cita_fecha') || protegidos.has('cita_hora') || protegidos.has('cita_direccion')) protegidas += 1;
+      const fecha = protegidos.has('cita_fecha') ? tarea.cita_fecha : (cita.fecha ?? tarea.cita_fecha);
+      const hora = protegidos.has('cita_hora') ? tarea.cita_hora : (cita.hora ?? tarea.cita_hora);
+      const direccion = protegidos.has('cita_direccion') ? tarea.cita_direccion : (cita.direccion ?? tarea.cita_direccion);
+      if (!fecha) sinFecha += 1;
+      const cambia = fecha !== tarea.cita_fecha || (hora ?? '') !== (tarea.cita_hora ?? '') || (direccion ?? '') !== (tarea.cita_direccion ?? '');
+      if (cambia) {
+        await this.conexiones.pg.query(
+          `UPDATE tarea SET cita_fecha = $2::date, cita_hora = $3, cita_direccion = $4 WHERE id = $1`,
+          [tareaId, fecha, hora, direccion],
+        );
+        actualizadas += 1;
+      }
+      if (tarea.campana && (!hiloId || tarea.gmail_thread_id === hiloId || porHilo.get(hiloId)?.has(tareaId))) campanas.add(tareaId);
+    }
+    let tiendas = 0;
+    for (const tareaId of campanas) {
+      const tarea = ficha.get(tareaId);
+      if (!tarea) continue;
+      tiendas += await this.incorporarTiendas(tareaId, tarea.cot);
+    }
+    return { correos, tareas: tocadas.size, actualizadas, sinFecha, protegidas, tiendas };
+  }
+
+  async plantillasCampana(): Promise<Array<{ id: string; nombre: string; activa: boolean; columnas: ColumnaTienda[] }>> {
+    const filas = await this.conexiones.pg.query<{ id: string; nombre: string; activa: boolean; columnas: ColumnaTienda[] }>(
+      `SELECT id, nombre, activa, columnas FROM plantilla_campana ORDER BY nombre`,
+    );
+    return filas.rows;
+  }
+
+  async crearPlantilla(nombre: string, columnas: unknown): Promise<{ id: string; nombre: string; activa: boolean; columnas: ColumnaTienda[] }> {
+    const validas = columnasValidas(columnas);
+    if (!validas) throw new BadRequestException('La forma necesita cadena y tienda, y cada columna un alias conocido.');
+    const titulo = nombre.trim();
+    if (!titulo) throw new BadRequestException('Escribe el nombre de la forma.');
+    const id = randomUUID();
+    try {
+      await this.conexiones.pg.query(
+        `INSERT INTO plantilla_campana (id, nombre, activa, columnas) VALUES ($1, $2, true, $3::jsonb)`,
+        [id, titulo, JSON.stringify(validas)],
+      );
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') throw new BadRequestException('Ya hay una forma con ese nombre.');
+      throw error;
+    }
+    return { id, nombre: titulo, activa: true, columnas: validas };
+  }
+
+  async fijarPlantilla(id: string, entrada: { nombre?: string; activa?: boolean; columnas?: unknown }): Promise<void> {
+    const actual = await this.conexiones.pg.query<{ id: string }>(`SELECT id FROM plantilla_campana WHERE id = $1`, [id]);
+    if (!actual.rows[0]) throw new NotFoundException('No está esa forma de tiendas.');
+    if (entrada.columnas !== undefined) {
+      const validas = columnasValidas(entrada.columnas);
+      if (!validas) throw new BadRequestException('La forma necesita cadena y tienda, y cada columna un alias conocido.');
+      await this.conexiones.pg.query(`UPDATE plantilla_campana SET columnas = $2::jsonb WHERE id = $1`, [id, JSON.stringify(validas)]);
+    }
+    if (typeof entrada.activa === 'boolean') {
+      await this.conexiones.pg.query(`UPDATE plantilla_campana SET activa = $2 WHERE id = $1`, [id, entrada.activa]);
+    }
+    if (entrada.nombre !== undefined) {
+      const titulo = entrada.nombre.trim();
+      if (!titulo) throw new BadRequestException('Escribe el nombre de la forma.');
+      try {
+        await this.conexiones.pg.query(`UPDATE plantilla_campana SET nombre = $2 WHERE id = $1`, [id, titulo]);
+      } catch (error) {
+        if ((error as { code?: string }).code === '23505') throw new BadRequestException('Ya hay una forma con ese nombre.');
+        throw error;
+      }
+    }
+  }
+
+  async releerTiendas(id: string): Promise<number> {
+    const tarea = await this.conexiones.pg.query<{ cot: string; campana: boolean }>(`SELECT cot, campana FROM tarea WHERE id = $1`, [id]);
+    const fila = tarea.rows[0];
+    if (!fila) throw new NotFoundException('No está esa tarea.');
+    if (!fila.campana) throw new BadRequestException('Esta cotización no está en modo campaña.');
+    return this.incorporarTiendas(id, fila.cot);
+  }
+
+  async abrirTienda(tareaId: string, tiendaId: string): Promise<string> {
+    await vincularHijas(this.conexiones.pg, tareaId);
+    const fila = await this.conexiones.pg.query<{ tarea_hija_id: string | null }>(
+      `SELECT tarea_hija_id FROM tienda WHERE id = $1 AND tarea_id = $2`,
+      [tiendaId, tareaId],
+    );
+    const hija = fila.rows[0]?.tarea_hija_id;
+    if (!hija) throw new NotFoundException('No está esa tienda.');
+    return hija;
+  }
+
   async marcarCampana(id: string): Promise<void> {
     const tarea = await this.conexiones.pg.query<{ cot: string }>(`SELECT cot FROM tarea WHERE id = $1`, [id]);
     if (!tarea.rows[0]) throw new NotFoundException('No está esa tarea.');
@@ -438,6 +651,14 @@ export class TareasService {
     if (resultado.rowCount === 0) throw new NotFoundException('No está esa tienda.');
   }
 
+  private async plantillasActivas(): Promise<ColumnaTienda[][]> {
+    const filas = await this.conexiones.pg.query<{ columnas: ColumnaTienda[] }>(
+      `SELECT columnas FROM plantilla_campana WHERE activa ORDER BY nombre`,
+    );
+    const listas = filas.rows.map((fila) => fila.columnas).filter((columnas) => Array.isArray(columnas) && columnas.length > 0);
+    return listas.length > 0 ? listas : [PLANTILLA_BASE];
+  }
+
   private async incorporarTiendas(tareaId: string, cot: string): Promise<number> {
     const mensajes = await this.conexiones.pg.query<{ html: string; texto: string }>(
       `SELECT html, texto FROM mensaje_correo
@@ -445,10 +666,11 @@ export class TareasService {
        ORDER BY fecha ASC NULLS LAST`,
       [cot],
     );
+    const plantillas = await this.plantillasActivas();
     const leidas = new Map<string, TiendaLeida>();
     for (const mensaje of mensajes.rows) {
-      const delHtml = tiendasDeHtml(mensaje.html ?? '');
-      const lista = delHtml.length > 0 ? delHtml : tiendasDeTexto(mensaje.texto ?? '');
+      const delHtml = tiendasDeHtml(mensaje.html ?? '', plantillas);
+      const lista = delHtml.length > 0 ? delHtml : tiendasDeTexto(mensaje.texto ?? '', plantillas);
       for (const tienda of lista) leidas.set(claveTienda(tienda.cadena, tienda.tienda), tienda);
     }
     for (const tienda of leidas.values()) {
@@ -526,7 +748,8 @@ export class TareasService {
     const faltan = await this.conexiones.pg.query(`SELECT 1 FROM tienda WHERE tarea_id = $1 AND tarea_hija_id IS NULL LIMIT 1`, [tarea.id]);
     if (faltan.rows[0]) await vincularHijas(this.conexiones.pg, tarea.id);
     const tiendas = await this.conexiones.pg.query<TiendaGuardada>(
-      `SELECT id, orden, cadena, nombre, contacto, celular, entrega_fecha, entrega_hora, status, tamano, direccion, mapa, estado, codigo_equipo, odoo_id, odoo_nombre, odoo_estado
+      `SELECT id, orden, cadena, nombre, contacto, celular, entrega_fecha, entrega_hora, status, tamano, direccion, mapa, estado, codigo_equipo, odoo_id, odoo_nombre, odoo_estado, tarea_hija_id,
+              (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tienda.tarea_hija_id) AS hilos
        FROM tienda WHERE tarea_id = $1 ORDER BY ${ordenFecha('entrega_fecha', 'orden NULLS LAST, nombre')}`,
       [tarea.id],
     );
@@ -1869,6 +2092,8 @@ type TiendaGuardada = {
   odoo_id: number | null;
   odoo_nombre: string;
   odoo_estado: string;
+  tarea_hija_id: string | null;
+  hilos: number;
   notas?: Array<{ id: string; tipo: string; texto: string; autor_nombre: string; creado_en: Date }>;
 };
 
