@@ -251,6 +251,7 @@ export function PanelTareas({
   atender,
   sistema,
   prioridad,
+  habilita,
 }: {
   apiUrl: string;
   token: string;
@@ -260,6 +261,7 @@ export function PanelTareas({
   atender: boolean;
   sistema: boolean;
   prioridad: boolean;
+  habilita: boolean;
 }) {
   const [tareas, setTareas] = useState<TareaLista[]>([]);
   const [ficha, setFicha] = useState<Tarea | null>(null);
@@ -807,6 +809,8 @@ export function PanelTareas({
       <p>{textoSector(sector)}</p>
       {prioridad && sector !== 'otros' ? (
         <p className="meta">Marca las que verán el administrador, los técnicos y despacho. Las demás siguen abiertas y solo las ves tú, hasta que las marques o las cierres. Las cotizaciones nuevas del correo llegan marcadas. Si la cotización ya estaba resuelta, el correo queda en su historial y no vuelve a abiertas.</p>
+      ) : habilita && sector === 'tareas' ? (
+        <p className="meta">Ves las habilitadas y las que no. Marca las que verán el técnico y despacho.</p>
       ) : null}
       {sector === 'tareas' ? (
         <div className="filtro-area">
@@ -872,7 +876,7 @@ export function PanelTareas({
           <ul className="lista">
             {tareas.map((tarea) => (
               <li key={tarea.id} className={!tarea.habilitada ? 'fila-marca solo-super' : 'fila-marca'}>
-                {prioridad ? (
+                {habilita ? (
                   <label className="marca-habil">
                     <input
                       type="checkbox"
@@ -886,7 +890,7 @@ export function PanelTareas({
                   <span className="avatar" aria-hidden="true">
                     C
                   </span>
-                  <span className="quien">{tarea.campana ? 'Campaña' : 'COT'} {cotVisible(tarea.cot, tarea.cots)}{!tarea.habilitada && !prioridad ? ' · Sin habilitar' : ''}</span>
+                  <span className="quien">{tarea.campana ? 'Campaña' : 'COT'} {cotVisible(tarea.cot, tarea.cots)}{!tarea.habilitada ? ' · Sin habilitar' : ''}</span>
                   <span className="resumen-fila">
                     <strong>{tarea.cliente || tarea.lugar || tarea.descripcion || 'Sin cliente'}</strong>
                     {tarea.campana ? <span className="extracto"> — {tarea.locales ?? 0} tiendas</span> : null}

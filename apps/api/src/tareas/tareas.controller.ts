@@ -130,9 +130,11 @@ export class TareasController {
     @Body() cuerpo: { clase?: string; id?: string; visible?: boolean },
   ) {
     const usuario = await this.exigir(autorizacion);
-    if (usuario.rol !== 'superusuario') throw new ForbiddenException('Solo el superusuario habilita lo que ve el equipo.');
     if (cuerpo?.clase !== 'tarea' && cuerpo?.clase !== 'interno' && cuerpo?.clase !== 'decision') {
       throw new BadRequestException('La clase es tarea, interno o decisión.');
+    }
+    if (usuario.rol !== 'superusuario' && !(usuario.rol === 'administrador' && cuerpo.clase === 'tarea')) {
+      throw new ForbiddenException('Solo el superusuario habilita lo que ve el equipo.');
     }
     if (!cuerpo.id?.trim() || typeof cuerpo.visible !== 'boolean') throw new BadRequestException('Indica el elemento y si queda visible.');
     const visible = await this.tareas.fijarVisible(cuerpo.clase, cuerpo.id, cuerpo.visible);

@@ -5,6 +5,7 @@ import { OdooServicio } from '../odoo/servicio';
 import { filasDeExcel } from './excel';
 import { clasificar, type LineaSerie, type LoteSerie } from './inventario';
 import { armarOrden, marcaDeOrden, type CopiaOrden } from './orden';
+import { asegurarNotaNumero } from '../nota-numero';
 import { normalizarCelular, normalizarImei, textoPlano } from './normalizar';
 
 export type Chip = {
@@ -88,13 +89,14 @@ export class ChipsService {
   }
 
   async listar(pagina: number, busqueda = '', archivados = false, estado = '', mes = '', dia = ''): Promise<{ chips: Chip[]; total: number; pagina: number; paginas: number; resumen: ResumenChips }> {
+    await asegurarNotaNumero(this.conexiones.pg);
     const filtro = patron(busqueda);
     const corteMes = /^\d{4}-\d{2}$/.test(mes) ? mes : '';
     const corteDia = /^\d{4}-\d{2}-\d{2}$/.test(dia) ? dia : '';
     const donde = `WHERE archivado = $2 AND ($3::text = '' OR estado = $3)
       AND ($4::text = '' OR to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM') = $4)
       AND ($5::text = '' OR to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') = $5)
-      AND ($1::text IS NULL OR producto ILIKE $1 ESCAPE '\\' OR marca ILIKE $1 ESCAPE '\\' OR imei ILIKE $1 ESCAPE '\\' OR celular ILIKE $1 ESCAPE '\\' OR comentario ILIKE $1 ESCAPE '\\')`;
+      AND ($1::text IS NULL OR producto ILIKE $1 ESCAPE '\\' OR marca ILIKE $1 ESCAPE '\\' OR imei ILIKE $1 ESCAPE '\\' OR celular ILIKE $1 ESCAPE '\\' OR COALESCE(comentario, '') ILIKE $1 ESCAPE '\\')`;
     const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM chip ${donde}`, [filtro, archivados, estado, corteMes, corteDia]);
     const total = Number(conteo.rows[0]?.total ?? 0);
     const paginas = Math.max(1, Math.ceil(total / TAMANO));
@@ -102,7 +104,7 @@ export class ChipsService {
     const filas = await this.conexiones.pg.query<Chip>(
       `SELECT id, producto, marca, imei, celular, archivado, estado, telemetria, orden_mo,
               to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS ocupado_fecha,
-              situacion, comentario, creado_en
+              COALESCE(situacion, '') AS situacion, COALESCE(comentario, '') AS comentario, creado_en
        FROM chip
        ${donde}
        ORDER BY imei
@@ -453,10 +455,11 @@ export class ChipsService {
   }
 
   private async uno(id: string): Promise<Chip> {
+    await asegurarNotaNumero(this.conexiones.pg);
     const fila = await this.conexiones.pg.query<Chip>(
       `SELECT id, producto, marca, imei, celular, archivado, estado, telemetria, orden_mo,
               to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS ocupado_fecha,
-              situacion, comentario, creado_en
+              COALESCE(situacion, '') AS situacion, COALESCE(comentario, '') AS comentario, creado_en
        FROM chip WHERE id = $1`,
       [id],
     );

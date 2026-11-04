@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import type { Conexiones } from '../conexiones';
 import { OdooServicio } from '../odoo/servicio';
 import { armarOrden, marcaDeOrden, type CopiaOrden } from '../chips/orden';
+import { asegurarNotaNumero } from '../nota-numero';
 import { clasificarModem } from './clasificar';
 
 export type Modem = {
@@ -69,8 +70,9 @@ export class ModemsService {
   }
 
   async listar(pagina: number, busqueda = '', estado = ''): Promise<{ modems: Modem[]; total: number; pagina: number; paginas: number; resumen: { disponibles: number; fabricados: number; salidas: number; producto: string } }> {
+    await asegurarNotaNumero(this.conexiones.pg);
     const filtro = patron(busqueda);
-    const donde = `WHERE ($2::text = '' OR estado = $2) AND ($1::text IS NULL OR serie ILIKE $1 ESCAPE '\\' OR orden_mo ILIKE $1 ESCAPE '\\' OR chip ILIKE $1 ESCAPE '\\' OR salida ILIKE $1 ESCAPE '\\' OR comentario ILIKE $1 ESCAPE '\\')`;
+    const donde = `WHERE ($2::text = '' OR estado = $2) AND ($1::text IS NULL OR serie ILIKE $1 ESCAPE '\\' OR orden_mo ILIKE $1 ESCAPE '\\' OR chip ILIKE $1 ESCAPE '\\' OR salida ILIKE $1 ESCAPE '\\' OR COALESCE(comentario, '') ILIKE $1 ESCAPE '\\')`;
     const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM modem ${donde}`, [filtro, estado]);
     const total = Number(conteo.rows[0]?.total ?? 0);
     const paginas = Math.max(1, Math.ceil(total / TAMANO));
@@ -78,7 +80,7 @@ export class ModemsService {
     const filas = await this.conexiones.pg.query<Modem>(
       `SELECT id, serie, producto, estado, orden_mo, chip, salida, cantidad::float8 AS cantidad,
               to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS fecha,
-              situacion, comentario
+              COALESCE(situacion, '') AS situacion, COALESCE(comentario, '') AS comentario
        FROM modem
        ${donde}
        ORDER BY CASE estado WHEN 'fabricado' THEN 0 WHEN 'salida' THEN 1 ELSE 2 END, ocupado_en DESC NULLS LAST, serie
@@ -89,6 +91,7 @@ export class ModemsService {
   }
 
   async anotar(id: string, situacion: string, comentario: string): Promise<Modem> {
+    await asegurarNotaNumero(this.conexiones.pg);
     const marca = situacion.trim();
     if (!SITUACIONES.includes(marca)) throw new BadRequestException('El estado es activo, en observación, suspendido o de baja.');
     const texto = comentario.trim().slice(0, 500);
@@ -98,10 +101,11 @@ export class ModemsService {
   }
 
   async ver(id: string): Promise<Modem & { movimientos: Array<{ fecha: string | null; referencia: string; desde: string; hacia: string; cantidad: number | null; estado: string }>; orden: (CopiaOrden & { leido_en: string | null }) | null }> {
+    await asegurarNotaNumero(this.conexiones.pg);
     const fila = await this.conexiones.pg.query<Modem>(
       `SELECT id, serie, producto, estado, orden_mo, chip, salida, cantidad::float8 AS cantidad,
               to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD HH24:MI') AS fecha,
-              situacion, comentario
+              COALESCE(situacion, '') AS situacion, COALESCE(comentario, '') AS comentario
        FROM modem WHERE id = $1`,
       [id],
     );
@@ -291,7 +295,7 @@ export class ModemsService {
     const fila = await this.conexiones.pg.query<Modem>(
       `SELECT id, serie, producto, estado, orden_mo, chip, salida, cantidad::float8 AS cantidad,
               to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS fecha,
-              situacion, comentario
+              COALESCE(situacion, '') AS situacion, COALESCE(comentario, '') AS comentario
        FROM modem WHERE id = $1`,
       [id],
     );

@@ -626,7 +626,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
             </section>
           ) : null}
           {vista === 'tareas' ? (
-            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} atender={editar || sesion.usuario.rol === 'tecnico'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} />
+            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} atender={editar || sesion.usuario.rol === 'tecnico'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} habilita={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} />
           ) : vista === 'equipo' ? (
             <PanelEquipo apiUrl={apiUrl} token={sesion.token} onEntrar={onSesion} />
           ) : vista === 'virtual' ? (
