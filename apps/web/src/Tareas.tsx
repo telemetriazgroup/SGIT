@@ -1,4 +1,11 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, FormEvent, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
+
+type Correr = <T>(promesa: Promise<T>, listo?: string, cargando?: string) => Promise<T | null>;
+const TrabajoContext = createContext<Correr | null>(null);
+
+function useTrabajo(): Correr {
+  return useContext(TrabajoContext) ?? (async (promesa) => promesa);
+}
 
 type TareaLista = {
   id: string;
@@ -257,6 +264,9 @@ export function PanelTareas({
   const [tareas, setTareas] = useState<TareaLista[]>([]);
   const [ficha, setFicha] = useState<Tarea | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
+  const [cargandoTarea, setCargandoTarea] = useState(false);
+  const [trabajo, setTrabajo] = useState<string | null>(null);
+  const [hecho, setHecho] = useState<string | null>(null);
   const [procesando, setProcesando] = useState(false);
   const [resumen, setResumen] = useState<ResumenProceso | null>(null);
   const [sector, setSector] = useState<Sector>('tareas');
@@ -366,8 +376,38 @@ export function PanelTareas({
 
   async function abrir(id: string) {
     setHoja('tarea');
-    setFicha(await pedir<Tarea>(apiUrl, token, `/tareas/${id}`));
+    setCargandoTarea(true);
+    setAviso(null);
+    try {
+      setFicha(await pedir<Tarea>(apiUrl, token, `/tareas/${id}`));
+    } finally {
+      setCargandoTarea(false);
+    }
   }
+
+  async function correr<T>(promesa: Promise<T>, listo = 'Quedó guardado.', cargando = 'Guardando…'): Promise<T | null> {
+    setTrabajo(cargando);
+    setHecho(null);
+    setAviso(null);
+    try {
+      const valor = await promesa;
+      setHecho(listo);
+      return valor;
+    } catch (error: unknown) {
+      setAviso(texto(error));
+      return null;
+    } finally {
+      setTrabajo(null);
+    }
+  }
+
+  const velo = (
+    <>
+      {cargandoTarea ? <ModalEspera titulo="Cargando la tarea" texto="Leyendo los datos que ya están guardados." /> : null}
+      {trabajo ? <ModalEspera titulo={trabajo} texto="Espera un momento." /> : null}
+      {hecho ? <ModalEspera titulo={hecho} alCerrar={() => setHecho(null)} /> : null}
+    </>
+  );
 
   async function marcar(clase: 'tarea' | 'interno' | 'decision', id: string, visible: boolean) {
     setAviso(null);
@@ -396,6 +436,12 @@ export function PanelTareas({
     if (!tareaId) return;
     void abrir(tareaId).catch((error: unknown) => setAviso(texto(error)));
   }, [tareaId, apiUrl, token]);
+
+  useEffect(() => {
+    if (!hecho) return;
+    const reloj = window.setTimeout(() => setHecho(null), 1600);
+    return () => window.clearTimeout(reloj);
+  }, [hecho]);
 
   async function procesarCorreos() {
     setProcesando(true);
@@ -449,6 +495,7 @@ export function PanelTareas({
 
   if (hilo) {
     return (
+      <TrabajoContext.Provider value={correr}>
       <section className="ficha">
         <button type="button" onClick={() => setHilo(null)}>
           Volver
@@ -536,22 +583,22 @@ export function PanelTareas({
           />
         ) : null}
         <Seguimiento seguimiento={hilo.seguimiento} mostrarVacio={false} />
+        {velo}
       </section>
+      </TrabajoContext.Provider>
     );
   }
 
   async function decidirBorrador(confirmar: boolean) {
     if (!ficha) return;
     const ruta = confirmar ? `/tareas/${ficha.id}/borrador/confirmar` : `/tareas/${ficha.id}/borrador/descartar`;
-    try {
-      setFicha(await pedir<Tarea>(apiUrl, token, ruta, { method: 'POST', body: '{}' }));
-    } catch (error: unknown) {
-      setAviso(texto(error));
-    }
+    const tarea = await correr(pedir<Tarea>(apiUrl, token, ruta, { method: 'POST', body: '{}' }), confirmar ? 'El código y la máquina quedaron confirmados.' : 'El borrador quedó descartado.');
+    if (tarea) setFicha(tarea);
   }
 
   if (ficha) {
     return (
+      <TrabajoContext.Provider value={correr}>
       <section className="ficha">
         <button
           type="button"
@@ -578,17 +625,20 @@ export function PanelTareas({
             ficha={ficha}
             editar={editar}
             onActualizar={() => {
-              void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/odoo/actualizar`, { method: 'POST' })
-                .then(setFicha)
-                .catch((error: unknown) => setAviso(texto(error)));
+              void correr(pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/odoo/actualizar`, { method: 'POST' }), 'Odoo quedó actualizado.', 'Consultando Odoo…').then((tarea) => {
+                if (tarea) setFicha(tarea);
+              });
             }}
             elegir={(clase, odooId) => {
-              void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/odoo/vincular`, {
-                method: 'POST',
-                body: JSON.stringify({ clase, odooId }),
-              })
-                .then(setFicha)
-                .catch((error: unknown) => setAviso(texto(error)));
+              void correr(
+                pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/odoo/vincular`, {
+                  method: 'POST',
+                  body: JSON.stringify({ clase, odooId }),
+                }),
+                'El documento quedó vinculado.',
+              ).then((tarea) => {
+                if (tarea) setFicha(tarea);
+              });
             }}
           />
         ) : null}
@@ -598,9 +648,9 @@ export function PanelTareas({
           <button
             type="button"
             onClick={() => {
-              void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/campana`, { method: 'POST' })
-                .then(setFicha)
-                .catch((error: unknown) => setAviso(texto(error)));
+              void correr(pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/campana`, { method: 'POST' }), 'La cotización quedó en modo campaña.').then((tarea) => {
+                if (tarea) setFicha(tarea);
+              });
             }}
           >
             Pasar a campaña
@@ -709,7 +759,9 @@ export function PanelTareas({
         <Seguimiento seguimiento={ficha.seguimiento} parte="correos" />
         </>
         ) : null}
+        {velo}
       </section>
+      </TrabajoContext.Provider>
     );
   }
 
@@ -924,6 +976,7 @@ export function PanelTareas({
           ))}
         </ul>
       )}
+      {velo}
     </section>
   );
 }
@@ -1609,6 +1662,7 @@ function TarjetaTienda({
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
 }) {
+  const correr = useTrabajo();
   const claveVista = `${tareaId}:${tienda.id}`;
   const [nota, setNota] = useState('');
   const [codigo, setCodigo] = useState(tienda.codigo_equipo ?? '');
@@ -1700,15 +1754,17 @@ function TarjetaTienda({
           className="cuenta-alta"
           onSubmit={(evento) => {
             evento.preventDefault();
-            void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas`, {
-              method: 'POST',
-              body: JSON.stringify({ tipo: 'seguimiento', texto: nota, tiendaId: tienda.id }),
-            })
-              .then((guardada) => {
-                setNota('');
-                alGuardar(guardada);
-              })
-              .catch((error: unknown) => alFallar(texto(error)));
+            void correr(
+              pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas`, {
+                method: 'POST',
+                body: JSON.stringify({ tipo: 'seguimiento', texto: nota, tiendaId: tienda.id }),
+              }),
+              'El seguimiento quedó guardado.',
+            ).then((guardada) => {
+              if (!guardada) return;
+              setNota('');
+              alGuardar(guardada);
+            });
           }}
         >
           <label>
@@ -1721,9 +1777,9 @@ function TarjetaTienda({
               <button
                 type="button"
                 onClick={() => {
-                  void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/atender`, { method: 'POST' })
-                    .then(alGuardar)
-                    .catch((error: unknown) => alFallar(texto(error)));
+                  void correr(pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/atender`, { method: 'POST' }), 'La tienda quedó atendida.').then((tarea) => {
+                    if (tarea) alGuardar(tarea);
+                  });
                 }}
               >
                 Marcar atendida
@@ -1732,15 +1788,17 @@ function TarjetaTienda({
             <button
               type="button"
               onClick={() => {
-                void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas`, {
-                  method: 'POST',
-                  body: JSON.stringify({ tipo: 'incidente', texto: nota, tiendaId: tienda.id }),
-                })
-                  .then((guardada) => {
-                    setNota('');
-                    alGuardar(guardada);
-                  })
-                  .catch((error: unknown) => alFallar(texto(error)));
+                void correr(
+                  pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas`, {
+                    method: 'POST',
+                    body: JSON.stringify({ tipo: 'incidente', texto: nota, tiendaId: tienda.id }),
+                  }),
+                  'El incidente quedó guardado.',
+                ).then((guardada) => {
+                  if (!guardada) return;
+                  setNota('');
+                  alGuardar(guardada);
+                });
               }}
             >
               Anotar incidente
@@ -1756,12 +1814,15 @@ function TarjetaTienda({
             type="button"
             className="primario"
             onClick={() => {
-              void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/realizar`, {
-                method: 'POST',
-                body: JSON.stringify({ codigo }),
-              })
-                .then(alGuardar)
-                .catch((error: unknown) => alFallar(texto(error)));
+              void correr(
+                pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/realizar`, {
+                  method: 'POST',
+                  body: JSON.stringify({ codigo }),
+                }),
+                'La tienda quedó realizada.',
+              ).then((tarea) => {
+                if (tarea) alGuardar(tarea);
+              });
             }}
           >
             Marcar tienda realizada
@@ -2045,6 +2106,7 @@ function HilosCotizacion({
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
+  const correr = useTrabajo();
   const [numero, setNumero] = useState(String(hilos.length || cantidad || ''));
   const [reporte, setReporte] = useState('');
   const [imprimiendo, setImprimiendo] = useState(false);
@@ -2064,9 +2126,9 @@ function HilosCotizacion({
           className="cantidad-hilos"
           onSubmit={(evento) => {
             evento.preventDefault();
-            void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos`, { method: 'POST', body: JSON.stringify({ cantidad: Number(numero) }) })
-              .then(alGuardar)
-              .catch((error: unknown) => alFallar(texto(error)));
+            void correr(pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos`, { method: 'POST', body: JSON.stringify({ cantidad: Number(numero) }) }), 'Los hilos quedaron guardados.').then((tarea) => {
+              if (tarea) alGuardar(tarea);
+            });
           }}
         >
           <label htmlFor={`cantidad-hilos-${tareaId}`}>Cantidad de hilos</label>
@@ -2121,12 +2183,11 @@ function HilosCotizacion({
                         window.open(abierta.enlace, '_blank', 'noopener');
                         return;
                       }
-                      void pedir<Tarea & { enlaceInsumos?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/insumos`, { method: 'POST', body: '{}' })
-                        .then((tarea) => {
-                          alGuardar(tarea);
-                          if (tarea.enlaceInsumos) window.open(tarea.enlaceInsumos, '_blank', 'noopener');
-                        })
-                        .catch((error: unknown) => alFallar(texto(error)));
+                      void correr(pedir<Tarea & { enlaceInsumos?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/insumos`, { method: 'POST', body: '{}' }), 'Los insumos quedaron pedidos.', 'Pidiendo insumos…').then((tarea) => {
+                        if (!tarea) return;
+                        alGuardar(tarea);
+                        if (tarea.enlaceInsumos) window.open(tarea.enlaceInsumos, '_blank', 'noopener');
+                      });
                     }}
                   >
                     {fabricaciones.some((item) => item.hiloId === hilo.id) ? 'Abrir materiales' : 'Pedir insumos'}
@@ -2137,9 +2198,9 @@ function HilosCotizacion({
                     type="button"
                     onClick={() => {
                       setReporte('');
-                      void pedir<{ texto: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/reporte`, { method: 'POST', body: '{}' })
-                        .then((respuesta) => setReporte(respuesta.texto))
-                        .catch((error: unknown) => alFallar(texto(error)));
+                      void correr(pedir<{ texto: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/reporte`, { method: 'POST', body: '{}' }), 'El reporte quedó pedido.', 'Pidiendo el reporte…').then((respuesta) => {
+                        if (respuesta) setReporte(respuesta.texto);
+                      });
                     }}
                   >
                     Pedir reporte
@@ -2151,12 +2212,11 @@ function HilosCotizacion({
                     onClick={() => {
                       if (!window.confirm('¿Confirmar la orden de fabricación? Los materiales marcados quedan como consumidos.')) return;
                       setReporte('');
-                      void pedir<Tarea & { mensaje?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/accion`, { method: 'POST', body: JSON.stringify({ accion: 'confirmar-orden' }) })
-                        .then((tarea) => {
-                          setReporte(tarea.mensaje ?? 'La orden quedó confirmada.');
-                          alGuardar(tarea);
-                        })
-                        .catch((error: unknown) => alFallar(texto(error)));
+                      void correr(pedir<Tarea & { mensaje?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/accion`, { method: 'POST', body: JSON.stringify({ accion: 'confirmar-orden' }) }), 'La orden quedó confirmada.', 'Confirmando la orden…').then((tarea) => {
+                        if (!tarea) return;
+                        setReporte(tarea.mensaje ?? 'La orden quedó confirmada.');
+                        alGuardar(tarea);
+                      });
                     }}
                   >
                     Confirmar orden
@@ -2169,9 +2229,10 @@ function HilosCotizacion({
                     onClick={() => {
                       setImprimiendo(true);
                       setReporte('');
-                      void pedir<{ texto: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/imprimir`, { method: 'POST', body: '{}' })
-                        .then((respuesta) => setReporte(respuesta.texto))
-                        .catch((error: unknown) => alFallar(texto(error)))
+                      void correr(pedir<{ texto: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/imprimir`, { method: 'POST', body: '{}' }), 'La orden se envió a imprimir.', 'Enviando a imprimir…')
+                        .then((respuesta) => {
+                          if (respuesta) setReporte(respuesta.texto);
+                        })
                         .finally(() => setImprimiendo(false));
                     }}
                   >
@@ -2249,6 +2310,7 @@ function CorregirHilo({
   const [motivoFijo, setMotivoFijo] = useState(MOTIVOS_SIN_INSTALAR[0]);
   const [motivoLibre, setMotivoLibre] = useState('');
   const [comentario, setComentario] = useState('');
+  const correr = useTrabajo();
   const [comentarioAlmacen, setComentarioAlmacen] = useState('');
   const [ampliaInstalacion, setAmpliaInstalacion] = useState<{ url: string; nombre: string; pie: string } | null>(null);
   const fotosSinCodigo = useMemo(
@@ -2286,26 +2348,29 @@ function CorregirHilo({
   }, [hilo.id, hilo.contenedor, hilo.maquina, hilo.chip_celular, hilo.modem_imei, hilo.modem_serie]);
 
   function guardar(datos: Record<string, string | undefined>) {
-    void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}`, {
-      method: 'POST',
-      body: JSON.stringify(datos),
-    })
-      .then(alGuardar)
-      .catch((error: unknown) => alFallar(texto(error)));
+    void correr(
+      pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}`, {
+        method: 'POST',
+        body: JSON.stringify(datos),
+      }),
+    ).then((tarea) => {
+      if (tarea) alGuardar(tarea);
+    });
   }
 
   function actuar(accion: string, extra: Record<string, unknown> = {}) {
     setNotaAccion('');
-    void pedir<Tarea & { mensaje?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/accion`, {
-      method: 'POST',
-      body: JSON.stringify({ accion, ...extra }),
-    })
-      .then((tarea) => {
-        setNotaAccion(tarea.mensaje ?? 'Quedó registrado.');
-        if (accion === 'comentario-instalacion') setComentario('');
-        alGuardar(tarea);
-      })
-      .catch((error: unknown) => alFallar(texto(error)));
+    void correr(
+      pedir<Tarea & { mensaje?: string }>(apiUrl, token, `/tareas/${tareaId}/hilos/${hilo.id}/accion`, {
+        method: 'POST',
+        body: JSON.stringify({ accion, ...extra }),
+      }),
+    ).then((tarea) => {
+      if (!tarea) return;
+      setNotaAccion(tarea.mensaje ?? 'Quedó registrado.');
+      if (accion === 'comentario-instalacion') setComentario('');
+      alGuardar(tarea);
+    });
   }
 
   function subir(accion: string, archivos: FileList | null, comentarioFoto = '') {
@@ -2317,12 +2382,10 @@ function CorregirHilo({
 
   function releer(notaId: string) {
     setLeyendo(notaId);
-    void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas/${notaId}/releer`, {
-      method: 'POST',
-      body: '{}',
-    })
-      .then(alGuardar)
-      .catch((error: unknown) => alFallar(texto(error)))
+    void correr(pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/notas/${notaId}/releer`, { method: 'POST', body: '{}' }), 'La foto quedó leída de nuevo.', 'Leyendo la foto…')
+      .then((tarea) => {
+        if (tarea) alGuardar(tarea);
+      })
       .finally(() => setLeyendo(''));
   }
 
@@ -2569,6 +2632,7 @@ function FotoRegularizar({
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
+  const correr = useTrabajo();
   const [archivo, setArchivo] = useState<File | null>(null);
   const [vista, setVista] = useState<string | null>(null);
   const idFoto = `foto-${clase}-${zona ?? 'x'}-${hiloId}`;
@@ -2599,21 +2663,24 @@ function FotoRegularizar({
           const lector = new FileReader();
           lector.onload = () => {
             const contenido = String(lector.result).split(',')[1] ?? '';
-            void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hiloId}/foto`, {
-              method: 'POST',
-              body: JSON.stringify({
-                clase,
-                zona,
-                nombre: archivo.name,
-                mime: archivo.type || 'image/jpeg',
-                contenido,
+            void correr(
+              pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/hilos/${hiloId}/foto`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  clase,
+                  zona,
+                  nombre: archivo.name,
+                  mime: archivo.type || 'image/jpeg',
+                  contenido,
+                }),
               }),
-            })
-              .then((tarea) => {
-                setArchivo(null);
-                alGuardar(tarea);
-              })
-              .catch((error: unknown) => alFallar(texto(error)));
+              'La foto quedó guardada.',
+              'Subiendo la foto…',
+            ).then((tarea) => {
+              if (!tarea) return;
+              setArchivo(null);
+              alGuardar(tarea);
+            });
           };
           lector.readAsDataURL(archivo);
         }}
@@ -2637,6 +2704,7 @@ function Transferir({
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
+  const correr = useTrabajo();
   const [cuentas, setCuentas] = useState<Array<{ correo: string; nombre: string }>>([]);
   const [correo, setCorreo] = useState('');
   useEffect(() => {
@@ -2650,9 +2718,9 @@ function Transferir({
       onSubmit={(evento) => {
         evento.preventDefault();
         if (!correo) return;
-        void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/transferir`, { method: 'POST', body: JSON.stringify({ correo }) })
-          .then(alGuardar)
-          .catch((error: unknown) => alFallar(texto(error)));
+        void correr(pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/transferir`, { method: 'POST', body: JSON.stringify({ correo }) }), 'La tarea quedó transferida.').then((tarea) => {
+          if (tarea) alGuardar(tarea);
+        });
       }}
     >
       <label htmlFor="transferir">Transferir a</label>
@@ -2687,6 +2755,7 @@ function Bitacora({
   alGuardar: (tarea: Tarea) => void;
   alFallar: (mensaje: string) => void;
 }) {
+  const correr = useTrabajo();
   const verAcciones = parte === 'acciones' || parte === 'todo';
   const verTiempo = parte === 'tiempo' || parte === 'todo';
   const [modal, setModal] = useState<'seguimiento' | 'incidente' | 'cierre' | null>(null);
@@ -2724,7 +2793,8 @@ function Bitacora({
   }
 
   async function tomar() {
-    alGuardar(await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/tomar`, { method: 'POST' }));
+    const tarea = await correr(pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/tomar`, { method: 'POST' }), 'La tarea quedó tomada.');
+    if (tarea) alGuardar(tarea);
   }
 
   async function enviar(evento: FormEvent) {
@@ -2738,8 +2808,13 @@ function Bitacora({
       if (elegidas.length > 1) cuerpo.archivos = await Promise.all(elegidas.map((item) => leerFoto(item)));
       const ruta = modal === 'cierre' ? `/tareas/${ficha.id}/cerrar` : `/tareas/${ficha.id}/notas`;
       if (modal !== 'cierre') cuerpo.tipo = modal;
-      alGuardar(await pedir<Tarea>(apiUrl, token, ruta, { method: 'POST', body: JSON.stringify(cuerpo) }));
+      const tarea = await correr(
+        pedir<Tarea>(apiUrl, token, ruta, { method: 'POST', body: JSON.stringify(cuerpo) }),
+        modal === 'cierre' ? 'La tarea quedó cerrada.' : 'La nota quedó guardada.',
+      );
       setGuardando(false);
+      if (!tarea) return;
+      alGuardar(tarea);
       limpiar();
     } catch (error: unknown) {
       setGuardando(false);
@@ -2748,15 +2823,18 @@ function Bitacora({
   }
 
   async function validar() {
-    alGuardar(await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/validar`, { method: 'POST', body: JSON.stringify({ horas: 4 }) }));
+    const tarea = await correr(pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/validar`, { method: 'POST', body: JSON.stringify({ horas: 4 }) }), 'La tarea vuelve a salir en 4 horas.');
+    if (tarea) alGuardar(tarea);
   }
 
   async function guardarEdicion(evento: FormEvent, notaId: string) {
     evento.preventDefault();
     setGuardando(true);
     try {
-      alGuardar(await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${notaId}/editar`, { method: 'POST', body: JSON.stringify({ texto: textoNota }) }));
+      const tarea = await correr(pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${notaId}/editar`, { method: 'POST', body: JSON.stringify({ texto: textoNota }) }), 'La nota quedó corregida.');
       setGuardando(false);
+      if (!tarea) return;
+      alGuardar(tarea);
       setEditando(null);
       setTextoNota('');
     } catch (error: unknown) {
@@ -2770,13 +2848,16 @@ function Bitacora({
     if (!anulando) return;
     setGuardando(true);
     try {
-      alGuardar(
-        await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${anulando}/anular`, {
+      const tarea = await correr(
+        pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/notas/${anulando}/anular`, {
           method: 'POST',
           body: JSON.stringify({ texto: motivo }),
         }),
+        'La nota quedó anulada.',
       );
       setGuardando(false);
+      if (!tarea) return;
+      alGuardar(tarea);
       limpiar();
     } catch (error: unknown) {
       setGuardando(false);
@@ -3059,6 +3140,24 @@ function ListaVerMas<T>({
   );
 }
 
+function ModalEspera({ titulo, texto, alCerrar }: { titulo: string; texto?: string; alCerrar?: () => void }) {
+  return (
+    <div className="modal-fondo" onMouseDown={alCerrar}>
+      <div className="modal modal-espera" role="dialog" aria-modal="true" aria-labelledby="titulo-espera" onMouseDown={(evento) => evento.stopPropagation()}>
+        <h3 id="titulo-espera">{titulo}</h3>
+        {texto ? <p className="meta">{texto}</p> : null}
+        {alCerrar ? (
+          <div className="modal-acciones">
+            <button type="button" className="primario" onClick={alCerrar}>
+              Cerrar
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function Cuadro({ titulo, ayuda, alCerrar, children }: { titulo: string; ayuda: string; alCerrar: () => void; children: ReactNode }) {
   useEffect(() => {
     const previo = document.body.style.overflow;
@@ -3201,6 +3300,7 @@ function AccionesAsunto({
   alListo: () => void;
   alFallar: (mensaje: string) => void;
 }) {
+  const correr = useTrabajo();
   const [modal, setModal] = useState<'seguimiento' | 'incidente' | 'cierre' | null>(null);
   const [textoNota, setTextoNota] = useState('');
   const [foto, setFoto] = useState<File | null>(null);
@@ -3220,13 +3320,17 @@ function AccionesAsunto({
       const cuerpo: { tipo?: string; texto: string; archivo?: { nombre: string; mime: string; contenido: string } } = { texto: textoNota };
       if (foto) cuerpo.archivo = await leerFoto(foto);
       if (modal === 'cierre') {
-        await pedir(apiUrl, token, `/hilos/${mensajeId}/cerrar`, { method: 'POST', body: JSON.stringify(cuerpo) });
+        const cerrado = await correr(pedir(apiUrl, token, `/hilos/${mensajeId}/cerrar`, { method: 'POST', body: JSON.stringify(cuerpo) }), 'El asunto quedó cerrado.');
         setGuardando(false);
-        alListo();
+        if (cerrado) alListo();
         return;
       }
       cuerpo.tipo = modal;
-      await pedir(apiUrl, token, `/hilos/${mensajeId}/notas`, { method: 'POST', body: JSON.stringify(cuerpo) });
+      const nota = await correr(pedir(apiUrl, token, `/hilos/${mensajeId}/notas`, { method: 'POST', body: JSON.stringify(cuerpo) }), 'La nota quedó guardada.');
+      if (!nota) {
+        setGuardando(false);
+        return;
+      }
       setGuardando(false);
       setModal(null);
       alListo();

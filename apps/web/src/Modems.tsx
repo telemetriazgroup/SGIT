@@ -10,6 +10,8 @@ type Modem = {
   salida: string;
   cantidad: number;
   fecha: string | null;
+  situacion?: string;
+  comentario?: string;
 };
 
 type Pagina = {
@@ -126,6 +128,24 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
     }
   }
 
+  async function anotar(modem: Modem, situacion: string, comentario: string) {
+    setOcupado(true);
+    setAviso(null);
+    try {
+      const guardado = await pedir<Modem>(apiUrl, token, `/modems/${modem.id}/nota`, {
+        method: 'POST',
+        body: JSON.stringify({ situacion, comentario }),
+      });
+      setModems((lista) => lista.map((item) => (item.id === guardado.id ? { ...item, ...guardado } : item)));
+      setElegido((actual) => (actual && actual.id === guardado.id ? { ...actual, ...guardado } : actual));
+      setAviso('El comentario quedó guardado.');
+    } catch (error: unknown) {
+      setAviso(texto(error));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
   const desde = total === 0 ? 0 : (pagina - 1) * 40 + 1;
   const hasta = Math.min(pagina * 40, total);
 
@@ -141,6 +161,13 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
       {aviso ? <p className={aviso.startsWith('No se') || aviso.includes('no tiene') ? 'error' : 'bajada'}>{aviso}</p> : null}
       {elegido ? (
         <div id="modem-elegido" className="zona-elegida">
+          <NotaNumero
+            numero={elegido.chip || elegido.serie}
+            situacion={elegido.situacion ?? ''}
+            comentario={elegido.comentario ?? ''}
+            ocupado={ocupado}
+            onGuardar={(situacion, comentario) => void anotar(elegido, situacion, comentario)}
+          />
           <OrdenModem detalle={elegido} ocupado={ocupado} onCerrar={() => setElegido(null)} onActualizar={() => void refrescarOrden(elegido)} />
         </div>
       ) : null}
@@ -186,6 +213,7 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
               <th>Chip</th>
               <th>Salida</th>
               <th>Fecha</th>
+              <th>Nota</th>
             </tr>
           </thead>
           <tbody>
@@ -208,6 +236,7 @@ export function PanelModems({ apiUrl, token }: { apiUrl: string; token: string }
                 <td>{modem.chip}</td>
                 <td>{modem.salida}</td>
                 <td>{modem.fecha ?? ''}</td>
+                <td>{textoNota(modem.situacion, modem.comentario)}</td>
               </tr>
             ))}
           </tbody>
@@ -237,6 +266,69 @@ async function pedir<T>(apiUrl: string, token: string, ruta: string, init?: Requ
     throw new Error(cuerpo?.message ?? 'No se pudo completar la operación.');
   }
   return (await respuesta.json()) as T;
+}
+
+const SITUACIONES: Array<[string, string]> = [
+  ['', 'Sin marca'],
+  ['activo', 'Activo'],
+  ['observacion', 'En observación'],
+  ['suspendido', 'Suspendido'],
+  ['baja', 'De baja'],
+];
+
+function textoNota(situacion?: string, comentario?: string): string {
+  const marca = SITUACIONES.find(([valor]) => valor === (situacion ?? ''))?.[1] ?? '';
+  const visible = marca === 'Sin marca' ? '' : marca;
+  return [visible, comentario?.trim()].filter(Boolean).join(' · ') || '—';
+}
+
+function NotaNumero({
+  numero,
+  situacion,
+  comentario,
+  ocupado,
+  onGuardar,
+}: {
+  numero: string;
+  situacion: string;
+  comentario: string;
+  ocupado: boolean;
+  onGuardar: (situacion: string, comentario: string) => void;
+}) {
+  const [marca, setMarca] = useState(situacion);
+  const [textoNotaLocal, setTextoNotaLocal] = useState(comentario);
+  useEffect(() => {
+    setMarca(situacion);
+    setTextoNotaLocal(comentario);
+  }, [numero, situacion, comentario]);
+  return (
+    <form
+      className="nota-numero"
+      onSubmit={(evento) => {
+        evento.preventDefault();
+        onGuardar(marca, textoNotaLocal);
+      }}
+    >
+      <p>Número {numero}</p>
+      <label>
+        Estado
+        <select value={marca} onChange={(evento) => setMarca(evento.target.value)}>
+          {SITUACIONES.map(([valor, nombre]) => (
+            <option key={valor || 'sin'} value={valor}>
+              {nombre}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Comentario
+        <textarea value={textoNotaLocal} rows={2} maxLength={500} onChange={(evento) => setTextoNotaLocal(evento.target.value)} />
+      </label>
+      <button type="submit" className="primario" disabled={ocupado}>
+        {ocupado ? 'Guardando…' : 'Guardar'}
+      </button>
+    </form>
+  );
 }
 
 function texto(error: unknown): string {

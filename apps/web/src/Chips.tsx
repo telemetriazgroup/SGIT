@@ -11,6 +11,8 @@ type Chip = {
   telemetria?: string;
   orden_mo?: string;
   ocupado_fecha?: string | null;
+  situacion?: string;
+  comentario?: string;
 };
 
 type Pagina = {
@@ -202,6 +204,24 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
     void cargar(1, consulta, archivados, filtro, siguiente).catch((error: unknown) => setAviso(texto(error)));
   }
 
+  async function anotar(chip: Chip, situacion: string, comentario: string) {
+    setOcupado(true);
+    setAviso(null);
+    try {
+      const guardado = await pedir<Chip>(apiUrl, token, `/chips/${chip.id}/nota`, {
+        method: 'POST',
+        body: JSON.stringify({ situacion, comentario }),
+      });
+      setChips((lista) => lista.map((item) => (item.id === guardado.id ? { ...item, ...guardado } : item)));
+      setOrden((actual) => (actual && actual.id === guardado.id ? { ...actual, ...guardado } : actual));
+      setAviso('El comentario quedó guardado.');
+    } catch (error: unknown) {
+      setAviso(texto(error));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
   const desde = total === 0 ? 0 : (pagina - 1) * 40 + 1;
   const hasta = Math.min(pagina * 40, total);
 
@@ -220,6 +240,13 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
       {aviso ? <p className={aviso.startsWith('No se') || aviso.includes('no es válido') || aviso.includes('ya está') ? 'error' : 'bajada'}>{aviso}</p> : null}
       {orden ? (
         <div id="chip-elegido" className="zona-elegida">
+          <NotaNumero
+            numero={orden.celular}
+            situacion={orden.situacion ?? ''}
+            comentario={orden.comentario ?? ''}
+            ocupado={ocupado}
+            onGuardar={(situacion, comentario) => void anotar(orden, situacion, comentario)}
+          />
           {orden.estado === 'ocupado' && orden.orden_mo ? (
             <OrdenFabricacion apiUrl={apiUrl} token={token} chip={orden} onCerrar={() => setOrden(null)} />
           ) : (
@@ -309,6 +336,7 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
               <th>IMEI</th>
               <th>Celular</th>
               <th>En Odoo</th>
+              <th>Nota</th>
               <th></th>
             </tr>
           </thead>
@@ -321,6 +349,7 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
                   <td><input aria-label="IMEI" value={borrador.imei} onChange={(evento) => setBorrador({ ...borrador, imei: evento.target.value })} /></td>
                   <td><input aria-label="Celular" value={borrador.celular} onChange={(evento) => setBorrador({ ...borrador, celular: evento.target.value })} /></td>
                   <td>{etiquetaEstado(chip)}</td>
+                  <td>{textoNota(chip.situacion, chip.comentario)}</td>
                   <td className="chips-acciones">
                     <button type="button" disabled={ocupado} onClick={() => void guardarEdicion(false)}>Guardar</button>
                     <button type="button" className="secundario" onClick={() => setEdicion(null)}>Cancelar</button>
@@ -344,6 +373,7 @@ export function PanelChips({ apiUrl, token }: { apiUrl: string; token: string })
                     </button>
                   </td>
                   <td>{etiquetaEstado(chip)}</td>
+                  <td>{textoNota(chip.situacion, chip.comentario)}</td>
                   <td className="chips-acciones">
                     <button
                       type="button"
@@ -445,6 +475,69 @@ function pideEliminar(error: unknown): boolean {
 async function consultarEn(apiUrl: string, token: string): Promise<string> {
   const resultado = await pedir<{ leidos: number; disponibles: number; ocupados: number; sinDato: number }>(apiUrl, token, '/chips/odoo', { method: 'POST', body: '{}' });
   return `Odoo respondió por ${resultado.leidos} chips: ${resultado.disponibles} disponibles, ${resultado.ocupados} ocupados y ${resultado.sinDato} sin dato.`;
+}
+
+const SITUACIONES: Array<[string, string]> = [
+  ['', 'Sin marca'],
+  ['activo', 'Activo'],
+  ['observacion', 'En observación'],
+  ['suspendido', 'Suspendido'],
+  ['baja', 'De baja'],
+];
+
+function textoNota(situacion?: string, comentario?: string): string {
+  const marca = SITUACIONES.find(([valor]) => valor === (situacion ?? ''))?.[1] ?? '';
+  const visible = marca === 'Sin marca' ? '' : marca;
+  return [visible, comentario?.trim()].filter(Boolean).join(' · ') || '—';
+}
+
+function NotaNumero({
+  numero,
+  situacion,
+  comentario,
+  ocupado,
+  onGuardar,
+}: {
+  numero: string;
+  situacion: string;
+  comentario: string;
+  ocupado: boolean;
+  onGuardar: (situacion: string, comentario: string) => void;
+}) {
+  const [marca, setMarca] = useState(situacion);
+  const [textoNotaLocal, setTextoNotaLocal] = useState(comentario);
+  useEffect(() => {
+    setMarca(situacion);
+    setTextoNotaLocal(comentario);
+  }, [numero, situacion, comentario]);
+  return (
+    <form
+      className="nota-numero"
+      onSubmit={(evento) => {
+        evento.preventDefault();
+        onGuardar(marca, textoNotaLocal);
+      }}
+    >
+      <p>Número {numero}</p>
+      <label>
+        Estado
+        <select value={marca} onChange={(evento) => setMarca(evento.target.value)}>
+          {SITUACIONES.map(([valor, nombre]) => (
+            <option key={valor || 'sin'} value={valor}>
+              {nombre}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Comentario
+        <textarea value={textoNotaLocal} rows={2} maxLength={500} onChange={(evento) => setTextoNotaLocal(evento.target.value)} />
+      </label>
+      <button type="submit" className="primario" disabled={ocupado}>
+        {ocupado ? 'Guardando…' : 'Guardar'}
+      </button>
+    </form>
+  );
 }
 
 function etiquetaEstado(chip: Chip): string {

@@ -15,7 +15,11 @@ export type Modem = {
   salida: string;
   cantidad: number;
   fecha: string | null;
+  situacion: string;
+  comentario: string;
 };
+
+const SITUACIONES = ['', 'activo', 'observacion', 'suspendido', 'baja'];
 
 const TAMANO = 40;
 const CINCO_MINUTOS = 5 * 60 * 1000;
@@ -66,14 +70,15 @@ export class ModemsService {
 
   async listar(pagina: number, busqueda = '', estado = ''): Promise<{ modems: Modem[]; total: number; pagina: number; paginas: number; resumen: { disponibles: number; fabricados: number; salidas: number; producto: string } }> {
     const filtro = patron(busqueda);
-    const donde = `WHERE ($2::text = '' OR estado = $2) AND ($1::text IS NULL OR serie ILIKE $1 ESCAPE '\\' OR orden_mo ILIKE $1 ESCAPE '\\' OR chip ILIKE $1 ESCAPE '\\' OR salida ILIKE $1 ESCAPE '\\')`;
+    const donde = `WHERE ($2::text = '' OR estado = $2) AND ($1::text IS NULL OR serie ILIKE $1 ESCAPE '\\' OR orden_mo ILIKE $1 ESCAPE '\\' OR chip ILIKE $1 ESCAPE '\\' OR salida ILIKE $1 ESCAPE '\\' OR comentario ILIKE $1 ESCAPE '\\')`;
     const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM modem ${donde}`, [filtro, estado]);
     const total = Number(conteo.rows[0]?.total ?? 0);
     const paginas = Math.max(1, Math.ceil(total / TAMANO));
     const actual = Math.min(Math.max(1, pagina), paginas);
     const filas = await this.conexiones.pg.query<Modem>(
       `SELECT id, serie, producto, estado, orden_mo, chip, salida, cantidad::float8 AS cantidad,
-              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS fecha
+              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS fecha,
+              situacion, comentario
        FROM modem
        ${donde}
        ORDER BY CASE estado WHEN 'fabricado' THEN 0 WHEN 'salida' THEN 1 ELSE 2 END, ocupado_en DESC NULLS LAST, serie
@@ -83,10 +88,20 @@ export class ModemsService {
     return { modems: filas.rows, total, pagina: actual, paginas, resumen: await this.resumen() };
   }
 
+  async anotar(id: string, situacion: string, comentario: string): Promise<Modem> {
+    const marca = situacion.trim();
+    if (!SITUACIONES.includes(marca)) throw new BadRequestException('El estado es activo, en observación, suspendido o de baja.');
+    const texto = comentario.trim().slice(0, 500);
+    const resultado = await this.conexiones.pg.query(`UPDATE modem SET situacion = $2, comentario = $3 WHERE id = $1`, [id, marca, texto]);
+    if ((resultado.rowCount ?? 0) === 0) throw new NotFoundException('Ese módem ya no está.');
+    return this.uno(id);
+  }
+
   async ver(id: string): Promise<Modem & { movimientos: Array<{ fecha: string | null; referencia: string; desde: string; hacia: string; cantidad: number | null; estado: string }>; orden: (CopiaOrden & { leido_en: string | null }) | null }> {
     const fila = await this.conexiones.pg.query<Modem>(
       `SELECT id, serie, producto, estado, orden_mo, chip, salida, cantidad::float8 AS cantidad,
-              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD HH24:MI') AS fecha
+              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD HH24:MI') AS fecha,
+              situacion, comentario
        FROM modem WHERE id = $1`,
       [id],
     );
@@ -275,7 +290,8 @@ export class ModemsService {
   private async uno(id: string): Promise<Modem> {
     const fila = await this.conexiones.pg.query<Modem>(
       `SELECT id, serie, producto, estado, orden_mo, chip, salida, cantidad::float8 AS cantidad,
-              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS fecha
+              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS fecha,
+              situacion, comentario
        FROM modem WHERE id = $1`,
       [id],
     );

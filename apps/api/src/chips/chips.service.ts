@@ -18,8 +18,12 @@ export type Chip = {
   telemetria: string;
   orden_mo: string;
   ocupado_fecha: string | null;
+  situacion: string;
+  comentario: string;
   creado_en: string;
 };
+
+const SITUACIONES = ['', 'activo', 'observacion', 'suspendido', 'baja'];
 
 export type ResumenChips = {
   disponibles: number;
@@ -90,14 +94,15 @@ export class ChipsService {
     const donde = `WHERE archivado = $2 AND ($3::text = '' OR estado = $3)
       AND ($4::text = '' OR to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM') = $4)
       AND ($5::text = '' OR to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') = $5)
-      AND ($1::text IS NULL OR producto ILIKE $1 ESCAPE '\\' OR marca ILIKE $1 ESCAPE '\\' OR imei ILIKE $1 ESCAPE '\\' OR celular ILIKE $1 ESCAPE '\\')`;
+      AND ($1::text IS NULL OR producto ILIKE $1 ESCAPE '\\' OR marca ILIKE $1 ESCAPE '\\' OR imei ILIKE $1 ESCAPE '\\' OR celular ILIKE $1 ESCAPE '\\' OR comentario ILIKE $1 ESCAPE '\\')`;
     const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM chip ${donde}`, [filtro, archivados, estado, corteMes, corteDia]);
     const total = Number(conteo.rows[0]?.total ?? 0);
     const paginas = Math.max(1, Math.ceil(total / TAMANO));
     const actual = Math.min(Math.max(1, pagina), paginas);
     const filas = await this.conexiones.pg.query<Chip>(
       `SELECT id, producto, marca, imei, celular, archivado, estado, telemetria, orden_mo,
-              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS ocupado_fecha, creado_en
+              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS ocupado_fecha,
+              situacion, comentario, creado_en
        FROM chip
        ${donde}
        ORDER BY imei
@@ -138,6 +143,15 @@ export class ChipsService {
     }
     await this.reescribir(actual.id, limpio);
     return this.uno(actual.id);
+  }
+
+  async anotar(id: string, situacion: string, comentario: string): Promise<Chip> {
+    await this.uno(id);
+    const marca = situacion.trim();
+    if (!SITUACIONES.includes(marca)) throw new BadRequestException('El estado es activo, en observación, suspendido o de baja.');
+    const texto = comentario.trim().slice(0, 500);
+    await this.conexiones.pg.query(`UPDATE chip SET situacion = $2, comentario = $3 WHERE id = $1`, [id, marca, texto]);
+    return this.uno(id);
   }
 
   async archivar(id: string, archivado: boolean): Promise<Chip> {
@@ -441,7 +455,8 @@ export class ChipsService {
   private async uno(id: string): Promise<Chip> {
     const fila = await this.conexiones.pg.query<Chip>(
       `SELECT id, producto, marca, imei, celular, archivado, estado, telemetria, orden_mo,
-              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS ocupado_fecha, creado_en
+              to_char(ocupado_en AT TIME ZONE 'America/Lima', 'YYYY-MM-DD') AS ocupado_fecha,
+              situacion, comentario, creado_en
        FROM chip WHERE id = $1`,
       [id],
     );

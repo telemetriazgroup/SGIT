@@ -333,48 +333,30 @@ export class TareasService {
     const resultado = await this.conexiones.pg.query<FilaTarea>(`SELECT * FROM tarea WHERE id = $1`, [id]);
     const tarea = resultado.rows[0];
     if (!tarea) return null;
-    const guardados = Array.isArray(tarea.cots) ? tarea.cots.map(String) : [];
-    const numeros = (guardados.length > 0 ? guardados : String(tarea.cot ?? '').split('+')).filter((numero) => /^\d{6,}$/.test(numero));
-    if (numeros.length === 0) {
-      return {
-        ...tarea,
-        seguimiento: { momento: null, areas: [], linea: [] },
-        situaciones: await this.situacionesDe(tarea.id),
-        ...(await this.capaBitacora(tarea)),
-        borrador: await this.borradorDe(tarea.id),
-        asignacion: await this.asignacionConfirmada(tarea.id),
-        movimientos: await this.movimientosDespacho(tarea.id),
-        hilos: await listarHilos(this.conexiones.pg, tarea.id),
-        fabricaciones: await new FabricacionServicio(this.conexiones).deTarea(tarea.id),
-        odoo: await this.odooDe(tarea),
-        ...(await this.capaCampana(tarea)),
-      };
-    }
-    const donde = numeros
-      .map((_, indice) => `asunto ~ ('(^|[^0-9])' || $${indice + 1} || '([^0-9]|$)') OR texto ~ ('(^|[^0-9])' || $${indice + 1} || '([^0-9]|$)')`)
-      .join(' OR ');
-    const mensajes = await this.conexiones.pg.query<{ de: string; fecha: Date | null; asunto: string; texto: string }>(
-      `SELECT de, fecha, asunto, texto
-       FROM mensaje_correo
-       WHERE ${donde}
-       ORDER BY fecha ASC NULLS LAST, creado_en ASC
-       LIMIT 80`,
-      numeros,
-    );
-    const terminos = await this.terminosActivos();
-    const situaciones = await this.situacionesDe(tarea.id);
+    const [seguimiento, situaciones, bitacora, borrador, asignacion, movimientos, hilos, fabricaciones, odoo, campana] = await Promise.all([
+      this.seguimientoDe(tarea.id),
+      this.situacionesDe(tarea.id),
+      this.capaBitacora(tarea),
+      this.borradorDe(tarea.id),
+      this.asignacionConfirmada(tarea.id),
+      this.movimientosDespacho(tarea.id),
+      listarHilos(this.conexiones.pg, tarea.id),
+      new FabricacionServicio(this.conexiones).deTarea(tarea.id),
+      this.odooDe(tarea),
+      this.capaCampana(tarea),
+    ]);
     return {
       ...tarea,
-      seguimiento: armarSeguimiento(mensajes.rows, terminos),
+      seguimiento,
       situaciones,
-      ...(await this.capaBitacora(tarea)),
-      borrador: await this.borradorDe(tarea.id),
-      asignacion: await this.asignacionConfirmada(tarea.id),
-      movimientos: await this.movimientosDespacho(tarea.id),
-      hilos: await listarHilos(this.conexiones.pg, tarea.id),
-      fabricaciones: await new FabricacionServicio(this.conexiones).deTarea(tarea.id),
-      odoo: await this.odooDe(tarea),
-      ...(await this.capaCampana(tarea)),
+      ...bitacora,
+      borrador,
+      asignacion,
+      movimientos,
+      hilos,
+      fabricaciones,
+      odoo,
+      ...campana,
     };
   }
 
@@ -405,9 +387,30 @@ export class TareasService {
   }
 
   private async odooDe(tarea: FilaTarea): Promise<LecturaTarea | null> {
-    const lectura = await this.odoo.deTarea({ id: tarea.id, cot: tarea.cot, ticket: tarea.ticket, estado: tarea.estado }, false);
-    if (tarea.campana) await this.asimilarServicios(tarea, lectura?.venta.odoo_id ?? null);
-    return lectura;
+    return this.odoo.deTarea({ id: tarea.id, cot: tarea.cot, ticket: tarea.ticket, estado: tarea.estado }, false, false);
+  }
+
+  private async seguimientoDe(tareaId: string): Promise<Seguimiento> {
+    const mensajes = await this.conexiones.pg.query<{ de: string; fecha: Date | null; asunto: string; texto: string }>(
+      `SELECT de, fecha, asunto, texto
+       FROM mensaje_correo
+       WHERE gmail_thread_id IN (
+         SELECT m.gmail_thread_id
+         FROM mensaje_correo m
+         JOIN tarea t ON t.mensaje_id = m.id
+         WHERE t.id = $1
+         UNION
+         SELECT m.gmail_thread_id
+         FROM situacion_hilo s
+         JOIN mensaje_correo m ON m.id = s.mensaje_id
+         WHERE s.tarea_id = $1
+       )
+       ORDER BY fecha ASC NULLS LAST, creado_en ASC
+       LIMIT 80`,
+      [tareaId],
+    );
+    if (mensajes.rows.length === 0) return { momento: null, areas: [], linea: [] };
+    return armarSeguimiento(mensajes.rows, await this.terminosActivos());
   }
 
   formasFecha() {
@@ -778,10 +781,11 @@ export class TareasService {
   }
 
   private async fichaConOdoo(id: string, forzar: boolean) {
-    const resultado = await this.conexiones.pg.query<FilaTarea>(`SELECT id, cot, ticket, estado FROM tarea WHERE id = $1`, [id]);
+    const resultado = await this.conexiones.pg.query<FilaTarea>(`SELECT * FROM tarea WHERE id = $1`, [id]);
     const tarea = resultado.rows[0];
     if (!tarea) throw new NotFoundException('No está esa tarea.');
-    await this.odoo.deTarea(tarea, forzar);
+    const lectura = await this.odoo.deTarea(tarea, forzar);
+    if (tarea.campana) await this.asimilarServicios(tarea, lectura?.venta.odoo_id ?? null);
     return this.ficha(id);
   }
 

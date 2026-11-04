@@ -81,6 +81,16 @@ export class ChipsController {
     return this.chips.editar(id, cuerpo ?? {}, Boolean(cuerpo?.reemplazar));
   }
 
+  @Post('chips/:id/nota')
+  async nota(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { situacion?: string; comentario?: string },
+  ) {
+    await this.exigir(autorizacion);
+    return this.chips.anotar(id, cuerpo?.situacion ?? '', cuerpo?.comentario ?? '');
+  }
+
   @Post('chips/:id/archivar')
   async archivar(
     @Headers('authorization') autorizacion: string | undefined,

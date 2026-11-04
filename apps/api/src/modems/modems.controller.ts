@@ -1,4 +1,4 @@
-import { Controller, ForbiddenException, Get, Headers, Inject, Param, Post, Query, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Headers, Inject, Param, Post, Query, UnauthorizedException } from '@nestjs/common';
 import { IdentidadService } from '../identidad/identidad.service';
 import { puedeEditarTarea } from '../identidad/permisos';
 import { ModemsService } from './modems.service';
@@ -39,6 +39,16 @@ export class ModemsController {
   async orden(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     await this.exigir(autorizacion);
     return this.modems.verOrden(id, true);
+  }
+
+  @Post('modems/:id/nota')
+  async nota(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { situacion?: string; comentario?: string },
+  ) {
+    await this.exigir(autorizacion);
+    return this.modems.anotar(id, cuerpo?.situacion ?? '', cuerpo?.comentario ?? '');
   }
 
   @Get('modems/:id')

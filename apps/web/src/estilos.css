@@ -681,6 +681,38 @@ button:disabled {
   grid-template-columns: 1fr 1fr;
 }
 
+.nota-numero {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin: 0 0 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #e4ddd4;
+  border-radius: 12px;
+}
+
+.nota-numero p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.nota-numero label {
+  display: grid;
+  gap: 4px;
+}
+
+.nota-numero textarea,
+.nota-numero select {
+  width: 100%;
+}
+
+.nota-numero button {
+  margin: 0;
+  height: 38px;
+}
+
 .zona-elegida {
   scroll-margin-top: 12px;
   margin-bottom: 16px;
@@ -1228,6 +1260,10 @@ button.enlace:disabled {
   padding: 18px 16px 20px;
   background: #fffdf8;
   border-top: 6px solid #1f4d3a;
+}
+
+.modal-espera {
+  text-align: center;
 }
 
 .modal h3 {

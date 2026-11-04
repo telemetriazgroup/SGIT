@@ -151,7 +151,8 @@ export class OdooServicio {
     return { aceptada: true };
   }
 
-  async deTarea(tarea: TareaOdoo, forzar: boolean): Promise<LecturaTarea | null> {
+  async deTarea(tarea: TareaOdoo, forzar: boolean, enVivo = true): Promise<LecturaTarea | null> {
+    if (!enVivo) return this.guardado(tarea.id);
     const config = await this.config();
     const abierta = tarea.estado !== 'resuelta';
     if (config && abierta && (forzar || ((await this.habilitada(tarea.id)) && (await this.estaVieja(tarea.id))))) {
