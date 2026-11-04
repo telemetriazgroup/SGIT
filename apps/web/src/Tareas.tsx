@@ -867,11 +867,11 @@ export function PanelTareas({
       </div>
       {sector === 'tareas' ? (
         tareas.length === 0 ? (
-          <p>{consulta ? 'No hay tareas con ese texto.' : prioridad ? 'Todavía no hay tareas.' : 'El superusuario todavía no habilitó tareas.'}</p>
+          <p>{consulta ? 'No hay tareas con ese texto.' : editar ? 'Todavía no hay tareas.' : 'El superusuario todavía no habilitó tareas.'}</p>
         ) : (
           <ul className="lista">
             {tareas.map((tarea) => (
-              <li key={tarea.id} className={prioridad && !tarea.habilitada ? 'fila-marca solo-super' : 'fila-marca'}>
+              <li key={tarea.id} className={!tarea.habilitada ? 'fila-marca solo-super' : 'fila-marca'}>
                 {prioridad ? (
                   <label className="marca-habil">
                     <input
@@ -886,7 +886,7 @@ export function PanelTareas({
                   <span className="avatar" aria-hidden="true">
                     C
                   </span>
-                  <span className="quien">{tarea.campana ? 'Campaña' : 'COT'} {cotVisible(tarea.cot, tarea.cots)}</span>
+                  <span className="quien">{tarea.campana ? 'Campaña' : 'COT'} {cotVisible(tarea.cot, tarea.cots)}{!tarea.habilitada && !prioridad ? ' · Sin habilitar' : ''}</span>
                   <span className="resumen-fila">
                     <strong>{tarea.cliente || tarea.lugar || tarea.descripcion || 'Sin cliente'}</strong>
                     {tarea.campana ? <span className="extracto"> — {tarea.locales ?? 0} tiendas</span> : null}

@@ -84,7 +84,7 @@ export class TareasController {
       throw new BadRequestException('El sector es pendiente, otros o internos.');
     }
     const cola = atencion === 'por_atender' || atencion === 'atendido' || atencion === 'resuelto' ? atencion : null;
-    return this.tareas.sector(sector, numero(pagina), area?.trim() || null, busqueda ?? '', sector === 'internos' ? cola : null, usuario.rol === 'superusuario');
+    return this.tareas.sector(sector, numero(pagina), area?.trim() || null, busqueda ?? '', sector === 'internos' ? cola : null, usuario.rol === 'superusuario', veTodasLasTareas(usuario.rol));
   }
 
   @Post('hilos/:id/destino')
@@ -121,7 +121,7 @@ export class TareasController {
     @Query('vista') vista?: string,
   ) {
     const usuario = await this.exigir(autorizacion);
-    return this.tareas.listar(numero(pagina), busqueda ?? '', vista === 'resueltas', usuario.rol === 'superusuario');
+    return this.tareas.listar(numero(pagina), busqueda ?? '', vista === 'resueltas', usuario.rol === 'superusuario', veTodasLasTareas(usuario.rol));
   }
 
   @Post('habilitados')
@@ -619,6 +619,10 @@ function listaDe(
   if (lista.length > 0) return lista;
   const uno = archivoDe(archivo);
   return uno ? [uno] : [];
+}
+
+function veTodasLasTareas(rol: string): boolean {
+  return rol === 'superusuario' || rol === 'administrador';
 }
 
 function numero(valor?: string): number {

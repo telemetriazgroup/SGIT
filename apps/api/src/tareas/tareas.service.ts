@@ -147,8 +147,8 @@ export class TareasService {
     return cuenta;
   }
 
-  async listar(pagina: number, busqueda = '', resueltas = false, verOcultas = true): Promise<PaginaTareas> {
-    const cuentas = await this.cuentas(verOcultas);
+  async listar(pagina: number, busqueda = '', resueltas = false, verOcultas = true, verTareas = verOcultas): Promise<PaginaTareas> {
+    const cuentas = await this.cuentas(verOcultas, verTareas);
     const filtro = patronTexto(busqueda);
     const estado = resueltas ? `tarea.estado = 'resuelta'` : `tarea.estado <> 'resuelta'`;
     const donde = `WHERE ($1::text IS NULL
@@ -169,7 +169,7 @@ export class TareasService {
        AND tarea.cot <> '10000000000'
        AND ${estado}`;
     const publicada = `AND ($2::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))`;
-    const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM tarea ${donde} ${publicada}`, [filtro, verOcultas]);
+    const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM tarea ${donde} ${publicada}`, [filtro, verTareas]);
     const total = Number(conteo.rows[0]?.total ?? 0);
     const paginas = Math.max(1, Math.ceil(total / TAMANO));
     const actual = Math.min(Math.max(1, pagina), paginas);
@@ -193,7 +193,7 @@ export class TareasService {
        AND ($4::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))
        ORDER BY habilitada DESC, ${ordenUrgente('tarea')}
        LIMIT $2 OFFSET $3`,
-      [filtro, TAMANO, (actual - 1) * TAMANO, verOcultas],
+      [filtro, TAMANO, (actual - 1) * TAMANO, verTareas],
     );
     return { tareas: resultado.rows, total, pagina: actual, paginas, cuentas };
   }
@@ -205,8 +205,9 @@ export class TareasService {
     busqueda = '',
     atencion: 'por_atender' | 'atendido' | 'resuelto' | null = null,
     verOcultas = true,
+    verTareas = verOcultas,
   ): Promise<PaginaSector> {
-    const cuentas = await this.cuentas(verOcultas);
+    const cuentas = await this.cuentas(verOcultas, verTareas);
     const patron = patronArea(area);
     const texto = patronTexto(busqueda);
     const filtro =
@@ -2116,7 +2117,9 @@ export class TareasService {
   }
 
   async exigeVisible(correo: string, clase: 'tarea' | 'interno' | 'decision', clave: string): Promise<void> {
-    if (await this.esSuper(correo)) return;
+    const rol = await this.rolDe(correo);
+    if (rol === 'superusuario') return;
+    if (clase === 'tarea' && rol === 'administrador') return;
     if (!(await this.estaHabilitada(clase, clave))) throw new NotFoundException('El superusuario todavía no habilitó esto.');
   }
 
@@ -2140,8 +2143,12 @@ export class TareasService {
   }
 
   private async esSuper(correo: string): Promise<boolean> {
+    return (await this.rolDe(correo)) === 'superusuario';
+  }
+
+  private async rolDe(correo: string): Promise<string> {
     const fila = await this.conexiones.pg.query<{ rol: string }>(`SELECT rol FROM usuario WHERE correo = $1`, [correo]);
-    return fila.rows[0]?.rol === 'superusuario';
+    return fila.rows[0]?.rol ?? '';
   }
 
   private async niegaDespacho(correo: string): Promise<void> {
@@ -2226,7 +2233,7 @@ export class TareasService {
     return ancla.gmail_thread_id;
   }
 
-  private async cuentas(verOcultas = true): Promise<Cuentas> {
+  private async cuentas(verOcultas = true, verTareas = verOcultas): Promise<Cuentas> {
     const resultado = await this.conexiones.pg.query<{ tareas: string; pendientes: string; otros: string; internos: string }>(
       `WITH hilos AS (
          SELECT gmail_thread_id,
@@ -2240,7 +2247,7 @@ export class TareasService {
        )
        SELECT (SELECT count(*) FROM tarea
                  WHERE cot <> '10000000000' AND estado <> 'resuelta'
-                   AND ($1::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))
+                   AND ($2::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))
               )::text AS tareas,
               count(*) FILTER (WHERE pendiente AND NOT tarea AND NOT interna AND NOT archivado AND NOT resuelto
                 AND ($1::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'decision' AND pub.clave = hilos.gmail_thread_id))
@@ -2252,7 +2259,7 @@ export class TareasService {
                   AND ($1::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'interno' AND pub.clave = hilos.gmail_thread_id))
               )::text AS internos
        FROM hilos`,
-      [verOcultas],
+      [verOcultas, verTareas],
     );
     const fila = resultado.rows[0];
     return {
