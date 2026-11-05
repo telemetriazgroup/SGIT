@@ -105,7 +105,7 @@ function lanzar(): void {
   const guardar = (buf: Buffer, salida: NodeJS.WriteStream) => {
     const texto = buf.toString();
     salida.write(texto);
-    ultimas = (ultimas + texto).slice(-600);
+    ultimas = (ultimas + texto).slice(0, 1200);
     if (texto.includes('SGIT bot: pulso')) {
       ultimoPulso = Date.now();
       vioPulso = true;
@@ -128,10 +128,10 @@ function lanzar(): void {
     void api.soltar(yo).catch(() => undefined);
     void api.publicar('desconectado').catch(() => undefined);
     const pronto = Date.now() - lanzadoEn < 5_000;
-    const cola = ultimas.replace(/\s+/g, ' ').trim().slice(-180);
     const como = signal ? `señal ${signal}` : `código ${code ?? '?'}`;
-    void anotar('fallo', cola
-      ? `Cliente cerrado al abrir (${como}). ${cola}`
+    const causa = causaDe(ultimas);
+    void anotar('fallo', causa
+      ? `Cliente cerrado al abrir (${como}). ${causa}`
       : `Cliente cerrado al abrir (${como}). No escribió ningún error.`);
     setTimeout(() => {
       if (!hijo && !cortando) lanzar();
@@ -191,19 +191,19 @@ async function borrarSesion(): Promise<void> {
 
 function comandoTsx(): { bin: string; args: string[] } {
   const script = path.resolve(__dirname, 'main.ts');
-  const shims = [
-    path.resolve(raizDelRepo(), 'node_modules/.bin/tsx'),
-    path.resolve(__dirname, '../node_modules/.bin/tsx'),
-  ];
-  const shim = shims.find((ruta) => existsSync(ruta));
-  if (shim) return { bin: shim, args: [script] };
   const clis = [
     path.resolve(raizDelRepo(), 'node_modules/tsx/dist/cli.mjs'),
     path.resolve(__dirname, '../node_modules/tsx/dist/cli.mjs'),
   ];
   const cli = clis.find((ruta) => existsSync(ruta));
   if (cli) return { bin: process.execPath, args: [cli, script] };
-  return { bin: process.execPath, args: [script] };
+  return { bin: process.execPath, args: ['--import', 'tsx', script] };
+}
+
+function causaDe(salida: string): string {
+  const lineas = salida.split(/\n/).map((linea) => linea.trim()).filter(Boolean);
+  const error = lineas.find((linea) => /^(Error|TypeError|SyntaxError)\b|Cannot find module|ERR_/.test(linea));
+  return (error ?? '').replace(/\s+/g, ' ').slice(0, 160);
 }
 
 async function anotar(nivel: 'info' | 'fallo', texto: string): Promise<void> {

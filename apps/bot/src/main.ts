@@ -93,9 +93,9 @@ function enganchar(actual: Client): void {
   });
 }
 
-void arrancar();
-
 const bajoVigia = process.env.SGIT_SIN_LIDER === '1';
+
+void arrancar();
 
 async function arrancar(): Promise<void> {
   if (bajoVigia) {
