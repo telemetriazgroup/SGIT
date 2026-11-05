@@ -25,6 +25,11 @@ let cortando = false;
 let ocupado = false;
 let ultimoPulso = Date.now();
 let lanzadoEn = 0;
+let dueno = false;
+let vioPulso = false;
+let ultimas = '';
+let ultimoAviso = '';
+let ultimoAvisoEn = 0;
 
 void vigilar();
 
@@ -38,9 +43,11 @@ async function vigilar(): Promise<void> {
     console.error('SGIT bot: no pude tomar el liderazgo. Reintento cuando el servicio vuelva a arrancar.');
     process.exit(1);
   }
+  await api.publicar('desconectado').catch(() => undefined);
   await anotar('info', 'Vigía en marcha. Si el cliente de WhatsApp se cuelga, este proceso lo cierra y lo vuelve a abrir.');
   const pendiente = await api.pedirReinicio().catch(() => ({ reiniciar: false, olvidar: false }));
   if (pendiente.olvidar) await borrarSesion();
+  await api.soltar(yo).catch(() => undefined);
   lanzar();
   setInterval(() => {
     void ciclo();
@@ -51,18 +58,16 @@ async function ciclo(): Promise<void> {
   if (ocupado) return;
   ocupado = true;
   try {
-    const lider = await api.estadoLider(yo);
-    if (lider === 'fallo') {
-      await anotar('fallo', 'No pude renovar el liderazgo. El cliente sigue abierto y reintento en unos segundos.');
-      return;
-    }
-    if (lider === 'ocupado') {
-      await anotar('fallo', 'Otro proceso tomó el bot. Cierro este vigía.');
-      await matar();
-      process.exit(1);
+    if (dueno) {
+      const lider = await api.estadoLider(yo);
+      if (lider === 'fallo') {
+        await anotar('fallo', 'No pude renovar el liderazgo. El cliente sigue abierto y reintento en unos segundos.');
+        return;
+      }
+      if (lider === 'ocupado') dueno = false;
     }
     const pedido = await api.pedirReinicio().catch(() => ({ reiniciar: false, olvidar: false }));
-    const silencio = hijo !== null && Date.now() - ultimoPulso > SILENCIO_MS;
+    const silencio = vioPulso && hijo !== null && Date.now() - ultimoPulso > SILENCIO_MS;
     if (pedido.olvidar) {
       await anotar('info', 'Cierro el cliente, borro la sesión de este equipo y pido otro código.');
       await api.publicar('desconectado').catch(() => undefined);
@@ -88,45 +93,66 @@ function lanzar(): void {
   const comando = comandoTsx();
   lanzadoEn = Date.now();
   ultimoPulso = Date.now();
+  vioPulso = false;
+  ultimas = '';
+  console.log(`SGIT bot: abro el cliente con ${comando.bin} ${comando.args.join(' ')}`);
   const proceso = spawn(comando.bin, comando.args, {
     cwd: path.resolve(__dirname, '..'),
     env: { ...process.env, SGIT_SIN_LIDER: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   hijo = proceso;
-  const marcar = (buf: Buffer) => {
+  const guardar = (buf: Buffer, salida: NodeJS.WriteStream) => {
     const texto = buf.toString();
-    process.stdout.write(texto);
-    if (texto.includes('SGIT bot: pulso')) ultimoPulso = Date.now();
+    salida.write(texto);
+    ultimas = (ultimas + texto).slice(-600);
+    if (texto.includes('SGIT bot: pulso')) {
+      ultimoPulso = Date.now();
+      vioPulso = true;
+      if (!dueno) void tomarLider();
+    }
   };
-  proceso.stdout?.on('data', marcar);
-  proceso.stderr?.on('data', (buf: Buffer) => {
-    process.stderr.write(buf);
-  });
+  proceso.stdout?.on('data', (buf: Buffer) => guardar(buf, process.stdout));
+  proceso.stderr?.on('data', (buf: Buffer) => guardar(buf, process.stderr));
   proceso.on('error', (error: Error) => {
+    ultimas = `${ultimas} ${error.message}`;
     void anotar('fallo', `No pude arrancar el cliente de WhatsApp. ${error.message}`);
   });
-  proceso.on('exit', () => {
+  proceso.on('exit', (code, signal) => {
     if (hijo !== proceso) return;
     hijo = null;
     if (cortando) return;
     ultimoPulso = Date.now();
+    vioPulso = false;
+    dueno = false;
+    void api.soltar(yo).catch(() => undefined);
+    void api.publicar('desconectado').catch(() => undefined);
     const pronto = Date.now() - lanzadoEn < 5_000;
-    void anotar('fallo', pronto
-      ? 'El cliente de WhatsApp se cerró al abrir. Espero unos segundos y lo vuelvo a intentar.'
-      : 'El cliente de WhatsApp se cerró. Lo vuelvo a abrir.');
+    const cola = ultimas.replace(/\s+/g, ' ').trim().slice(-180);
+    const como = signal ? `señal ${signal}` : `código ${code ?? '?'}`;
+    void anotar('fallo', cola
+      ? `Cliente cerrado al abrir (${como}). ${cola}`
+      : `Cliente cerrado al abrir (${como}). No escribió ningún error.`);
     setTimeout(() => {
       if (!hijo && !cortando) lanzar();
     }, pronto ? 10_000 : 2_000);
   });
 }
 
+async function tomarLider(): Promise<void> {
+  const lider = await api.estadoLider(yo);
+  if (lider === 'ok') dueno = true;
+}
+
 async function matar(): Promise<void> {
   cortando = true;
   const actual = hijo;
   hijo = null;
+  dueno = false;
+  vioPulso = false;
   if (actual) await esperarCierre(actual);
   await cerrarNavegadorDeSesion();
+  await api.soltar(yo).catch(() => undefined);
   cortando = false;
   ultimoPulso = Date.now();
 }
@@ -165,16 +191,26 @@ async function borrarSesion(): Promise<void> {
 
 function comandoTsx(): { bin: string; args: string[] } {
   const script = path.resolve(__dirname, 'main.ts');
-  const candidatos = [
+  const shims = [
+    path.resolve(raizDelRepo(), 'node_modules/.bin/tsx'),
+    path.resolve(__dirname, '../node_modules/.bin/tsx'),
+  ];
+  const shim = shims.find((ruta) => existsSync(ruta));
+  if (shim) return { bin: shim, args: [script] };
+  const clis = [
     path.resolve(raizDelRepo(), 'node_modules/tsx/dist/cli.mjs'),
     path.resolve(__dirname, '../node_modules/tsx/dist/cli.mjs'),
   ];
-  const cli = candidatos.find((ruta) => existsSync(ruta));
+  const cli = clis.find((ruta) => existsSync(ruta));
   if (cli) return { bin: process.execPath, args: [cli, script] };
   return { bin: process.execPath, args: [script] };
 }
 
 async function anotar(nivel: 'info' | 'fallo', texto: string): Promise<void> {
+  const ahora = Date.now();
+  if (texto === ultimoAviso && ahora - ultimoAvisoEn < 60_000) return;
+  ultimoAviso = texto;
+  ultimoAvisoEn = ahora;
   if (nivel === 'fallo') console.error(`SGIT bot: ${texto}`);
   else console.log(`SGIT bot: ${texto}`);
   await api.bitacora(nivel, texto).catch(() => undefined);
