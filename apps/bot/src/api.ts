@@ -28,8 +28,17 @@ export function crearClienteBot(base: string, clave: string) {
 
   return {
     async reclamar(dueno: string): Promise<boolean> {
-      const respuesta = await fetch(`${base}/bot/lider`, { method: 'POST', headers: cabeza, body: JSON.stringify({ dueno }) });
-      return respuesta.ok;
+      return (await this.estadoLider(dueno)) === 'ok';
+    },
+    async estadoLider(dueno: string): Promise<'ok' | 'ocupado' | 'fallo'> {
+      try {
+        const respuesta = await fetch(`${base}/bot/lider`, { method: 'POST', headers: cabeza, body: JSON.stringify({ dueno }) });
+        if (respuesta.ok) return 'ok';
+        if (respuesta.status === 401) return 'ocupado';
+        return 'fallo';
+      } catch {
+        return 'fallo';
+      }
     },
     async soltar(dueno: string): Promise<void> {
       await fetch(`${base}/bot/lider/soltar`, { method: 'POST', headers: cabeza, body: JSON.stringify({ dueno }) });

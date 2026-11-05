@@ -2,7 +2,7 @@
   "name": "@sgit/bot",
   "private": true,
   "scripts": {
-    "dev": "tsx src/main.ts",
+    "dev": "tsx src/vigia.ts",
     "comprobar": "tsc --noEmit",
     "test": "tsx --test test/estado.test.ts test/lider.test.ts"
   },

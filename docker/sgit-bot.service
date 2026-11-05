@@ -7,8 +7,10 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/ztrack/mongo/Proyectos/SGIT
 ExecStart=/bin/bash -lc 'npm run dev:bot'
-Restart=on-failure
+Restart=always
 RestartSec=5
+KillMode=mixed
+TimeoutStopSec=20
 
 [Install]
 WantedBy=multi-user.target

@@ -3576,7 +3576,7 @@ function esperar(ms: number): Promise<void> {
 function textoWhatsapp(estado: string, proceso: boolean, enLinea: boolean, fallo: string | null): string {
   if (fallo) return fallo;
   if (enLinea) return 'Sesión lista y el proceso responde.';
-  if (!proceso) return 'El proceso del bot no responde.';
+  if (!proceso) return 'El servicio del bot no está en marcha. El pedido queda guardado, pero Chrome no abre hasta que sgit-bot vuelva a arrancar.';
   if (estado === 'esperando_qr') return 'Falta escanear el código.';
   if (estado === 'desconectado') return 'WhatsApp está desconectado.';
   return 'WhatsApp no está listo.';

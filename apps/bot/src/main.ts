@@ -1,11 +1,11 @@
 import { config } from 'dotenv';
-import { execFile } from 'child_process';
 import { readFile, rm, writeFile } from 'fs/promises';
 import path from 'path';
 import qrcodeTerminal from 'qrcode-terminal';
 import { Client, LocalAuth, MessageMedia } from 'whatsapp-web.js';
 import { crearClienteBot, type CapturaMensaje } from './api';
 import { enlazarEstado } from './estado';
+import { cerrarNavegadorDeSesion } from './navegador';
 import { directorioDeEstado, rutaDeSesion } from './rutas';
 import { crearSumideroArchivo } from './sumidero';
 
@@ -95,26 +95,33 @@ function enganchar(actual: Client): void {
 
 void arrancar();
 
+const bajoVigia = process.env.SGIT_SIN_LIDER === '1';
+
 async function arrancar(): Promise<void> {
-  const tomado = await api.reclamar(yo);
-  if (!tomado) {
-    console.error('SGIT bot: ya hay un líder. Este proceso no arranca.');
-    process.exit(1);
+  if (bajoVigia) {
+    console.log('SGIT bot: pulso');
+    setInterval(() => console.log('SGIT bot: pulso'), 5_000);
+  } else {
+    const tomado = await api.reclamar(yo);
+    if (!tomado) {
+      console.error('SGIT bot: ya hay un líder. Este proceso no arranca.');
+      process.exit(1);
+    }
+    const pedido = await api.pedirReinicio().catch(() => ({ reiniciar: false, olvidar: false }));
+    if (pedido.olvidar) {
+      await api.publicar('desconectado').catch(() => undefined);
+      await borrarCarpetaSesion();
+    }
+    pulso = setInterval(() => {
+      void api.reclamar(yo).catch((error: unknown) => {
+        console.error(`SGIT bot: no pude renovar el liderazgo. ${detalle(error)}`);
+        void anotar('fallo', `No pude renovar el liderazgo. ${detalle(error)}`);
+      });
+    }, 10_000);
   }
-  const pedido = await api.pedirReinicio().catch(() => ({ reiniciar: false, olvidar: false }));
-  if (pedido.olvidar) {
-    await api.publicar('desconectado').catch(() => undefined);
-    await borrarCarpetaSesion();
-  }
-  pulso = setInterval(() => {
-    void api.reclamar(yo).catch((error: unknown) => {
-      console.error(`SGIT bot: no pude renovar el liderazgo. ${detalle(error)}`);
-      void anotar('fallo', `No pude renovar el liderazgo. ${detalle(error)}`);
-    });
-  }, 10_000);
   salida = setInterval(() => {
     void enviarPendiente();
-    void vigilarReinicio();
+    if (!bajoVigia) void vigilarReinicio();
   }, 2000);
   await anotar('info', 'Proceso en marcha. Abro la sesión guardada en este equipo.');
   await abrir('al arrancar');
@@ -146,8 +153,12 @@ async function recuperar(motivo: string, forzar = false): Promise<void> {
   await anotar('info', `Reinicio de la misma sesión: ${motivo}.`);
   try {
     await api.publicar('desconectado');
-    await cliente.destroy();
+    await conTope(cliente.destroy(), 20_000);
   } catch (error) {
+    if (esTiempo(error)) {
+      await anotar('fallo', 'WhatsApp no cerró a tiempo. Cierro el proceso para que vuelva a arrancar.');
+      process.exit(1);
+    }
     const texto = detalle(error);
     console.error(`SGIT bot: no pude cerrar WhatsApp. ${texto}`);
     await anotar('fallo', `No pude cerrar la ventana de WhatsApp. ${texto}`);
@@ -185,9 +196,13 @@ async function olvidar(): Promise<void> {
 
 async function abrir(origen: string): Promise<void> {
   try {
-    await cliente.initialize();
+    await conTope(cliente.initialize(), 90_000);
     return;
   } catch (error) {
+    if (esTiempo(error)) {
+      await anotar('fallo', `WhatsApp no abrió a tiempo (${origen}). Cierro el proceso para que vuelva a arrancar.`);
+      process.exit(1);
+    }
     const texto = detalle(error);
     console.error(`SGIT bot: no pude abrir WhatsApp (${origen}). ${texto}`);
     if (!/already running/i.test(texto)) {
@@ -199,8 +214,12 @@ async function abrir(origen: string): Promise<void> {
   await anotar('info', `El navegador de esta sesión seguía abierto (${cerrados}). Lo cerré y vuelvo a abrir la misma sesión.`);
   await esperar(1000);
   try {
-    await cliente.initialize();
+    await conTope(cliente.initialize(), 90_000);
   } catch (error) {
+    if (esTiempo(error)) {
+      await anotar('fallo', 'WhatsApp no abrió a tiempo después de cerrar el navegador. Cierro el proceso para que vuelva a arrancar.');
+      process.exit(1);
+    }
     const texto = detalle(error);
     console.error(`SGIT bot: no pude abrir WhatsApp después de cerrar el navegador. ${texto}`);
     await anotar('fallo', `La misma sesión no volvió a abrir. ${texto} Ciérrala y pide otro código.`);
@@ -213,29 +232,24 @@ async function borrarCarpetaSesion(): Promise<void> {
   await anotar('info', 'Borré la carpeta de la sesión de este equipo.');
 }
 
-function cerrarNavegadorDeSesion(): Promise<number> {
-  return new Promise((resolver) => {
-    execFile('ps', ['-eo', 'pid,args'], { maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
-      if (error || !stdout) {
-        resolver(0);
-        return;
-      }
-      let cerrados = 0;
-      for (const linea of stdout.split('\n')) {
-        if (!linea.includes('session-sgit-lab') || linea.includes('session-zgroup-bot')) continue;
-        if (!/chrome|chromium/i.test(linea)) continue;
-        const pid = Number(linea.trim().split(/\s+/)[0]);
-        if (!pid || pid === process.pid) continue;
-        try {
-          process.kill(pid, 'SIGTERM');
-          cerrados += 1;
-        } catch {
-          // El navegador ya no está.
-        }
-      }
-      resolver(cerrados);
-    });
+function conTope<T>(promesa: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolver, rechazar) => {
+    const timer = setTimeout(() => rechazar(new Error('tiempo de whatsapp')), ms);
+    promesa.then(
+      (valor) => {
+        clearTimeout(timer);
+        resolver(valor);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        rechazar(error);
+      },
+    );
   });
+}
+
+function esTiempo(error: unknown): boolean {
+  return error instanceof Error && error.message === 'tiempo de whatsapp';
 }
 
 async function anotar(nivel: 'info' | 'fallo', texto: string): Promise<void> {
