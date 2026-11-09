@@ -1,0 +1,1 @@
+ALTER TABLE tienda ADD COLUMN IF NOT EXISTS archivada boolean NOT NULL DEFAULT false;
