@@ -23,6 +23,7 @@ export function joinUrgente(alias: string): string {
     SELECT entrega_fecha, entrega_hora
     FROM tienda abierta
     WHERE abierta.tarea_id = ${alias}.id
+      AND NOT abierta.archivada
       AND abierta.estado IN ('pendiente', 'en_seguimiento')
       AND abierta.entrega_fecha IS NOT NULL
     ORDER BY entrega_fecha ASC, orden NULLS LAST, nombre

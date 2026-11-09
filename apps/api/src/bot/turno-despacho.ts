@@ -246,7 +246,7 @@ export class TurnoDespacho {
        WHERE tarea.cot <> '10000000000' AND tarea.estado <> 'resuelta'
          AND tarea.campana = false
          AND NOT EXISTS (
-           SELECT 1 FROM tienda x WHERE x.tarea_hija_id = tarea.id AND x.estado IN ('atendida', 'resuelta')
+           SELECT 1 FROM tienda x WHERE x.tarea_hija_id = tarea.id AND (x.estado IN ('atendida', 'resuelta') OR x.archivada)
          )
          AND EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text)
        ORDER BY ${ordenUrgente('tarea')}
@@ -949,7 +949,7 @@ export class TurnoDespacho {
          AND (
            u.estado = 'reconsulta'
            OR NOT EXISTS (
-             SELECT 1 FROM tienda x WHERE x.tarea_hija_id = t.id AND x.estado IN ('atendida', 'resuelta')
+             SELECT 1 FROM tienda x WHERE x.tarea_hija_id = t.id AND (x.estado IN ('atendida', 'resuelta') OR x.archivada)
            )
          )
          AND EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = t.id::text)

@@ -444,6 +444,30 @@ export class TareasController {
     return { id };
   }
 
+  @Post('tareas/:id/tiendas')
+  async crearTienda(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { cadena?: string; nombre?: string; contacto?: string; celular?: string; entregaFecha?: string; entregaHora?: string; direccion?: string; status?: string; tamano?: string },
+  ) {
+    await this.exigirSuper(autorizacion);
+    await this.tareas.crearTienda(id, cuerpo ?? {});
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/tiendas/:tiendaId/archivar')
+  async archivarTienda(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Param('tiendaId') tiendaId: string,
+    @Body() cuerpo: { archivada?: boolean },
+  ) {
+    await this.exigirSuper(autorizacion);
+    if (typeof cuerpo?.archivada !== 'boolean') throw new BadRequestException('Indica si la tienda queda archivada.');
+    await this.tareas.archivarTienda(id, tiendaId, cuerpo.archivada);
+    return this.fichaDe(id);
+  }
+
   @Post('tareas/:id/tiendas/releer')
   async releerTiendas(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
     await this.exigirEdicion(autorizacion);
@@ -654,6 +678,12 @@ export class TareasController {
     const token = bearer(autorizacion);
     if (!token) throw new UnauthorizedException('Sesión no válida.');
     return this.identidad.actual(token);
+  }
+
+  private async exigirSuper(autorizacion?: string) {
+    const usuario = await this.exigir(autorizacion);
+    if (usuario.rol !== 'superusuario') throw new ForbiddenException('Solo el superusuario archiva o crea tiendas de la campaña.');
+    return usuario;
   }
 
   private async exigirConciliacion(autorizacion?: string) {

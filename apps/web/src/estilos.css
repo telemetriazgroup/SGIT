@@ -2690,11 +2690,14 @@ button.enlace:disabled {
 
 .tiendas header {
   display: flex;
+  align-items: center;
+  gap: 12px;
   margin-bottom: 0;
 }
 
 .tienda-cabeza {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   display: flex;
   justify-content: space-between;
   gap: 12px;

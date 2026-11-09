@@ -131,6 +131,7 @@ type TiendaCampana = {
   odoo_nombre: string;
   odoo_estado: string;
   tarea_hija_id?: string | null;
+  archivada?: boolean;
   hilos?: number;
   notas?: Array<{ id: string; tipo: string; texto: string; autor_nombre: string; creado_en: string }>;
 };
@@ -666,7 +667,7 @@ export function PanelTareas({
             Pasar a campaña
           </button>
         ) : null}
-        {ficha.campana ? <TiendasCampana apiUrl={apiUrl} token={token} ficha={ficha} editar={editar} atender={atender} alGuardar={setFicha} alFallar={setAviso} /> : null}
+        {ficha.campana ? <TiendasCampana apiUrl={apiUrl} token={token} ficha={ficha} editar={editar} atender={atender} archivo={prioridad} alGuardar={setFicha} alFallar={setAviso} /> : null}
         {convierte && !ficha.proyecto ? (
           <div className="decisiones decisiones-ficha">
             <button type="button" className="primario" onClick={() => void correr(pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/proyecto`, { method: 'POST', body: '{}' }), 'La tarea quedó en Proyectos.', 'Pasando a proyectos…').then((tarea) => { if (tarea) setFicha(tarea); })}>
@@ -1575,12 +1576,17 @@ function cita(fecha: string | null, hora: string | null): string | null {
   return [dia, hora].filter(Boolean).join(' ');
 }
 
+function coincideTienda(tienda: TiendaCampana, consulta: string): boolean {
+  return [tienda.cadena, tienda.nombre, tienda.direccion, tienda.contacto, tienda.celular, tienda.status, tienda.codigo_equipo, tienda.tamano].join(' ').toLowerCase().includes(consulta);
+}
+
 function TiendasCampana({
   apiUrl,
   token,
   ficha,
   editar,
   atender,
+  archivo,
   alGuardar,
   alFallar,
 }: {
@@ -1589,34 +1595,120 @@ function TiendasCampana({
   ficha: Tarea;
   editar: boolean;
   atender: boolean;
+  archivo: boolean;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
 }) {
   const [busqueda, setBusqueda] = useState('');
   const consulta = busqueda.trim().toLowerCase();
   const tiendas = ficha.tiendas ?? [];
-  const visibles = consulta
-    ? tiendas.filter((tienda) => [tienda.cadena, tienda.nombre, tienda.direccion, tienda.contacto, tienda.celular, tienda.status, tienda.codigo_equipo, tienda.tamano].join(' ').toLowerCase().includes(consulta))
-    : tiendas;
+  const activas = tiendas.filter((tienda) => !tienda.archivada);
+  const archivadas = tiendas.filter((tienda) => tienda.archivada);
+  const visibles = consulta ? activas.filter((tienda) => coincideTienda(tienda, consulta)) : activas;
+  const archivadasVisibles = consulta ? archivadas.filter((tienda) => coincideTienda(tienda, consulta)) : archivadas;
   return (
     <section className="campana">
       <h3>Tiendas de la campaña</h3>
       <p>La campaña agrupa tiendas. Cada tienda queda plegada: ábrela para ver el detalle. Cada una se abre como una cotización y ahí se crean sus hilos, uno o varios, desde esta ficha o por WhatsApp.</p>
       {editar ? <FormasTienda apiUrl={apiUrl} token={token} tareaId={ficha.id} alGuardar={alGuardar} alFallar={alFallar} /> : null}
-      {tiendas.length === 0 ? <p>Todavía no hay tiendas en los correos de esta cotización.</p> : (
+      {archivo ? <AltaTienda apiUrl={apiUrl} token={token} tareaId={ficha.id} alGuardar={alGuardar} alFallar={alFallar} /> : null}
+      {activas.length === 0 ? <p>Todavía no hay tiendas activas en esta cotización.</p> : null}
+      {activas.length > 0 || archivadas.length > 0 ? (
         <form className="buscar buscar-tareas" onSubmit={(evento) => evento.preventDefault()}>
           <label className="sr" htmlFor="buscar-tienda">Buscar tienda</label>
           <input id="buscar-tienda" value={busqueda} placeholder="Cadena, tienda, dirección o telemetría" onChange={(evento) => setBusqueda(evento.target.value)} />
         </form>
-      )}
-      {tiendas.length > 0 ? <p>{visibles.length} de {tiendas.length} tiendas</p> : null}
-      {tiendas.length > 0 && visibles.length === 0 ? <p>No hay tiendas con ese texto.</p> : null}
+      ) : null}
+      {activas.length > 0 ? <p>{visibles.length} de {activas.length} tiendas</p> : null}
+      {activas.length > 0 && visibles.length === 0 ? <p>No hay tiendas con ese texto.</p> : null}
       <ul className="tiendas">
         {visibles.map((tienda) => (
-          <TarjetaTienda key={tienda.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} tienda={tienda} editar={editar} atender={atender} expandir={consulta.length > 0 && visibles.length === 1} alGuardar={alGuardar} alFallar={alFallar} />
+          <TarjetaTienda key={tienda.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} tienda={tienda} editar={editar} atender={atender} archivo={archivo} expandir={consulta.length > 0 && visibles.length === 1} alGuardar={alGuardar} alFallar={alFallar} />
         ))}
       </ul>
+      {archivo && archivadasVisibles.length > 0 ? (
+        <details className="formas-tienda">
+          <summary>Archivadas ({archivadasVisibles.length})</summary>
+          <ul className="tiendas">
+            {archivadasVisibles.map((tienda) => (
+              <li key={tienda.id}>
+                <strong>{[tienda.cadena, tienda.nombre].filter(Boolean).join(' · ')}</strong>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/tiendas/${tienda.id}/archivar`, { method: 'POST', body: JSON.stringify({ archivada: false }) })
+                      .then(alGuardar)
+                      .catch((error: unknown) => alFallar(texto(error)));
+                  }}
+                >
+                  Devolver a la campaña
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
     </section>
+  );
+}
+
+function AltaTienda({
+  apiUrl,
+  token,
+  tareaId,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  tareaId: string;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (aviso: string) => void;
+}) {
+  const [abierta, setAbierta] = useState(false);
+  const [cadena, setCadena] = useState('');
+  const [nombre, setNombre] = useState('');
+  const [contacto, setContacto] = useState('');
+  const [celular, setCelular] = useState('');
+  const [fecha, setFecha] = useState('');
+  const [direccion, setDireccion] = useState('');
+  async function crear(evento: FormEvent) {
+    evento.preventDefault();
+    const tarea = await pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas`, {
+      method: 'POST',
+      body: JSON.stringify({ cadena, nombre, contacto, celular, entregaFecha: fecha, direccion }),
+    });
+    setCadena('');
+    setNombre('');
+    setContacto('');
+    setCelular('');
+    setFecha('');
+    setDireccion('');
+    setAbierta(false);
+    alGuardar(tarea);
+  }
+  return (
+    <div className="formas-tienda">
+      <button type="button" onClick={() => setAbierta((actual) => !actual)}>{abierta ? 'Ocultar nueva tienda' : 'Nueva tienda'}</button>
+      {abierta ? (
+        <form className="forma-tienda" onSubmit={(evento) => void crear(evento).catch((error: unknown) => alFallar(texto(error)))}>
+          <p>Para una tienda que el correo no detectó. Solo el superusuario la crea.</p>
+          <label htmlFor="tienda-cadena">Cadena</label>
+          <input id="tienda-cadena" value={cadena} onChange={(evento) => setCadena(evento.target.value)} />
+          <label htmlFor="tienda-nombre">Tienda</label>
+          <input id="tienda-nombre" value={nombre} onChange={(evento) => setNombre(evento.target.value)} required />
+          <label htmlFor="tienda-contacto">Contacto</label>
+          <input id="tienda-contacto" value={contacto} onChange={(evento) => setContacto(evento.target.value)} />
+          <label htmlFor="tienda-celular">Celular</label>
+          <input id="tienda-celular" value={celular} onChange={(evento) => setCelular(evento.target.value)} />
+          <label htmlFor="tienda-fecha">Fecha</label>
+          <input id="tienda-fecha" type="date" value={fecha} onChange={(evento) => setFecha(evento.target.value)} />
+          <label htmlFor="tienda-direccion">Dirección</label>
+          <input id="tienda-direccion" value={direccion} onChange={(evento) => setDireccion(evento.target.value)} />
+          <button type="submit" className="primario">Crear tienda</button>
+        </form>
+      ) : null}
+    </div>
   );
 }
 
@@ -1783,6 +1875,7 @@ function TarjetaTienda({
   tienda,
   editar,
   atender,
+  archivo,
   expandir,
   alGuardar,
   alFallar,
@@ -1793,6 +1886,7 @@ function TarjetaTienda({
   tienda: TiendaCampana;
   editar: boolean;
   atender: boolean;
+  archivo: boolean;
   expandir: boolean;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
@@ -1861,6 +1955,19 @@ function TarjetaTienda({
           <strong>{[tienda.cadena, tienda.nombre].filter(Boolean).join(' · ')}</strong>
           <span>{etiquetaTienda(tienda.estado)}{hilos > 0 ? ` · ${hilos} hilo${hilos === 1 ? '' : 's'}` : ''} · {detalle ? 'Ocultar' : 'Ver'}</span>
         </button>
+        {archivo ? (
+          <button
+            type="button"
+            onClick={() => {
+              if (!window.confirm('La tienda sale de la campaña. El correo no la vuelve a abrir.')) return;
+              void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/${tienda.id}/archivar`, { method: 'POST', body: JSON.stringify({ archivada: true }) })
+                .then(alGuardar)
+                .catch((error: unknown) => alFallar(texto(error)));
+            }}
+          >
+            Archivar
+          </button>
+        ) : null}
       </header>
       {detalle ? (
       <>

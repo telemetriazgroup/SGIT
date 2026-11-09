@@ -180,7 +180,7 @@ export class TareasService {
               tarea.campana, tarea.proyecto,
               to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
               CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora,
-              (SELECT count(*)::int FROM tienda WHERE tienda.tarea_id = tarea.id) AS locales,
+              (SELECT count(*)::int FROM tienda WHERE tienda.tarea_id = tarea.id AND NOT tienda.archivada) AS locales,
               EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text) AS habilitada
        FROM tarea
        LEFT JOIN LATERAL (
@@ -660,6 +660,57 @@ export class TareasService {
     if (resultado.rowCount === 0) throw new NotFoundException('No está esa tienda.');
   }
 
+  async archivarTienda(tareaId: string, tiendaId: string, archivada: boolean): Promise<void> {
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE tienda SET archivada = $3 WHERE id = $1 AND tarea_id = $2`,
+      [tiendaId, tareaId, archivada],
+    );
+    if ((resultado.rowCount ?? 0) === 0) throw new NotFoundException('No está esa tienda.');
+  }
+
+  async crearTienda(
+    tareaId: string,
+    datos: { cadena?: string; nombre?: string; contacto?: string; celular?: string; entregaFecha?: string; entregaHora?: string; direccion?: string; status?: string; tamano?: string },
+  ): Promise<void> {
+    const tarea = await this.conexiones.pg.query<{ campana: boolean }>(`SELECT campana FROM tarea WHERE id = $1`, [tareaId]);
+    if (!tarea.rows[0]?.campana) throw new BadRequestException('Esa cotización no es una campaña.');
+    const nombre = (datos.nombre ?? '').trim();
+    const cadena = (datos.cadena ?? '').trim();
+    if (!nombre) throw new BadRequestException('Escribe el nombre de la tienda.');
+    const fecha = (datos.entregaFecha ?? '').trim();
+    if (fecha && !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw new BadRequestException('La fecha es aaaa-mm-dd.');
+    await this.conexiones.pg.query(
+      `INSERT INTO tienda (id, tarea_id, clave, cadena, nombre, contacto, celular, entrega_fecha, entrega_hora, status, tamano, direccion, archivada)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false)
+       ON CONFLICT (tarea_id, clave) DO UPDATE SET
+         archivada = false,
+         cadena = EXCLUDED.cadena,
+         nombre = EXCLUDED.nombre,
+         contacto = CASE WHEN EXCLUDED.contacto <> '' THEN EXCLUDED.contacto ELSE tienda.contacto END,
+         celular = CASE WHEN EXCLUDED.celular <> '' THEN EXCLUDED.celular ELSE tienda.celular END,
+         entrega_fecha = COALESCE(EXCLUDED.entrega_fecha, tienda.entrega_fecha),
+         entrega_hora = CASE WHEN EXCLUDED.entrega_hora <> '' THEN EXCLUDED.entrega_hora ELSE tienda.entrega_hora END,
+         status = CASE WHEN EXCLUDED.status <> '' THEN EXCLUDED.status ELSE tienda.status END,
+         tamano = CASE WHEN EXCLUDED.tamano <> '' THEN EXCLUDED.tamano ELSE tienda.tamano END,
+         direccion = CASE WHEN EXCLUDED.direccion <> '' THEN EXCLUDED.direccion ELSE tienda.direccion END`,
+      [
+        randomUUID(),
+        tareaId,
+        claveTienda(cadena, nombre),
+        cadena,
+        nombre,
+        (datos.contacto ?? '').trim(),
+        (datos.celular ?? '').trim(),
+        fecha || null,
+        (datos.entregaHora ?? '').trim(),
+        (datos.status ?? '').trim(),
+        (datos.tamano ?? '').trim(),
+        (datos.direccion ?? '').trim(),
+      ],
+    );
+    await vincularHijas(this.conexiones.pg, tareaId);
+  }
+
   private async plantillasActivas(): Promise<ColumnaTienda[][]> {
     const filas = await this.conexiones.pg.query<{ columnas: ColumnaTienda[] }>(
       `SELECT columnas FROM plantilla_campana WHERE activa ORDER BY nombre`,
@@ -757,7 +808,7 @@ export class TareasService {
     const faltan = await this.conexiones.pg.query(`SELECT 1 FROM tienda WHERE tarea_id = $1 AND tarea_hija_id IS NULL LIMIT 1`, [tarea.id]);
     if (faltan.rows[0]) await vincularHijas(this.conexiones.pg, tarea.id);
     const tiendas = await this.conexiones.pg.query<TiendaGuardada>(
-      `SELECT id, orden, cadena, nombre, contacto, celular, entrega_fecha, entrega_hora, status, tamano, direccion, mapa, estado, codigo_equipo, odoo_id, odoo_nombre, odoo_estado, tarea_hija_id,
+      `SELECT id, orden, cadena, nombre, contacto, celular, entrega_fecha, entrega_hora, status, tamano, direccion, mapa, estado, codigo_equipo, odoo_id, odoo_nombre, odoo_estado, tarea_hija_id, archivada,
               (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tienda.tarea_hija_id) AS hilos
        FROM tienda WHERE tarea_id = $1 ORDER BY ${ordenFecha('entrega_fecha', 'orden NULLS LAST, nombre')}`,
       [tarea.id],
@@ -1633,7 +1684,7 @@ export class TareasService {
     if (!tarea.rows[0]) throw new NotFoundException('No está esa tarea.');
     if (tarea.rows[0].estado === 'resuelta') throw new BadRequestException('Esta tarea ya está resuelta.');
     const abiertas = await this.conexiones.pg.query(
-      `SELECT 1 FROM tienda WHERE tarea_id = $1 AND estado <> 'resuelta' AND EXISTS (SELECT 1 FROM tarea WHERE id = $1 AND campana)`,
+      `SELECT 1 FROM tienda WHERE tarea_id = $1 AND NOT archivada AND estado <> 'resuelta' AND EXISTS (SELECT 1 FROM tarea WHERE id = $1 AND campana)`,
       [id],
     );
     if ((abiertas.rowCount ?? 0) > 0) throw new BadRequestException('La campaña sigue abierta: quedan tiendas por realizar.');
@@ -2486,6 +2537,7 @@ export class TareasService {
        FROM tienda
        JOIN tarea campana ON campana.id = tienda.tarea_id
        WHERE campana.cot <> '10000000000'
+         AND NOT tienda.archivada
          AND concat_ws(' ', campana.cot, campana.cliente, tienda.cadena, tienda.nombre, tienda.codigo_equipo) ILIKE $1 ESCAPE '\\'
        ORDER BY tienda.cadena, tienda.nombre
        LIMIT 12`,
@@ -2938,6 +2990,7 @@ type TiendaGuardada = {
   odoo_nombre: string;
   odoo_estado: string;
   tarea_hija_id: string | null;
+  archivada: boolean;
   hilos: number;
   notas?: Array<{ id: string; tipo: string; texto: string; autor_nombre: string; creado_en: Date }>;
 };

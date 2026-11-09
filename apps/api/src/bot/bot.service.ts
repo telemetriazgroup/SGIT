@@ -1526,7 +1526,7 @@ export class BotService {
       `SELECT h.id, t.cadena, t.nombre, to_char(t.entrega_fecha, 'YYYY-MM-DD') AS entrega_fecha, t.entrega_hora
        FROM tienda t
        JOIN tarea h ON h.id = t.tarea_hija_id
-       WHERE t.tarea_id = $1 AND t.estado IN ('pendiente', 'en_seguimiento')
+       WHERE t.tarea_id = $1 AND NOT t.archivada AND t.estado IN ('pendiente', 'en_seguimiento')
        ORDER BY ${ordenFecha('t.entrega_fecha', 't.orden NULLS LAST, t.nombre')}`,
       [tareaId],
     );
@@ -2139,7 +2139,7 @@ export class BotService {
   private filtroCola(despacho: boolean): string {
     if (!despacho) return `AND tarea.padre_id IS NULL`;
     return `AND tarea.campana = false AND NOT EXISTS (
-      SELECT 1 FROM tienda x WHERE x.tarea_hija_id = tarea.id AND x.estado IN ('atendida', 'resuelta')
+      SELECT 1 FROM tienda x WHERE x.tarea_hija_id = tarea.id AND (x.estado IN ('atendida', 'resuelta') OR x.archivada)
     )`;
   }
 
