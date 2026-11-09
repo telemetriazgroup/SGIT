@@ -247,7 +247,8 @@ export function menuGeneral(elevado = false): string {
       '3. Pendientes de decisión',
       '4. Buscar cotización',
       '5. Imprimir',
-      '6. Salir',
+      '6. Proyectos',
+      '7. Salir',
       'Escribe el número. También puedes escribir el número de COT o el nombre del cliente.',
     ].join('\n');
   }
@@ -255,8 +256,9 @@ export function menuGeneral(elevado = false): string {
     'Menú general. No hay una cotización abierta.',
     '1. Tareas recientes',
     '2. Buscar cotización',
-    '3. Salir',
-    'Escribe 1, 2 o 3. También puedes escribir el número de COT o el nombre del cliente.',
+    '3. Proyectos',
+    '4. Salir',
+    'Escribe 1, 2, 3 o 4. También puedes escribir el número de COT o el nombre del cliente.',
   ].join('\n');
 }
 

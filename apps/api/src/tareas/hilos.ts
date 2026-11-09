@@ -13,6 +13,7 @@ export type HiloAtencion = {
   despacho_validado: boolean;
   modem_serie?: string | null;
   modem_imei?: string | null;
+  clase?: 'telemetria' | 'infraestructura' | 'hmi';
 };
 
 type Consulta = {
@@ -58,7 +59,7 @@ export function lineaHilo(hilo: HiloAtencion): string {
 
 export async function listarHilos(pg: Consulta, tareaId: string): Promise<HiloAtencion[]> {
   const filas = await pg.query<HiloAtencion>(
-    `SELECT id, tarea_id, orden, estado, lleva_telemetria, contenedor, maquina, despacho_texto, chip_imei, chip_celular, chip_estado, despacho_validado, modem_serie, modem_imei
+    `SELECT id, tarea_id, orden, estado, lleva_telemetria, contenedor, maquina, despacho_texto, chip_imei, chip_celular, chip_estado, despacho_validado, modem_serie, modem_imei, clase
      FROM hilo_atencion WHERE tarea_id = $1 ORDER BY orden`,
     [tareaId],
   );
@@ -94,6 +95,17 @@ export async function crearHilos(pg: Consulta, tareaId: string, cantidad: number
     );
   }
   await pg.query(`UPDATE tarea SET cantidad = $2 WHERE id = $1`, [tareaId, cantidad]);
+  return listarHilos(pg, tareaId);
+}
+
+export async function abrirFrente(pg: Consulta, tareaId: string, clase: 'telemetria' | 'infraestructura' | 'hmi'): Promise<HiloAtencion[]> {
+  const actuales = await listarHilos(pg, tareaId);
+  const orden = actuales.reduce((maximo, hilo) => Math.max(maximo, hilo.orden), 0) + 1;
+  if (orden > 20) throw new Error('Ya hay 20 seguimientos en esta cotización.');
+  await pg.query(
+    `INSERT INTO hilo_atencion (id, tarea_id, orden, clase) VALUES (gen_random_uuid(), $1, $2, $3)`,
+    [tareaId, orden, clase],
+  );
   return listarHilos(pg, tareaId);
 }
 

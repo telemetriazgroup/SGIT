@@ -132,7 +132,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
   const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'virtual' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'proyectos' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'virtual' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
     editar && /\/servicio\/salida\/?$/.test(window.location.pathname) ? 'salida' : sistema ? 'recibidos' : 'tareas',
   );
   const [redactando, setRedactando] = useState(false);
@@ -462,6 +462,16 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
           >
             Tareas
           </button>
+          <button
+            type="button"
+            className={vista === 'proyectos' ? 'activo' : ''}
+            onClick={() => {
+              setVista('proyectos');
+              setHilo(null);
+            }}
+          >
+            Proyectos
+          </button>
           {sistema ? (
           <button
             type="button"
@@ -626,7 +636,9 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
             </section>
           ) : null}
           {vista === 'tareas' ? (
-            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} atender={editar || sesion.usuario.rol === 'tecnico'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} habilita={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} />
+            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} atender={editar || sesion.usuario.rol === 'tecnico'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} habilita={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} convierte={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} />
+          ) : vista === 'proyectos' ? (
+            <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} atender={editar || sesion.usuario.rol === 'tecnico'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} habilita={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} proyectos convierte={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} />
           ) : vista === 'equipo' ? (
             <PanelEquipo apiUrl={apiUrl} token={sesion.token} onEntrar={onSesion} />
           ) : vista === 'virtual' ? (

@@ -53,8 +53,10 @@ test('la captura de WhatsApp dice por qué el PDF no se guardó', () => {
 test('el menú del administrador separa imprimir de salir', () => {
   const elevado = menuGeneral(true);
   assert.match(elevado, /5\. Imprimir/);
-  assert.match(elevado, /6\. Salir/);
+  assert.match(elevado, /6\. Proyectos/);
+  assert.match(elevado, /7\. Salir/);
   const tecnico = menuGeneral(false);
-  assert.match(tecnico, /3\. Salir/);
+  assert.match(tecnico, /3\. Proyectos/);
+  assert.match(tecnico, /4\. Salir/);
   assert.doesNotMatch(tecnico, /Imprimir/);
 });

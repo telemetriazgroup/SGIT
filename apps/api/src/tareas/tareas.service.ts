@@ -17,7 +17,7 @@ import { OdooServicio, type LecturaTarea } from '../odoo/servicio';
 import { claveTienda, coincideTienda, columnasValidas, PLANTILLA_BASE, tiendasDeHtml, tiendasDeTexto, type ColumnaTienda, type TiendaLeida } from './campana';
 import { catalogoFechas, plegarCita } from './fechas';
 import { vincularHijas } from './hijas';
-import { ajustarHilos, anotarSinInstalacion, corregirEquipo, listarHilos, marcarInstalada, validarDespacho } from './hilos';
+import { abrirFrente, ajustarHilos, anotarSinInstalacion, corregirEquipo, listarHilos, marcarInstalada, validarDespacho } from './hilos';
 import { FabricacionServicio } from '../fabricacion/servicio';
 import { recibirFotoRegularizacion, registrarChip, registrarModem, releerFotoGuardada } from './regularizar';
 import { joinUrgente, ordenFecha, ordenUrgente } from './prioridad';
@@ -147,7 +147,7 @@ export class TareasService {
     return cuenta;
   }
 
-  async listar(pagina: number, busqueda = '', resueltas = false, verOcultas = true, verTareas = verOcultas): Promise<PaginaTareas> {
+  async listar(pagina: number, busqueda = '', resueltas = false, verOcultas = true, verTareas = verOcultas, proyectos = false): Promise<PaginaTareas> {
     const cuentas = await this.cuentas(verOcultas, verTareas);
     const filtro = patronTexto(busqueda);
     const estado = resueltas ? `tarea.estado = 'resuelta'` : `tarea.estado <> 'resuelta'`;
@@ -167,6 +167,7 @@ export class TareasService {
          ))
        AND tarea.padre_id IS NULL
        AND tarea.cot <> '10000000000'
+       AND tarea.proyecto = ${proyectos ? 'true' : 'false'}
        AND ${estado}`;
     const publicada = `AND ($2::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))`;
     const conteo = await this.conexiones.pg.query<{ total: string }>(`SELECT count(*)::text AS total FROM tarea ${donde} ${publicada}`, [filtro, verTareas]);
@@ -176,7 +177,7 @@ export class TareasService {
     const resultado = await this.conexiones.pg.query<FilaTarea>(
       `SELECT tarea.id, tarea.cot, tarea.cots, tarea.referencias, tarea.estado, tarea.ticket, tarea.lugar, tarea.cliente, tarea.descripcion, tarea.cita_fecha, tarea.cita_hora,
               tarea.comercial_nombre, ult.fecha,
-              tarea.campana,
+              tarea.campana, tarea.proyecto,
               to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
               CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora,
               (SELECT count(*)::int FROM tienda WHERE tienda.tarea_id = tarea.id) AS locales,
@@ -1143,6 +1144,27 @@ export class TareasService {
       [id, escrito, campo],
     );
     if (resultado.rowCount === 0) throw new NotFoundException('No está esa tarea.');
+  }
+
+  async marcarProyecto(id: string): Promise<void> {
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE tarea SET proyecto = true WHERE id = $1 AND padre_id IS NULL AND cot <> '10000000000'`,
+      [id],
+    );
+    if ((resultado.rowCount ?? 0) === 0) throw new NotFoundException('Esa tarea no se puede pasar a proyectos.');
+  }
+
+  async abrirFrente(id: string, clase: string): Promise<void> {
+    if (clase !== 'telemetria' && clase !== 'infraestructura' && clase !== 'hmi') {
+      throw new BadRequestException('El frente es telemetría, infraestructura o pantalla HMI.');
+    }
+    const tarea = await this.conexiones.pg.query<{ proyecto: boolean }>(`SELECT proyecto FROM tarea WHERE id = $1`, [id]);
+    if (!tarea.rows[0]?.proyecto) throw new BadRequestException('Primero pasa la tarea a proyectos.');
+    try {
+      await abrirFrente(this.conexiones.pg, id, clase);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'No pude abrir el seguimiento.');
+    }
   }
 
   async releer(id: string, campo: string): Promise<void> {
@@ -2246,7 +2268,7 @@ export class TareasService {
          GROUP BY gmail_thread_id
        )
        SELECT (SELECT count(*) FROM tarea
-                 WHERE cot <> '10000000000' AND estado <> 'resuelta'
+                 WHERE cot <> '10000000000' AND estado <> 'resuelta' AND NOT proyecto
                    AND ($2::boolean OR EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text))
               )::text AS tareas,
               count(*) FILTER (WHERE pendiente AND NOT tarea AND NOT interna AND NOT archivado AND NOT resuelto

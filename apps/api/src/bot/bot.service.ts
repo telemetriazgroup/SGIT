@@ -97,6 +97,7 @@ type Paso =
   | 'resumen'
   | 'detalle'
   | 'internos'
+  | 'proyectos'
   | 'decisiones'
   | 'asunto'
   | 'decision'
@@ -782,10 +783,10 @@ export class BotService {
       }
     }
     const paso = charla.paso;
-    const general = paso === 'menu' || paso === 'recientes' || paso === 'busca' || paso === 'confirma' || paso === 'resultados' || paso === 'internos' || paso === 'decisiones';
+    const general = paso === 'menu' || paso === 'recientes' || paso === 'busca' || paso === 'confirma' || paso === 'resultados' || paso === 'internos' || paso === 'proyectos' || paso === 'decisiones';
     const elevado = await this.esElevado(numero);
     if (general && /^salir$/i.test(limpio)) return this.cerrarConsulta(numero);
-    if (paso === 'menu' && ((elevado && limpio === '6') || (!elevado && limpio === '3'))) return this.cerrarConsulta(numero);
+    if (paso === 'menu' && ((elevado && limpio === '7') || (!elevado && limpio === '4'))) return this.cerrarConsulta(numero);
 
     if ((paso === 'nota' || paso === 'espera_imagen' || paso === 'pregunta_imagen') && charla.pendiente?.tipo) {
       if (paso === 'nota') return this.enNota(numero, charla, quien, limpio, archivo, anotador);
@@ -804,7 +805,7 @@ export class BotService {
     if (paso === 'pregunta_resumen' && charla.tarea_id) return this.enPreguntaResumen(numero, charla.tarea_id, limpio);
     if (paso === 'resumen' && charla.tarea_id) return this.enResumen(numero, charla, limpio);
     if (paso === 'detalle' && charla.tarea_id) return this.enDetalle(numero, charla, limpio);
-    if (paso === 'recientes' || paso === 'resultados' || paso === 'internos' || paso === 'decisiones') return this.enLista(numero, charla, limpio);
+    if (paso === 'recientes' || paso === 'resultados' || paso === 'internos' || paso === 'proyectos' || paso === 'decisiones') return this.enLista(numero, charla, limpio);
     if (paso === 'busca') return this.enBusca(numero, limpio);
     if (paso === 'confirma' && charla.tarea_id) return this.enConfirma(numero, charla.tarea_id, limpio);
     return this.enMenu(numero, limpio);
@@ -824,6 +825,7 @@ export class BotService {
       await this.guardarCharla(telefono, 'menu', null, [], { impresion: true });
       return this.dejar(telefono, true, 'Manda el documento PDF. Sale una copia. Escribe menu para volver sin imprimir.');
     }
+    if ((elevado && limpio === '6') || (!elevado && limpio === '3') || /^proyectos$/i.test(limpio)) return this.proyectos(telefono);
     if (!limpio || esSaludo(limpio) || /^(menu|menú)$/i.test(limpio)) return this.abrirMenu(telefono);
     if (atajoDeLista(limpio)) return this.dejar(telefono, true, `Primero abre las tareas con 1.\n${menuGeneral(elevado)}`);
     return this.buscar(telefono, limpio);
@@ -1499,9 +1501,9 @@ export class BotService {
   }
 
   private async entrarEn(telefono: string, tareaId: string): Promise<RespuestaBot> {
-    const marca = await this.conexiones.pg.query<{ estado: string; campana: boolean }>(`SELECT estado, campana FROM tarea WHERE id = $1`, [tareaId]);
+    const marca = await this.conexiones.pg.query<{ estado: string; campana: boolean; proyecto: boolean }>(`SELECT estado, campana, proyecto FROM tarea WHERE id = $1`, [tareaId]);
     if (!marca.rows[0]) return this.abrirMenu(telefono, `Esa cotización ya no está.\n${menuGeneral(await this.esElevado(telefono))}`);
-    if (!(await this.veTodo(telefono))) {
+    if (marca.rows[0].proyecto ? !(await this.esElevado(telefono)) : !(await this.veTodo(telefono))) {
       const visible = await this.conexiones.pg.query(`SELECT 1 FROM habilitado WHERE clase = 'tarea' AND clave = $1`, [tareaId]);
       if (!visible.rows[0]) {
         const ref = await this.referencia(tareaId);
@@ -1509,7 +1511,7 @@ export class BotService {
       }
     }
     if (marca.rows[0].campana) return this.menuTiendas(telefono, tareaId);
-    if (marca.rows[0].estado === 'resuelta') {
+    if (marca.rows[0].estado === 'resuelta' && !marca.rows[0].proyecto) {
       const ref = await this.referencia(tareaId);
       const elevado = await this.esElevado(telefono);
       return this.abrirMenu(telefono, `${ref?.linea ?? 'Esa cotización'}\nYa está resuelta y no vuelve a la lista.\n${menuGeneral(elevado)}`);
@@ -1932,6 +1934,7 @@ export class BotService {
        ${joinUrgente('tarea')}
        WHERE tarea.cot <> '10000000000' AND tarea.estado <> 'resuelta'
          AND tarea.padre_id IS NULL
+         AND NOT tarea.proyecto
          ${this.filtroTarea(veTodo)}
        ORDER BY ${ordenUrgente('tarea')}
        LIMIT 10`,
@@ -1945,10 +1948,36 @@ export class BotService {
     return this.dejar(telefono, true, ['Tareas por atender:', ...lineas, pieListaCoti()].join('\n'));
   }
 
+  private async proyectos(telefono: string): Promise<RespuestaBot> {
+    const veLista = await this.esElevado(telefono);
+    const tareas = await this.tareasBreves(
+      `       SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
+              (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tarea.id) AS hilos,
+              to_char(COALESCE(urgente.entrega_fecha, tarea.cita_fecha), 'YYYY-MM-DD') AS despacho_fecha,
+              CASE WHEN urgente.entrega_fecha IS NOT NULL THEN NULLIF(urgente.entrega_hora, '') ELSE NULLIF(tarea.cita_hora, '') END AS despacho_hora
+       FROM tarea
+       ${joinUrgente('tarea')}
+       WHERE tarea.cot <> '10000000000'
+         AND tarea.padre_id IS NULL
+         AND tarea.proyecto
+         ${veLista ? '' : this.filtroTarea(false)}
+       ORDER BY (tarea.estado = 'resuelta'), ${ordenUrgente('tarea')}
+       LIMIT 10`,
+    );
+    if (tareas.length === 0) {
+      const texto = veLista ? 'No hay proyectos.' : 'No hay proyectos habilitados para ti.';
+      return this.abrirMenu(telefono, `${texto}\n${menuGeneral(veLista)}`);
+    }
+    await this.guardarCharla(telefono, 'proyectos', null, tareas.map((tarea) => tarea.id), null);
+    const lineas = tareas.map((tarea, indice) => `${indice + 1}. ${this.linea(tarea)}`);
+    return this.dejar(telefono, true, ['Proyectos. Cada uno puede tener telemetría, infraestructura o pantalla HMI, o ninguno:', ...lineas, 'Escribe el número para entrar. Escribe menú para volver.'].join('\n'));
+  }
+
   private async buscar(telefono: string, texto: string): Promise<RespuestaBot> {
     const cot = numeroCot(texto);
     const veTodo = await this.veTodo(telefono);
-    const tareas = cot ? await this.porNumero(cot, veTodo) : texto.trim().length >= 2 ? await this.porCliente(texto.trim(), veTodo) : [];
+    const veProyectos = veTodo || (await this.esElevado(telefono));
+    const tareas = cot ? await this.porNumero(cot, veTodo, false, veProyectos) : texto.trim().length >= 2 ? await this.porCliente(texto.trim(), veTodo, false, veProyectos) : [];
     if (tareas.length === 0 && cot && !veTodo && (await this.cotExiste(cot))) {
       return this.abrirMenu(telefono, `COT ${cot}\nTodavía no está habilitada.\n${menuGeneral(await this.esElevado(telefono))}`);
     }
@@ -2114,7 +2143,14 @@ export class BotService {
     )`;
   }
 
-  private async porNumero(cot: string, veTodo: boolean, despacho = false): Promise<TareaBreve[]> {
+  private filtroBusqueda(veTodo: boolean, veProyectos: boolean): string {
+    if (veTodo) return '';
+    const habilitada = `EXISTS (SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = tarea.id::text)`;
+    if (veProyectos) return `AND (tarea.proyecto OR ${habilitada})`;
+    return `AND ${habilitada}`;
+  }
+
+  private async porNumero(cot: string, veTodo: boolean, despacho = false, veProyectos = false): Promise<TareaBreve[]> {
     return this.tareasBreves(
       `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
               (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tarea.id) AS hilos,
@@ -2124,14 +2160,14 @@ export class BotService {
        ${joinUrgente('tarea')}
        WHERE tarea.cot <> '10000000000' AND (tarea.cot = $1 OR $1 = ANY(tarea.cots))
          ${this.filtroCola(despacho)}
-         ${this.filtroTarea(veTodo)}
+         ${this.filtroBusqueda(veTodo, veProyectos)}
        ORDER BY ${ordenUrgente('tarea')}
        LIMIT 40`,
       [cot],
     );
   }
 
-  private async porCliente(nombre: string, veTodo: boolean, despacho = false): Promise<TareaBreve[]> {
+  private async porCliente(nombre: string, veTodo: boolean, despacho = false, veProyectos = false): Promise<TareaBreve[]> {
     return this.tareasBreves(
       `SELECT tarea.id, tarea.cot, tarea.cliente, tarea.lugar, tarea.campana,
               (SELECT count(*)::int FROM hilo_atencion h WHERE h.tarea_id = tarea.id) AS hilos,
@@ -2141,7 +2177,7 @@ export class BotService {
        ${joinUrgente('tarea')}
        WHERE tarea.cot <> '10000000000' AND tarea.cliente ILIKE $1 ESCAPE '\\'
          ${this.filtroCola(despacho)}
-         ${this.filtroTarea(veTodo)}
+         ${this.filtroBusqueda(veTodo, veProyectos)}
        ORDER BY ${ordenUrgente('tarea')}
        LIMIT 40`,
       [comoLike(nombre)],

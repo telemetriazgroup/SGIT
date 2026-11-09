@@ -42,6 +42,9 @@ export class FabricacionServicio {
   async pedir(hiloId: string, telefono: string, autor: { correo: string; nombre: string }, porWhatsapp = false): Promise<{ mensaje: string; enlace: string; orden: string }> {
     const hilo = (await listarHilos(this.conexiones.pg, await this.tareaDe(hiloId))).find((item) => item.id === hiloId);
     if (!hilo) throw new BadRequestException('Ese hilo ya no está.');
+    if (hilo.clase === 'infraestructura' || hilo.clase === 'hmi') {
+      throw new BadRequestException('Infraestructura y pantalla HMI no usan la orden de fabricación de telemetría.');
+    }
     const juicio = hiloListo(hilo);
     if (!juicio.listo) throw new BadRequestException(`El hilo no está listo para fabricar: ${juicio.falta.join('; ')}.`);
     const destino = telefono || (await this.telefonoDe(hilo.tarea_id));
@@ -166,6 +169,9 @@ export class FabricacionServicio {
     const hilos = await listarHilos(this.conexiones.pg, await this.tareaDe(hiloId));
     const hilo = hilos.find((item) => item.id === hiloId);
     if (!hilo) return 'Ese hilo ya no está.';
+    if (hilo.clase === 'infraestructura' || hilo.clase === 'hmi') {
+      return 'Infraestructura y pantalla HMI no usan la orden de fabricación de telemetría.';
+    }
     const config = await this.config();
     if (!config) return 'Odoo no está conectado.';
     const ficha = await this.fichaNota(hilo.tarea_id, hiloId);

@@ -23,6 +23,7 @@ type TareaLista = {
   referencias?: string[];
   habilitada?: boolean;
   campana?: boolean;
+  proyecto?: boolean;
   locales?: number;
   despacho_fecha?: string | null;
   despacho_hora?: string | null;
@@ -71,6 +72,7 @@ type Tarea = TareaLista & {
   movimientos?: Array<{ id: string; tipo: string; actor: string; detalle: string; creado_en: string }>;
   odoo?: { venta: VistaOdoo; ticket: VistaOdoo; cambios?: CambioOdoo[] } | null;
   campana?: boolean;
+  proyecto?: boolean;
   tiendas?: TiendaCampana[];
   servicios?: ServicioCampana[];
   borrador?: { codigo: string; maquina: string; autor_nombre: string } | null;
@@ -92,6 +94,7 @@ type HiloFicha = {
   despacho_validado: boolean;
   modem_serie?: string | null;
   modem_imei?: string | null;
+  clase?: 'telemetria' | 'infraestructura' | 'hmi';
 };
 
 type CopiaOdoo = {
@@ -252,6 +255,8 @@ export function PanelTareas({
   sistema,
   prioridad,
   habilita,
+  proyectos = false,
+  convierte = false,
 }: {
   apiUrl: string;
   token: string;
@@ -262,6 +267,8 @@ export function PanelTareas({
   sistema: boolean;
   prioridad: boolean;
   habilita: boolean;
+  proyectos?: boolean;
+  convierte?: boolean;
 }) {
   const [tareas, setTareas] = useState<TareaLista[]>([]);
   const [ficha, setFicha] = useState<Tarea | null>(null);
@@ -296,6 +303,7 @@ export function PanelTareas({
       const parametros = new URLSearchParams({ pagina: String(paginaDestino) });
       if (consultaDestino) parametros.set('q', consultaDestino);
       if (vista === 'resueltas') parametros.set('vista', 'resueltas');
+      if (proyectos) parametros.set('lista', 'proyectos');
       const lista = await pedir<Pagina & { tareas: TareaLista[] }>(apiUrl, token, `/tareas?${parametros}`);
       if (actual !== pedido.current) return;
       setTareas(lista.tareas);
@@ -432,7 +440,7 @@ export function PanelTareas({
 
   useEffect(() => {
     void cargar(pagina, sector, consulta).catch((error: unknown) => setAviso(texto(error)));
-  }, [apiUrl, token, pagina, sector, area, consulta, cola, vista]);
+  }, [apiUrl, token, pagina, sector, area, consulta, cola, vista, proyectos]);
 
   useEffect(() => {
     if (!tareaId) return;
@@ -659,6 +667,15 @@ export function PanelTareas({
           </button>
         ) : null}
         {ficha.campana ? <TiendasCampana apiUrl={apiUrl} token={token} ficha={ficha} editar={editar} atender={atender} alGuardar={setFicha} alFallar={setAviso} /> : null}
+        {convierte && !ficha.proyecto ? (
+          <div className="decisiones decisiones-ficha">
+            <button type="button" className="primario" onClick={() => void correr(pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/proyecto`, { method: 'POST', body: '{}' }), 'La tarea quedó en Proyectos.', 'Pasando a proyectos…').then((tarea) => { if (tarea) setFicha(tarea); })}>
+              Pasar a proyectos
+            </button>
+          </div>
+        ) : null}
+        {ficha.proyecto ? <FrentesProyecto apiUrl={apiUrl} token={token} ficha={ficha} convierte={convierte} alGuardar={setFicha} alFallar={setAviso} /> : null}
+        {convierte && (!ficha.cliente || !ficha.cita_fecha) ? <CompletarDetectado apiUrl={apiUrl} token={token} ficha={ficha} alGuardar={setFicha} alFallar={setAviso} /> : null}
         <h3>Datos de la cotización</h3>
         <dl>
           <Campo nombre="Ticket" valor={ficha.ticket} />
@@ -698,7 +715,7 @@ export function PanelTareas({
             apiUrl={apiUrl}
             token={token}
             tareaId={ficha.id}
-            titulo={ficha.campana ? 'Telemetrías de la cotización' : 'Telemetrías'}
+            titulo={ficha.proyecto ? 'Seguimientos del proyecto' : ficha.campana ? 'Telemetrías de la cotización' : 'Telemetrías'}
             hilos={ficha.hilos ?? []}
             fabricaciones={ficha.fabricaciones ?? []}
             notas={ficha.notas ?? []}
@@ -770,7 +787,7 @@ export function PanelTareas({
   return (
     <section className="ficha">
       <div className="herramientas">
-        <h2>Tareas</h2>
+        <h2>{proyectos ? 'Proyectos' : 'Tareas'}</h2>
         <form className="buscar buscar-tareas" onSubmit={enviarBusqueda}>
           <label className="sr" htmlFor="buscar-tareas">
             Buscar en tareas
@@ -790,7 +807,7 @@ export function PanelTareas({
           </button>
         ) : null}
       </div>
-      {editar ? (
+      {editar && !proyectos ? (
       <div className="sectores" role="tablist">
         <button type="button" className={sector === 'tareas' ? 'activo' : ''} onClick={() => elegir('tareas')}>
           Tareas <span>{cuentas.tareas}</span>
@@ -806,13 +823,13 @@ export function PanelTareas({
         </button>
       </div>
       ) : null}
-      <p>{textoSector(sector)}</p>
+      <p>{proyectos ? 'Una tarea pasa aquí cuando el administrador o el superusuario la convierte en proyecto. Puede quedar sin frentes o reunir telemetría, infraestructura de comunicaciones y pantalla HMI.' : textoSector(sector)}</p>
       {prioridad && sector !== 'otros' ? (
         <p className="meta">Marca las que verán el administrador, los técnicos y despacho. Las demás siguen abiertas y solo las ves tú, hasta que las marques o las cierres. Las cotizaciones nuevas del correo llegan marcadas. Si la cotización ya estaba resuelta, el correo queda en su historial y no vuelve a abiertas.</p>
       ) : habilita && sector === 'tareas' ? (
         <p className="meta">Ves las habilitadas y las que no. Marca las que verán el técnico y despacho.</p>
       ) : null}
-      {sector === 'tareas' ? (
+      {sector === 'tareas' || proyectos ? (
         <div className="filtro-area">
           <button type="button" className={vista === 'abiertas' ? 'activo' : ''} onClick={() => { setVista('abiertas'); setPagina(1); }}>
             Abiertas
@@ -869,9 +886,9 @@ export function PanelTareas({
           ›
         </button>
       </div>
-      {sector === 'tareas' ? (
+      {(sector === 'tareas' || proyectos) ? (
         tareas.length === 0 ? (
-          <p>{consulta ? 'No hay tareas con ese texto.' : editar ? 'Todavía no hay tareas.' : 'El superusuario todavía no habilitó tareas.'}</p>
+          <p>{consulta ? 'No hay tareas con ese texto.' : proyectos ? 'Todavía no hay proyectos.' : editar ? 'Todavía no hay tareas.' : 'El superusuario todavía no habilitó tareas.'}</p>
         ) : (
           <ul className="lista">
             {tareas.map((tarea) => (
@@ -890,7 +907,7 @@ export function PanelTareas({
                   <span className="avatar" aria-hidden="true">
                     C
                   </span>
-                  <span className="quien">{tarea.campana ? 'Campaña' : 'COT'} {cotVisible(tarea.cot, tarea.cots)}{!tarea.habilitada ? ' · Sin habilitar' : ''}</span>
+                  <span className="quien">{tarea.campana ? 'Campaña' : 'COT'} {cotVisible(tarea.cot, tarea.cots)}{proyectos ? ' · Proyecto' : ''}{!tarea.habilitada ? ' · Sin habilitar' : ''}</span>
                   <span className="resumen-fila">
                     <strong>{tarea.cliente || tarea.lugar || tarea.descripcion || 'Sin cliente'}</strong>
                     {tarea.campana ? <span className="extracto"> — {tarea.locales ?? 0} tiendas</span> : null}
@@ -1106,6 +1123,105 @@ export function PanelFechas({ apiUrl, token }: { apiUrl: string; token: string }
         </tbody>
       </table>
     </section>
+  );
+}
+
+function FrentesProyecto({
+  apiUrl,
+  token,
+  ficha,
+  convierte,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  ficha: Tarea;
+  convierte: boolean;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (aviso: string) => void;
+}) {
+  const correr = useTrabajo();
+  const frentes = [
+    { clase: 'telemetria', nombre: 'Telemetría' },
+    { clase: 'infraestructura', nombre: 'Infraestructura de comunicaciones' },
+    { clase: 'hmi', nombre: 'Pantalla HMI' },
+  ] as const;
+  async function abrir(clase: string, nombre: string) {
+    const tarea = await correr(
+      pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/frentes`, { method: 'POST', body: JSON.stringify({ clase }) }),
+      `Quedó abierto el seguimiento de ${nombre}.`,
+      'Abriendo el seguimiento…',
+    );
+    if (tarea) alGuardar(tarea);
+  }
+  return (
+    <section>
+      <h3>Frentes del proyecto</h3>
+      <p>Puede quedar sin ninguno o reunir los tres. Telemetría es la instalación del equipo. Infraestructura es el cable de comunicación y de alimentación. La pantalla HMI muestra los parámetros y comanda las máquinas.</p>
+      {convierte ? (
+        <div className="decisiones decisiones-ficha">
+          {frentes.map((frente) => (
+            <button key={frente.clase} type="button" onClick={() => void abrir(frente.clase, frente.nombre).catch((error: unknown) => alFallar(texto(error)))}>
+              Abrir {frente.nombre}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function CompletarDetectado({
+  apiUrl,
+  token,
+  ficha,
+  alGuardar,
+  alFallar,
+}: {
+  apiUrl: string;
+  token: string;
+  ficha: Tarea;
+  alGuardar: (tarea: Tarea) => void;
+  alFallar: (aviso: string) => void;
+}) {
+  const [cliente, setCliente] = useState(ficha.cliente ?? '');
+  const [fecha, setFecha] = useState(ficha.cita_fecha ?? '');
+  async function guardar(evento: FormEvent) {
+    evento.preventDefault();
+    let tarea = ficha;
+    if (!ficha.cliente && cliente.trim()) {
+      tarea = await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/correccion`, {
+        method: 'POST',
+        body: JSON.stringify({ campo: 'cliente', valor: cliente.trim() }),
+      });
+    }
+    if (!ficha.cita_fecha && fecha) {
+      tarea = await pedir<Tarea>(apiUrl, token, `/tareas/${ficha.id}/correccion`, {
+        method: 'POST',
+        body: JSON.stringify({ campo: 'cita_fecha', valor: fecha }),
+      });
+    }
+    alGuardar(tarea);
+  }
+  return (
+    <form className="rango" onSubmit={(evento) => void guardar(evento).catch((error: unknown) => alFallar(texto(error)))}>
+      <h3>Datos que el correo no trajo</h3>
+      <p>El administrador y el superusuario pueden completar el cliente y la fecha aunque no se hayan detectado.</p>
+      {!ficha.cliente ? (
+        <>
+          <label htmlFor="completar-cliente">Cliente</label>
+          <input id="completar-cliente" value={cliente} onChange={(evento) => setCliente(evento.target.value)} />
+        </>
+      ) : null}
+      {!ficha.cita_fecha ? (
+        <>
+          <label htmlFor="completar-fecha">Fecha</label>
+          <input id="completar-fecha" type="date" value={fecha} onChange={(evento) => setFecha(evento.target.value)} />
+        </>
+      ) : null}
+      <button type="submit" className="primario">Guardar datos</button>
+    </form>
   );
 }
 
@@ -2152,7 +2268,7 @@ function HilosCotizacion({
             return (
               <li key={hilo.id}>
                 <div className="bitacora-evento">
-                  <strong>Hilo {hilo.orden}</strong>
+                  <strong>Hilo {hilo.orden}{hilo.clase === 'infraestructura' ? ' · Infraestructura' : hilo.clase === 'hmi' ? ' · Pantalla HMI' : hilo.clase === 'telemetria' ? ' · Telemetría' : ''}</strong>
                   <span>{hilo.estado === 'listo' ? 'Listo para la orden de fabricación' : falta.join(' · ')}</span>
                 </div>
                 <p>
@@ -2178,7 +2294,7 @@ function HilosCotizacion({
                 {fabricaciones.filter((item) => item.hiloId === hilo.id).map((item) => (
                   <p key={item.enlace}>Orden {item.orden || 'sin número'} · {item.estado} · {item.ejecutor}.</p>
                 ))}
-                {editar ? (
+                {editar && hilo.clase !== 'infraestructura' && hilo.clase !== 'hmi' ? (
                   <button
                     type="button"
                     onClick={() => {

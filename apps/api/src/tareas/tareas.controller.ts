@@ -119,9 +119,38 @@ export class TareasController {
     @Query('pagina') pagina?: string,
     @Query('q') busqueda?: string,
     @Query('vista') vista?: string,
+    @Query('lista') lista?: string,
   ) {
     const usuario = await this.exigir(autorizacion);
-    return this.tareas.listar(numero(pagina), busqueda ?? '', vista === 'resueltas', usuario.rol === 'superusuario', veTodasLasTareas(usuario.rol));
+    return this.tareas.listar(numero(pagina), busqueda ?? '', vista === 'resueltas', usuario.rol === 'superusuario', veTodasLasTareas(usuario.rol), lista === 'proyectos');
+  }
+
+  @Post('tareas/:id/proyecto')
+  async proyecto(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    if (usuario.rol !== 'superusuario' && usuario.rol !== 'administrador') {
+      throw new ForbiddenException('Solo el administrador o el superusuario pasa una tarea a proyectos.');
+    }
+    await this.tareas.marcarProyecto(id);
+    return this.fichaDe(id);
+  }
+
+  @Post('tareas/:id/frentes')
+  async frente(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('id') id: string,
+    @Body() cuerpo: { clase?: string },
+  ) {
+    const usuario = await this.exigirEdicion(autorizacion);
+    if (usuario.rol !== 'superusuario' && usuario.rol !== 'administrador') {
+      throw new ForbiddenException('Solo el administrador o el superusuario abre un frente del proyecto.');
+    }
+    await this.tareas.exigeVisible(usuario.correo, 'tarea', id);
+    await this.tareas.abrirFrente(id, cuerpo?.clase ?? '');
+    return this.fichaDe(id);
   }
 
   @Post('habilitados')
