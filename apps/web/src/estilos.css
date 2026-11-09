@@ -637,6 +637,14 @@ button:disabled {
   font-weight: 650;
 }
 
+.equipo-guardado {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: #1c1915;
+  font-weight: 550;
+}
+
 .correo-app time {
   color: #5c564c;
   font-size: 0.82rem;

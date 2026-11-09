@@ -2310,20 +2310,20 @@ export class TareasService {
     const filtro = patronTexto(busqueda);
     const base = `WITH equipo AS (
          SELECT h.id::text AS id,
-                COALESCE(padre.id, t.id) AS tarea_id,
+                t.id AS tarea_id,
                 COALESCE(padre.cot, t.cot) AS cot,
                 COALESCE(padre.cliente, t.cliente, '') AS cliente,
-                COALESCE(padre.lugar, t.lugar, '') AS lugar,
+                COALESCE(tienda.nombre, padre.lugar, t.lugar, '') AS lugar,
                 COALESCE(padre.proyecto, t.proyecto) AS proyecto,
-                COALESCE(padre.campana, t.campana) AS campana,
-                COALESCE(padre.estado, t.estado) AS estado,
+                (COALESCE(padre.campana, false) OR tienda.id IS NOT NULL) AS campana,
+                t.estado,
                 COALESCE(tienda.cadena, '') AS cadena,
                 COALESCE(tienda.nombre, '') AS tienda,
                 h.orden,
                 COALESCE(h.clase, 'telemetria') AS clase,
                 COALESCE(h.contenedor, '') AS contenedor,
                 COALESCE(h.maquina, '') AS maquina,
-                COALESCE(NULLIF(tienda.codigo_equipo, ''), NULLIF(t.codigo_equipo, ''), NULLIF(padre.codigo_equipo, ''), '') AS telemetria,
+                ''::text AS telemetria,
                 COALESCE(h.chip_imei, '') AS chip_imei,
                 COALESCE(h.chip_celular, '') AS chip_celular,
                 COALESCE(h.modem_imei, '') AS modem_imei,
@@ -2340,94 +2340,19 @@ export class TareasService {
              OR COALESCE(h.chip_celular, '') <> ''
              OR COALESCE(h.modem_imei, '') <> ''
              OR COALESCE(h.modem_serie, '') <> ''
-             OR COALESCE(tienda.codigo_equipo, '') <> ''
-             OR COALESCE(t.codigo_equipo, '') <> ''
-           )
-         UNION ALL
-         SELECT tienda.id::text,
-                campana.id,
-                campana.cot,
-                COALESCE(campana.cliente, ''),
-                COALESCE(campana.lugar, ''),
-                campana.proyecto,
-                true,
-                campana.estado,
-                COALESCE(tienda.cadena, ''),
-                COALESCE(tienda.nombre, ''),
-                NULL,
-                'telemetria',
-                '',
-                '',
-                COALESCE(tienda.codigo_equipo, ''),
-                '',
-                '',
-                '',
-                ''
-         FROM tienda
-         JOIN tarea campana ON campana.id = tienda.tarea_id
-         WHERE campana.cot <> '10000000000'
-           AND COALESCE(tienda.codigo_equipo, '') <> ''
-           AND NOT EXISTS (
-             SELECT 1 FROM hilo_atencion h
-             WHERE h.tarea_id = tienda.tarea_hija_id
-               AND (
-                 COALESCE(h.contenedor, '') <> ''
-                 OR COALESCE(h.maquina, '') <> ''
-                 OR COALESCE(h.chip_imei, '') <> ''
-                 OR COALESCE(h.chip_celular, '') <> ''
-                 OR COALESCE(h.modem_imei, '') <> ''
-                 OR COALESCE(h.modem_serie, '') <> ''
-               )
-           )
-         UNION ALL
-         SELECT t.id::text,
-                t.id,
-                t.cot,
-                COALESCE(t.cliente, ''),
-                COALESCE(t.lugar, ''),
-                t.proyecto,
-                t.campana,
-                t.estado,
-                '',
-                '',
-                NULL,
-                'telemetria',
-                COALESCE(t.contenedor, ''),
-                COALESCE(t.maquina_equipo, ''),
-                COALESCE(t.codigo_equipo, ''),
-                '',
-                '',
-                '',
-                ''
-         FROM tarea t
-         WHERE t.padre_id IS NULL
-           AND t.cot <> '10000000000'
-           AND (
-             COALESCE(t.contenedor, '') <> ''
-             OR COALESCE(t.maquina_equipo, '') <> ''
-             OR COALESCE(t.codigo_equipo, '') <> ''
-           )
-           AND NOT EXISTS (
-             SELECT 1 FROM hilo_atencion h
-             WHERE h.tarea_id = t.id
-               AND (
-                 COALESCE(h.contenedor, '') <> ''
-                 OR COALESCE(h.maquina, '') <> ''
-                 OR COALESCE(h.chip_imei, '') <> ''
-                 OR COALESCE(h.chip_celular, '') <> ''
-                 OR COALESCE(h.modem_imei, '') <> ''
-                 OR COALESCE(h.modem_serie, '') <> ''
-               )
-           )
-           AND NOT EXISTS (
-             SELECT 1 FROM tienda WHERE tienda.tarea_id = t.id AND COALESCE(tienda.codigo_equipo, '') <> ''
            )
        )`;
     const donde = `FROM equipo
        WHERE ($2::boolean OR EXISTS (
-         SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = equipo.tarea_id::text
+         SELECT 1 FROM habilitado pub
+         WHERE pub.clase = 'tarea' AND pub.clave = equipo.tarea_id::text
+       ) OR EXISTS (
+         SELECT 1 FROM tarea hija
+         JOIN tarea padre ON padre.id = hija.padre_id
+         JOIN habilitado pub ON pub.clase = 'tarea' AND pub.clave = padre.id::text
+         WHERE hija.id = equipo.tarea_id
        ))
-         AND ($1::text IS NULL OR concat_ws(' ', cot, cliente, lugar, cadena, tienda, contenedor, maquina, telemetria, chip_imei, chip_celular, modem_imei, modem_serie) ILIKE $1 ESCAPE '\\')`;
+         AND ($1::text IS NULL OR concat_ws(' ', cot, cliente, lugar, cadena, tienda, contenedor, maquina, chip_celular, chip_imei, modem_imei, modem_serie) ILIKE $1 ESCAPE '\\')`;
     const conteo = await this.conexiones.pg.query<{ total: string }>(`${base} SELECT count(*)::text AS total ${donde}`, [filtro, verTareas]);
     const total = Number(conteo.rows[0]?.total ?? 0);
     const paginas = Math.max(1, Math.ceil(total / TAMANO_INVENTARIO));

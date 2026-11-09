@@ -3742,11 +3742,11 @@ export function PanelInventario({
           }}
         >
           <label className="sr" htmlFor="buscar-inventario">Buscar equipo</label>
-          <input id="buscar-inventario" value={busqueda} placeholder="Contenedor, máquina, telemetría o IMEI" onChange={(evento) => setBusqueda(evento.target.value)} />
+          <input id="buscar-inventario" value={busqueda} placeholder="Contenedor, máquina, chip, IMEI o COT" onChange={(evento) => setBusqueda(evento.target.value)} />
           <button type="submit">Buscar</button>
         </form>
       </div>
-      <p>Contenedores, máquinas, telemetrías e IMEI que ya entraron al sistema. Al abrir uno vas a su tarea o proyecto, resuelto o en curso.</p>
+      <p>Cada fila es un hilo con lo que quedó guardado: contenedor, máquina, número de chip e IMEI del módulo. Al abrirla vas a la ficha de esa cotización.</p>
       {aviso ? <p className="error">{aviso}</p> : null}
       <div className="paginas">
         <span>{total === 0 ? '0' : `${(pagina - 1) * 20 + 1}–${Math.min(pagina * 20, total)}`} de {total}</span>
@@ -3758,16 +3758,20 @@ export function PanelInventario({
           {equipos.map((equipo) => (
             <li key={equipo.id}>
               <button type="button" className="fila" onClick={() => onAbrir(equipo.tarea_id, equipo.proyecto)}>
-                <span className="avatar" aria-hidden="true">E</span>
+                <span className="avatar" aria-hidden="true">{equipo.orden ?? 'E'}</span>
                 <span className="quien">
-                  COT {equipo.cot}
+                  Hilo {equipo.orden} · {claseEquipo(equipo.clase)} · COT {equipo.cot}
                   {equipo.proyecto ? ' · Proyecto' : equipo.campana ? ' · Campaña' : ' · Tarea'}
                   {equipo.estado === 'resuelta' ? ' · Resuelta' : ' · En curso'}
-                  {equipo.orden ? ` · Hilo ${equipo.orden} ${claseEquipo(equipo.clase)}` : ''}
                 </span>
                 <span className="resumen-fila">
                   <strong>{[equipo.cadena, equipo.tienda].filter(Boolean).join(' · ') || equipo.cliente || equipo.lugar || 'Sin cliente'}</strong>
-                  <span className="extracto"> — {textoEquipo(equipo)}</span>
+                </span>
+                <span className="equipo-guardado">
+                  <span>Contenedor {equipo.contenedor || '—'}</span>
+                  <span>Máquina {equipo.maquina || '—'}</span>
+                  <span>Chip {equipo.chip_celular || '—'}</span>
+                  <span>IMEI módulo {equipo.modem_imei || '—'}</span>
                 </span>
               </button>
             </li>
