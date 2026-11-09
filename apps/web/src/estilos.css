@@ -2690,8 +2690,24 @@ button.enlace:disabled {
 
 .tiendas header {
   display: flex;
+  margin-bottom: 0;
+}
+
+.tienda-cabeza {
+  width: 100%;
+  display: flex;
   justify-content: space-between;
   gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tiendas header:has(+ *) {
   margin-bottom: 8px;
 }
 

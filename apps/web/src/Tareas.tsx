@@ -1592,15 +1592,28 @@ function TiendasCampana({
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
 }) {
+  const [busqueda, setBusqueda] = useState('');
+  const consulta = busqueda.trim().toLowerCase();
+  const tiendas = ficha.tiendas ?? [];
+  const visibles = consulta
+    ? tiendas.filter((tienda) => [tienda.cadena, tienda.nombre, tienda.direccion, tienda.contacto, tienda.celular, tienda.status, tienda.codigo_equipo, tienda.tamano].join(' ').toLowerCase().includes(consulta))
+    : tiendas;
   return (
     <section className="campana">
       <h3>Tiendas de la campaña</h3>
-      <p>La campaña agrupa tiendas. Cada tienda se abre como una cotización y ahí se crean sus hilos, uno o varios, desde esta ficha o por WhatsApp. Mientras esté pendiente o en seguimiento sigue en la cola de despacho.</p>
+      <p>La campaña agrupa tiendas. Cada tienda queda plegada: ábrela para ver el detalle. Cada una se abre como una cotización y ahí se crean sus hilos, uno o varios, desde esta ficha o por WhatsApp.</p>
       {editar ? <FormasTienda apiUrl={apiUrl} token={token} tareaId={ficha.id} alGuardar={alGuardar} alFallar={alFallar} /> : null}
-      {(ficha.tiendas ?? []).length === 0 ? <p>Todavía no hay tiendas en los correos de esta cotización.</p> : null}
+      {tiendas.length === 0 ? <p>Todavía no hay tiendas en los correos de esta cotización.</p> : (
+        <form className="buscar buscar-tareas" onSubmit={(evento) => evento.preventDefault()}>
+          <label className="sr" htmlFor="buscar-tienda">Buscar tienda</label>
+          <input id="buscar-tienda" value={busqueda} placeholder="Cadena, tienda, dirección o telemetría" onChange={(evento) => setBusqueda(evento.target.value)} />
+        </form>
+      )}
+      {tiendas.length > 0 ? <p>{visibles.length} de {tiendas.length} tiendas</p> : null}
+      {tiendas.length > 0 && visibles.length === 0 ? <p>No hay tiendas con ese texto.</p> : null}
       <ul className="tiendas">
-        {(ficha.tiendas ?? []).map((tienda) => (
-          <TarjetaTienda key={tienda.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} tienda={tienda} editar={editar} atender={atender} alGuardar={alGuardar} alFallar={alFallar} />
+        {visibles.map((tienda) => (
+          <TarjetaTienda key={tienda.id} apiUrl={apiUrl} token={token} tareaId={ficha.id} tienda={tienda} editar={editar} atender={atender} expandir={consulta.length > 0 && visibles.length === 1} alGuardar={alGuardar} alFallar={alFallar} />
         ))}
       </ul>
     </section>
@@ -1770,6 +1783,7 @@ function TarjetaTienda({
   tienda,
   editar,
   atender,
+  expandir,
   alGuardar,
   alFallar,
 }: {
@@ -1779,6 +1793,7 @@ function TarjetaTienda({
   tienda: TiendaCampana;
   editar: boolean;
   atender: boolean;
+  expandir: boolean;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
 }) {
@@ -1788,6 +1803,7 @@ function TarjetaTienda({
   const [codigo, setCodigo] = useState(tienda.codigo_equipo ?? '');
   const [hija, setHija] = useState<Tarea | null>(null);
   const [abierta, setAbierta] = useState(() => tiendasVistas().has(claveVista));
+  const [detalle, setDetalle] = useState(() => tiendasVistas().has(claveVista));
   const hijaId = useRef<string | null>(null);
   const [abriendo, setAbriendo] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -1821,6 +1837,10 @@ function TarjetaTienda({
     };
   }, [abierta, revision, apiUrl, token, tareaId, tienda.id]);
 
+  useEffect(() => {
+    if (expandir) setDetalle(true);
+  }, [expandir]);
+
   function abrirTienda() {
     guardarTiendaVista(claveVista, true);
     setAbierta(true);
@@ -1837,9 +1857,13 @@ function TarjetaTienda({
   return (
     <li className={tienda.estado === 'resuelta' ? 'tienda-lista' : ''}>
       <header>
-        <strong>{[tienda.cadena, tienda.nombre].filter(Boolean).join(' · ')}</strong>
-        <span>{etiquetaTienda(tienda.estado)}{hilos > 0 ? ` · ${hilos} hilo${hilos === 1 ? '' : 's'}` : ''}</span>
+        <button type="button" className="tienda-cabeza" aria-expanded={detalle} onClick={() => setDetalle((actual) => !actual)}>
+          <strong>{[tienda.cadena, tienda.nombre].filter(Boolean).join(' · ')}</strong>
+          <span>{etiquetaTienda(tienda.estado)}{hilos > 0 ? ` · ${hilos} hilo${hilos === 1 ? '' : 's'}` : ''} · {detalle ? 'Ocultar' : 'Ver'}</span>
+        </button>
       </header>
+      {detalle ? (
+      <>
       <dl>
         <Campo nombre="Contacto" valor={tienda.contacto || null} />
         <Campo nombre="Celular" valor={tienda.celular || null} />
@@ -1988,6 +2012,8 @@ function TarjetaTienda({
             alFallar={alFallar}
           />
         </div>
+      ) : null}
+      </>
       ) : null}
     </li>
   );
@@ -3522,6 +3548,343 @@ function FotoCierre({ apiUrl, token, mensajeId }: { apiUrl: string; token: strin
   }, [apiUrl, token, mensajeId]);
   if (!url) return null;
   return <img className="nota-foto" src={url} alt="Foto del cierre" />;
+}
+
+type EquipoInventario = {
+  id: string;
+  tarea_id: string;
+  cot: string;
+  cliente: string;
+  lugar: string;
+  proyecto: boolean;
+  campana: boolean;
+  estado: string;
+  cadena: string;
+  tienda: string;
+  orden: number | null;
+  clase: string;
+  contenedor: string;
+  maquina: string;
+  telemetria: string;
+  chip_imei: string;
+  chip_celular: string;
+  modem_imei: string;
+  modem_serie: string;
+};
+
+function textoEquipo(equipo: EquipoInventario): string {
+  const partes = [
+    equipo.contenedor ? `Contenedor ${equipo.contenedor}` : '',
+    equipo.maquina ? `Máquina ${equipo.maquina}` : '',
+    equipo.telemetria ? `Telemetría ${equipo.telemetria}` : '',
+    equipo.chip_celular ? `Celular ${equipo.chip_celular}` : '',
+    equipo.chip_imei ? `IMEI chip ${equipo.chip_imei}` : '',
+    equipo.modem_serie ? `Módulo ${equipo.modem_serie}` : '',
+    equipo.modem_imei ? `IMEI módulo ${equipo.modem_imei}` : '',
+  ].filter(Boolean);
+  return partes.join(' · ') || 'Sin datos de equipo';
+}
+
+function claseEquipo(clase: string): string {
+  if (clase === 'infraestructura') return 'Infraestructura';
+  if (clase === 'hmi') return 'Pantalla HMI';
+  return 'Telemetría';
+}
+
+export function PanelInventario({
+  apiUrl,
+  token,
+  onAbrir,
+}: {
+  apiUrl: string;
+  token: string;
+  onAbrir: (tareaId: string, proyecto: boolean) => void;
+}) {
+  const [busqueda, setBusqueda] = useState('');
+  const [consulta, setConsulta] = useState('');
+  const [pagina, setPagina] = useState(1);
+  const [equipos, setEquipos] = useState<EquipoInventario[]>([]);
+  const [total, setTotal] = useState(0);
+  const [paginas, setPaginas] = useState(1);
+  const [aviso, setAviso] = useState<string | null>(null);
+
+  useEffect(() => {
+    const parametros = new URLSearchParams({ pagina: String(pagina) });
+    if (consulta) parametros.set('q', consulta);
+    void pedir<{ equipos: EquipoInventario[]; total: number; pagina: number; paginas: number }>(apiUrl, token, `/inventario?${parametros}`)
+      .then((paginaLeida) => {
+        setEquipos(paginaLeida.equipos);
+        setTotal(paginaLeida.total);
+        setPaginas(paginaLeida.paginas);
+        setPagina(paginaLeida.pagina);
+        setAviso(null);
+      })
+      .catch((error: unknown) => setAviso(texto(error)));
+  }, [apiUrl, token, pagina, consulta]);
+
+  return (
+    <section className="ficha">
+      <div className="herramientas">
+        <h2>Inventario</h2>
+        <form
+          className="buscar buscar-tareas"
+          onSubmit={(evento) => {
+            evento.preventDefault();
+            setPagina(1);
+            setConsulta(busqueda.trim());
+          }}
+        >
+          <label className="sr" htmlFor="buscar-inventario">Buscar equipo</label>
+          <input id="buscar-inventario" value={busqueda} placeholder="Contenedor, máquina, telemetría o IMEI" onChange={(evento) => setBusqueda(evento.target.value)} />
+          <button type="submit">Buscar</button>
+        </form>
+      </div>
+      <p>Contenedores, máquinas, telemetrías e IMEI que ya entraron al sistema. Al abrir uno vas a su tarea o proyecto, resuelto o en curso.</p>
+      {aviso ? <p className="error">{aviso}</p> : null}
+      <div className="paginas">
+        <span>{total === 0 ? '0' : `${(pagina - 1) * 20 + 1}–${Math.min(pagina * 20, total)}`} de {total}</span>
+        <button type="button" aria-label="Anterior" disabled={pagina <= 1} onClick={() => setPagina(pagina - 1)}>‹</button>
+        <button type="button" aria-label="Siguiente" disabled={pagina >= paginas} onClick={() => setPagina(pagina + 1)}>›</button>
+      </div>
+      {equipos.length === 0 ? <p>{consulta ? 'No hay equipos con ese texto.' : 'Todavía no hay equipos registrados.'}</p> : (
+        <ul className="lista">
+          {equipos.map((equipo) => (
+            <li key={equipo.id}>
+              <button type="button" className="fila" onClick={() => onAbrir(equipo.tarea_id, equipo.proyecto)}>
+                <span className="avatar" aria-hidden="true">E</span>
+                <span className="quien">
+                  COT {equipo.cot}
+                  {equipo.proyecto ? ' · Proyecto' : equipo.campana ? ' · Campaña' : ' · Tarea'}
+                  {equipo.estado === 'resuelta' ? ' · Resuelta' : ' · En curso'}
+                  {equipo.orden ? ` · Hilo ${equipo.orden} ${claseEquipo(equipo.clase)}` : ''}
+                </span>
+                <span className="resumen-fila">
+                  <strong>{[equipo.cadena, equipo.tienda].filter(Boolean).join(' · ') || equipo.cliente || equipo.lugar || 'Sin cliente'}</strong>
+                  <span className="extracto"> — {textoEquipo(equipo)}</span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+type OrigenConciliacion = EquipoInventario & { origen: 'hilo' | 'tienda' };
+type HiloDestino = { id: string; orden: number; clase: string; ocupado: boolean; resumen: string };
+type DestinoTarea = { id: string; cot: string; cliente: string; lugar: string; proyecto: boolean; campana: boolean; estado: string; hilos: HiloDestino[] };
+type DestinoTienda = { id: string; campana_id: string; tarea_hija_id: string | null; cot: string; cliente: string; cadena: string; nombre: string; codigo: string; proyecto: boolean; estado: string; hilos: HiloDestino[] };
+
+export function PanelConciliacion({ apiUrl, token }: { apiUrl: string; token: string }) {
+  const [busqueda, setBusqueda] = useState('');
+  const [consulta, setConsulta] = useState('');
+  const [pagina, setPagina] = useState(1);
+  const [origenes, setOrigenes] = useState<OrigenConciliacion[]>([]);
+  const [total, setTotal] = useState(0);
+  const [paginas, setPaginas] = useState(1);
+  const [elegido, setElegido] = useState<OrigenConciliacion | null>(null);
+  const [buscaDestino, setBuscaDestino] = useState('');
+  const [destino, setDestino] = useState('');
+  const [tareas, setTareas] = useState<DestinoTarea[]>([]);
+  const [tiendas, setTiendas] = useState<DestinoTienda[]>([]);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [hecho, setHecho] = useState<string | null>(null);
+  const [pasando, setPasando] = useState(false);
+
+  useEffect(() => {
+    const parametros = new URLSearchParams({ pagina: String(pagina) });
+    if (consulta) parametros.set('q', consulta);
+    void pedir<{ origenes: OrigenConciliacion[]; total: number; pagina: number; paginas: number }>(apiUrl, token, `/conciliacion?${parametros}`)
+      .then((paginaLeida) => {
+        setOrigenes(paginaLeida.origenes);
+        setTotal(paginaLeida.total);
+        setPaginas(paginaLeida.paginas);
+        setPagina(paginaLeida.pagina);
+      })
+      .catch((error: unknown) => setAviso(texto(error)));
+  }, [apiUrl, token, pagina, consulta, hecho]);
+
+  useEffect(() => {
+    if (destino.trim().length < 2) {
+      setTareas([]);
+      setTiendas([]);
+      return;
+    }
+    const reloj = window.setTimeout(() => {
+      void pedir<{ tareas: DestinoTarea[]; tiendas: DestinoTienda[] }>(apiUrl, token, `/conciliacion/destinos?q=${encodeURIComponent(destino.trim())}`)
+        .then((lista) => {
+          setTareas(lista.tareas);
+          setTiendas(lista.tiendas);
+        })
+        .catch((error: unknown) => setAviso(texto(error)));
+    }, 250);
+    return () => window.clearTimeout(reloj);
+  }, [apiUrl, token, destino]);
+
+  async function pasar(destinoHiloId: string, ocupado: boolean) {
+    if (!elegido) return;
+    const pregunta = ocupado
+      ? 'Ese hilo ya tiene equipo. Se intercambian la telemetría, el contenedor, la máquina y los IMEI.'
+      : 'Se libera del lugar actual y queda en ese hilo.';
+    if (!window.confirm(pregunta)) return;
+    setPasando(true);
+    setAviso(null);
+    try {
+      const respuesta = await pedir<{ texto: string }>(apiUrl, token, '/conciliacion', {
+        method: 'POST',
+        body: JSON.stringify({ origen: elegido.origen, origenId: elegido.id, destinoHiloId }),
+      });
+      setHecho(respuesta.texto);
+      setElegido(null);
+      setDestino('');
+    } catch (error: unknown) {
+      setAviso(texto(error));
+    } finally {
+      setPasando(false);
+    }
+  }
+
+  async function abrirYPasar(tareaId: string) {
+    if (!elegido) return;
+    if (!window.confirm('Se abre un hilo libre y la telemetría queda ahí.')) return;
+    setPasando(true);
+    setAviso(null);
+    try {
+      const hilo = await pedir<{ hiloId: string }>(apiUrl, token, '/conciliacion/hilo', {
+        method: 'POST',
+        body: JSON.stringify({ tareaId }),
+      });
+      const respuesta = await pedir<{ texto: string }>(apiUrl, token, '/conciliacion', {
+        method: 'POST',
+        body: JSON.stringify({ origen: elegido.origen, origenId: elegido.id, destinoHiloId: hilo.hiloId }),
+      });
+      setHecho(respuesta.texto);
+      setElegido(null);
+      setDestino('');
+    } catch (error: unknown) {
+      setAviso(texto(error));
+    } finally {
+      setPasando(false);
+    }
+  }
+
+  async function abrirTiendaYPasar(tienda: DestinoTienda) {
+    if (!elegido) return;
+    if (!window.confirm('Se abre un hilo de esta tienda y la telemetría queda ahí.')) return;
+    setPasando(true);
+    setAviso(null);
+    try {
+      let tareaId = tienda.tarea_hija_id;
+      if (!tareaId) {
+        const abierta = await pedir<{ tareaId: string }>(apiUrl, token, `/tareas/${tienda.campana_id}/tiendas/${tienda.id}/abrir`, { method: 'POST', body: '{}' });
+        tareaId = abierta.tareaId;
+      }
+      const hilo = await pedir<{ hiloId: string }>(apiUrl, token, '/conciliacion/hilo', {
+        method: 'POST',
+        body: JSON.stringify({ tareaId }),
+      });
+      const respuesta = await pedir<{ texto: string }>(apiUrl, token, '/conciliacion', {
+        method: 'POST',
+        body: JSON.stringify({ origen: elegido.origen, origenId: elegido.id, destinoHiloId: hilo.hiloId }),
+      });
+      setHecho(respuesta.texto);
+      setElegido(null);
+      setDestino('');
+    } catch (error: unknown) {
+      setAviso(texto(error));
+    } finally {
+      setPasando(false);
+    }
+  }
+
+  return (
+    <section className="ficha">
+      <div className="herramientas">
+        <h2>Conciliación</h2>
+        <form className="buscar buscar-tareas" onSubmit={(evento) => { evento.preventDefault(); setPagina(1); setConsulta(busqueda.trim()); }}>
+          <label className="sr" htmlFor="buscar-conciliacion">Buscar telemetría mal ubicada</label>
+          <input id="buscar-conciliacion" value={busqueda} placeholder="Contenedor, tienda, telemetría o IMEI" onChange={(evento) => setBusqueda(evento.target.value)} />
+          <button type="submit">Buscar</button>
+        </form>
+      </div>
+      <p>Una telemetría instalada puede haber quedado en otra tienda, en otra tarea o en otro hilo. Eliges la que está mal y la pasas al hilo de la tienda o de la tarea que corresponde. El lugar de origen queda libre. Si el hilo de destino ya tiene equipo, los dos se intercambian.</p>
+      {aviso ? <p className="error">{aviso}</p> : null}
+      {hecho ? <p>{hecho}</p> : null}
+      {elegido ? (
+        <section>
+          <h3>Vas a mover</h3>
+          <p>
+            COT {elegido.cot}
+            {elegido.tienda ? ` · ${[elegido.cadena, elegido.tienda].filter(Boolean).join(' · ')}` : ''}
+            {elegido.orden ? ` · Hilo ${elegido.orden}` : ''}
+            {' · '}{textoEquipo(elegido)}
+          </p>
+          <button type="button" onClick={() => setElegido(null)}>Elegir otra</button>
+          <form className="buscar buscar-tareas" onSubmit={(evento) => { evento.preventDefault(); setDestino(buscaDestino.trim()); }}>
+            <label className="sr" htmlFor="destino-conciliacion">Buscar destino</label>
+            <input id="destino-conciliacion" value={buscaDestino} placeholder="COT, cliente o tienda de destino" onChange={(evento) => setBuscaDestino(evento.target.value)} />
+            <button type="submit">Buscar destino</button>
+          </form>
+          {tareas.map((tarea) => (
+            <article key={tarea.id} className="forma-tienda">
+              <h4>COT {tarea.cot} · {tarea.proyecto ? 'Proyecto' : tarea.campana ? 'Campaña' : 'Tarea'} · {tarea.estado === 'resuelta' ? 'Resuelta' : 'En curso'}</h4>
+              <p>{tarea.cliente || tarea.lugar || 'Sin cliente'}</p>
+              <div className="bitacora-acciones">
+                {tarea.hilos.map((hilo) => (
+                  <button key={hilo.id} type="button" disabled={pasando || (elegido.origen === 'hilo' && elegido.id === hilo.id)} onClick={() => void pasar(hilo.id, hilo.ocupado)}>
+                    Hilo {hilo.orden} · {hilo.resumen}
+                  </button>
+                ))}
+                <button type="button" disabled={pasando} onClick={() => void abrirYPasar(tarea.id)}>Abrir un hilo libre y pasar</button>
+              </div>
+            </article>
+          ))}
+          {tiendas.map((tienda) => (
+            <article key={tienda.id} className="forma-tienda">
+              <h4>{[tienda.cadena, tienda.nombre].filter(Boolean).join(' · ')} · COT {tienda.cot}</h4>
+              <p>{tienda.codigo ? `Telemetría ${tienda.codigo}` : 'Sin telemetría en la tienda'} · {tienda.estado === 'resuelta' ? 'Resuelta' : 'En curso'}</p>
+              <div className="bitacora-acciones">
+                {tienda.hilos.map((hilo) => (
+                  <button key={hilo.id} type="button" disabled={pasando || (elegido.origen === 'hilo' && elegido.id === hilo.id)} onClick={() => void pasar(hilo.id, hilo.ocupado)}>
+                    Hilo {hilo.orden} · {hilo.resumen}
+                  </button>
+                ))}
+                <button type="button" disabled={pasando} onClick={() => void abrirTiendaYPasar(tienda)}>
+                  {tienda.hilos.length === 0 ? 'Abrir el hilo de la tienda y pasar' : 'Abrir otro hilo y pasar'}
+                </button>
+              </div>
+            </article>
+          ))}
+          {destino.trim().length >= 2 && tareas.length === 0 && tiendas.length === 0 ? <p>No hay tareas ni tiendas con ese texto.</p> : null}
+        </section>
+      ) : (
+        <>
+          <div className="paginas">
+            <span>{total === 0 ? '0' : `${(pagina - 1) * 20 + 1}–${Math.min(pagina * 20, total)}`} de {total}</span>
+            <button type="button" aria-label="Anterior" disabled={pagina <= 1} onClick={() => setPagina(pagina - 1)}>‹</button>
+            <button type="button" aria-label="Siguiente" disabled={pagina >= paginas} onClick={() => setPagina(pagina + 1)}>›</button>
+          </div>
+          {origenes.length === 0 ? <p>{consulta ? 'No hay telemetría con ese texto.' : 'Todavía no hay telemetría registrada para conciliar.'}</p> : (
+            <ul className="lista">
+              {origenes.map((origen) => (
+                <li key={`${origen.origen}-${origen.id}`}>
+                  <button type="button" className="fila" onClick={() => { setElegido(origen); setHecho(null); }}>
+                    <span className="avatar" aria-hidden="true">C</span>
+                    <span className="quien">COT {origen.cot}{origen.orden ? ` · Hilo ${origen.orden}` : ' · Tienda'}{origen.estado === 'resuelta' ? ' · Resuelta' : ' · En curso'}</span>
+                    <span className="resumen-fila">
+                      <strong>{[origen.cadena, origen.tienda].filter(Boolean).join(' · ') || origen.cliente || origen.lugar || 'Sin cliente'}</strong>
+                      <span className="extracto"> — {textoEquipo(origen)}</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
 }
 
 function etiquetaNota(tipo: string): string {

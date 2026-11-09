@@ -11,7 +11,7 @@ import { PanelOdoo } from './Odoo';
 import { PanelRespaldo } from './Respaldo';
 import { PanelSalida } from './Salida';
 import { PanelQr } from './Qr';
-import { PanelDiccionario, PanelFechas, PanelTareas } from './Tareas';
+import { PanelConciliacion, PanelDiccionario, PanelFechas, PanelInventario, PanelTareas } from './Tareas';
 
 type Avance = {
   fase: 'ocioso' | 'listando' | 'importando' | 'listo' | 'error';
@@ -132,7 +132,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
   const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'proyectos' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'virtual' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'proyectos' | 'inventario' | 'conciliacion' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'virtual' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
     editar && /\/servicio\/salida\/?$/.test(window.location.pathname) ? 'salida' : sistema ? 'recibidos' : 'tareas',
   );
   const [redactando, setRedactando] = useState(false);
@@ -472,6 +472,28 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
           >
             Proyectos
           </button>
+          <button
+            type="button"
+            className={vista === 'inventario' ? 'activo' : ''}
+            onClick={() => {
+              setVista('inventario');
+              setHilo(null);
+            }}
+          >
+            Inventario
+          </button>
+          {sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador' ? (
+          <button
+            type="button"
+            className={vista === 'conciliacion' ? 'activo' : ''}
+            onClick={() => {
+              setVista('conciliacion');
+              setHilo(null);
+            }}
+          >
+            Conciliación
+          </button>
+          ) : null}
           {sistema ? (
           <button
             type="button"
@@ -637,6 +659,18 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
           ) : null}
           {vista === 'tareas' ? (
             <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} atender={editar || sesion.usuario.rol === 'tecnico'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} habilita={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} convierte={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} />
+          ) : vista === 'inventario' ? (
+            <PanelInventario
+              apiUrl={apiUrl}
+              token={sesion.token}
+              onAbrir={(tareaId, proyecto) => {
+                setTareaAbierta(tareaId);
+                setVista(proyecto ? 'proyectos' : 'tareas');
+                setHilo(null);
+              }}
+            />
+          ) : vista === 'conciliacion' ? (
+            <PanelConciliacion apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'proyectos' ? (
             <PanelTareas apiUrl={apiUrl} token={sesion.token} tareaId={tareaAbierta} editar={editar} anotar={sesion.usuario.rol !== 'despacho' && sesion.usuario.rol !== 'almacen'} atender={editar || sesion.usuario.rol === 'tecnico'} sistema={sistema} prioridad={sesion.usuario.rol === 'superusuario'} habilita={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} proyectos convierte={sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador'} />
           ) : vista === 'equipo' ? (

@@ -2255,6 +2255,367 @@ export class TareasService {
     return ancla.gmail_thread_id;
   }
 
+  async inventario(pagina: number, busqueda = '', verTareas = false): Promise<PaginaInventario> {
+    const filtro = patronTexto(busqueda);
+    const base = `WITH equipo AS (
+         SELECT h.id::text AS id,
+                COALESCE(padre.id, t.id) AS tarea_id,
+                COALESCE(padre.cot, t.cot) AS cot,
+                COALESCE(padre.cliente, t.cliente, '') AS cliente,
+                COALESCE(padre.lugar, t.lugar, '') AS lugar,
+                COALESCE(padre.proyecto, t.proyecto) AS proyecto,
+                COALESCE(padre.campana, t.campana) AS campana,
+                COALESCE(padre.estado, t.estado) AS estado,
+                COALESCE(tienda.cadena, '') AS cadena,
+                COALESCE(tienda.nombre, '') AS tienda,
+                h.orden,
+                COALESCE(h.clase, 'telemetria') AS clase,
+                COALESCE(h.contenedor, '') AS contenedor,
+                COALESCE(h.maquina, '') AS maquina,
+                COALESCE(NULLIF(tienda.codigo_equipo, ''), NULLIF(t.codigo_equipo, ''), NULLIF(padre.codigo_equipo, ''), '') AS telemetria,
+                COALESCE(h.chip_imei, '') AS chip_imei,
+                COALESCE(h.chip_celular, '') AS chip_celular,
+                COALESCE(h.modem_imei, '') AS modem_imei,
+                COALESCE(h.modem_serie, '') AS modem_serie
+         FROM hilo_atencion h
+         JOIN tarea t ON t.id = h.tarea_id
+         LEFT JOIN tarea padre ON padre.id = t.padre_id
+         LEFT JOIN tienda ON tienda.tarea_hija_id = t.id
+         WHERE COALESCE(padre.cot, t.cot) <> '10000000000'
+           AND (
+             COALESCE(h.contenedor, '') <> ''
+             OR COALESCE(h.maquina, '') <> ''
+             OR COALESCE(h.chip_imei, '') <> ''
+             OR COALESCE(h.chip_celular, '') <> ''
+             OR COALESCE(h.modem_imei, '') <> ''
+             OR COALESCE(h.modem_serie, '') <> ''
+             OR COALESCE(tienda.codigo_equipo, '') <> ''
+             OR COALESCE(t.codigo_equipo, '') <> ''
+           )
+         UNION ALL
+         SELECT tienda.id::text,
+                campana.id,
+                campana.cot,
+                COALESCE(campana.cliente, ''),
+                COALESCE(campana.lugar, ''),
+                campana.proyecto,
+                true,
+                campana.estado,
+                COALESCE(tienda.cadena, ''),
+                COALESCE(tienda.nombre, ''),
+                NULL,
+                'telemetria',
+                '',
+                '',
+                COALESCE(tienda.codigo_equipo, ''),
+                '',
+                '',
+                '',
+                ''
+         FROM tienda
+         JOIN tarea campana ON campana.id = tienda.tarea_id
+         WHERE campana.cot <> '10000000000'
+           AND COALESCE(tienda.codigo_equipo, '') <> ''
+           AND NOT EXISTS (
+             SELECT 1 FROM hilo_atencion h
+             WHERE h.tarea_id = tienda.tarea_hija_id
+               AND (
+                 COALESCE(h.contenedor, '') <> ''
+                 OR COALESCE(h.maquina, '') <> ''
+                 OR COALESCE(h.chip_imei, '') <> ''
+                 OR COALESCE(h.chip_celular, '') <> ''
+                 OR COALESCE(h.modem_imei, '') <> ''
+                 OR COALESCE(h.modem_serie, '') <> ''
+               )
+           )
+         UNION ALL
+         SELECT t.id::text,
+                t.id,
+                t.cot,
+                COALESCE(t.cliente, ''),
+                COALESCE(t.lugar, ''),
+                t.proyecto,
+                t.campana,
+                t.estado,
+                '',
+                '',
+                NULL,
+                'telemetria',
+                COALESCE(t.contenedor, ''),
+                COALESCE(t.maquina_equipo, ''),
+                COALESCE(t.codigo_equipo, ''),
+                '',
+                '',
+                '',
+                ''
+         FROM tarea t
+         WHERE t.padre_id IS NULL
+           AND t.cot <> '10000000000'
+           AND (
+             COALESCE(t.contenedor, '') <> ''
+             OR COALESCE(t.maquina_equipo, '') <> ''
+             OR COALESCE(t.codigo_equipo, '') <> ''
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM hilo_atencion h
+             WHERE h.tarea_id = t.id
+               AND (
+                 COALESCE(h.contenedor, '') <> ''
+                 OR COALESCE(h.maquina, '') <> ''
+                 OR COALESCE(h.chip_imei, '') <> ''
+                 OR COALESCE(h.chip_celular, '') <> ''
+                 OR COALESCE(h.modem_imei, '') <> ''
+                 OR COALESCE(h.modem_serie, '') <> ''
+               )
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM tienda WHERE tienda.tarea_id = t.id AND COALESCE(tienda.codigo_equipo, '') <> ''
+           )
+       )`;
+    const donde = `FROM equipo
+       WHERE ($2::boolean OR EXISTS (
+         SELECT 1 FROM habilitado pub WHERE pub.clase = 'tarea' AND pub.clave = equipo.tarea_id::text
+       ))
+         AND ($1::text IS NULL OR concat_ws(' ', cot, cliente, lugar, cadena, tienda, contenedor, maquina, telemetria, chip_imei, chip_celular, modem_imei, modem_serie) ILIKE $1 ESCAPE '\\')`;
+    const conteo = await this.conexiones.pg.query<{ total: string }>(`${base} SELECT count(*)::text AS total ${donde}`, [filtro, verTareas]);
+    const total = Number(conteo.rows[0]?.total ?? 0);
+    const paginas = Math.max(1, Math.ceil(total / TAMANO_INVENTARIO));
+    const actual = Math.min(Math.max(1, pagina), paginas);
+    const filas = await this.conexiones.pg.query<FilaInventario>(
+      `${base}
+       SELECT id, tarea_id, cot, cliente, lugar, proyecto, campana, estado, cadena, tienda, orden, clase,
+              contenedor, maquina, telemetria, chip_imei, chip_celular, modem_imei, modem_serie
+       ${donde}
+       ORDER BY (estado = 'resuelta'), cot, orden NULLS LAST, tienda
+       LIMIT $3 OFFSET $4`,
+      [filtro, verTareas, TAMANO_INVENTARIO, (actual - 1) * TAMANO_INVENTARIO],
+    );
+    return { equipos: filas.rows, total, pagina: actual, paginas };
+  }
+
+  async conciliacion(pagina: number, busqueda = ''): Promise<PaginaConciliacion> {
+    const filtro = patronTexto(busqueda);
+    const base = `WITH origen AS (
+         SELECT h.id::text AS id, 'hilo'::text AS origen,
+                COALESCE(padre.id, t.id) AS tarea_id,
+                COALESCE(padre.cot, t.cot) AS cot,
+                COALESCE(padre.cliente, t.cliente, '') AS cliente,
+                COALESCE(padre.lugar, t.lugar, '') AS lugar,
+                COALESCE(padre.proyecto, t.proyecto) AS proyecto,
+                (COALESCE(padre.campana, t.campana) OR tienda.id IS NOT NULL) AS campana,
+                COALESCE(padre.estado, t.estado) AS estado,
+                COALESCE(tienda.cadena, '') AS cadena,
+                COALESCE(tienda.nombre, '') AS tienda,
+                h.orden,
+                COALESCE(h.clase, 'telemetria') AS clase,
+                COALESCE(h.contenedor, '') AS contenedor,
+                COALESCE(h.maquina, '') AS maquina,
+                COALESCE(NULLIF(tienda.codigo_equipo, ''), NULLIF(t.codigo_equipo, ''), '') AS telemetria,
+                COALESCE(h.chip_imei, '') AS chip_imei,
+                COALESCE(h.chip_celular, '') AS chip_celular,
+                COALESCE(h.modem_imei, '') AS modem_imei,
+                COALESCE(h.modem_serie, '') AS modem_serie
+         FROM hilo_atencion h
+         JOIN tarea t ON t.id = h.tarea_id
+         LEFT JOIN tarea padre ON padre.id = t.padre_id
+         LEFT JOIN tienda ON tienda.tarea_hija_id = t.id
+         WHERE COALESCE(padre.cot, t.cot) <> '10000000000'
+           AND (
+             COALESCE(h.contenedor, '') <> '' OR COALESCE(h.maquina, '') <> ''
+             OR COALESCE(h.chip_imei, '') <> '' OR COALESCE(h.chip_celular, '') <> ''
+             OR COALESCE(h.modem_imei, '') <> '' OR COALESCE(h.modem_serie, '') <> ''
+             OR COALESCE(tienda.codigo_equipo, '') <> ''
+             OR (h.orden = 1 AND COALESCE(t.codigo_equipo, '') <> '')
+           )
+         UNION ALL
+         SELECT tienda.id::text, 'tienda',
+                campana.id, campana.cot, COALESCE(campana.cliente, ''), COALESCE(campana.lugar, ''),
+                campana.proyecto, true, campana.estado,
+                COALESCE(tienda.cadena, ''), COALESCE(tienda.nombre, ''),
+                NULL, 'telemetria', '', '', COALESCE(tienda.codigo_equipo, ''), '', '', '', ''
+         FROM tienda
+         JOIN tarea campana ON campana.id = tienda.tarea_id
+         WHERE campana.cot <> '10000000000'
+           AND COALESCE(tienda.codigo_equipo, '') <> ''
+           AND NOT EXISTS (
+             SELECT 1 FROM hilo_atencion h
+             WHERE h.tarea_id = tienda.tarea_hija_id
+               AND (
+                 COALESCE(h.contenedor, '') <> '' OR COALESCE(h.maquina, '') <> ''
+                 OR COALESCE(h.chip_imei, '') <> '' OR COALESCE(h.chip_celular, '') <> ''
+                 OR COALESCE(h.modem_imei, '') <> '' OR COALESCE(h.modem_serie, '') <> ''
+               )
+           )
+       )`;
+    const donde = `FROM origen
+       WHERE $1::text IS NULL
+          OR concat_ws(' ', cot, cliente, lugar, cadena, tienda, contenedor, maquina, telemetria, chip_imei, chip_celular, modem_imei, modem_serie) ILIKE $1 ESCAPE '\\'`;
+    const conteo = await this.conexiones.pg.query<{ total: string }>(`${base} SELECT count(*)::text AS total ${donde}`, [filtro]);
+    const total = Number(conteo.rows[0]?.total ?? 0);
+    const paginas = Math.max(1, Math.ceil(total / TAMANO_INVENTARIO));
+    const actual = Math.min(Math.max(1, pagina), paginas);
+    const filas = await this.conexiones.pg.query<FilaConciliacion>(
+      `${base}
+       SELECT id, origen, tarea_id, cot, cliente, lugar, proyecto, campana, estado, cadena, tienda, orden, clase,
+              contenedor, maquina, telemetria, chip_imei, chip_celular, modem_imei, modem_serie
+       ${donde}
+       ORDER BY cot, orden NULLS LAST, tienda
+       LIMIT $2 OFFSET $3`,
+      [filtro, TAMANO_INVENTARIO, (actual - 1) * TAMANO_INVENTARIO],
+    );
+    return { origenes: filas.rows, total, pagina: actual, paginas };
+  }
+
+  async destinosConciliacion(busqueda: string): Promise<DestinosConciliacion> {
+    const filtro = patronTexto(busqueda);
+    if (!filtro) return { tareas: [], tiendas: [] };
+    const tareas = await this.conexiones.pg.query<{ id: string; cot: string; cliente: string; lugar: string; proyecto: boolean; campana: boolean; estado: string }>(
+      `SELECT id, cot, COALESCE(cliente, '') AS cliente, COALESCE(lugar, '') AS lugar, proyecto, campana, estado
+       FROM tarea
+       WHERE padre_id IS NULL AND cot <> '10000000000'
+         AND concat_ws(' ', cot, cliente, lugar) ILIKE $1 ESCAPE '\\'
+       ORDER BY (estado = 'resuelta'), cot
+       LIMIT 12`,
+      [filtro],
+    );
+    const tiendas = await this.conexiones.pg.query<{ id: string; campana_id: string; tarea_hija_id: string | null; cot: string; cliente: string; cadena: string; nombre: string; codigo: string; proyecto: boolean; estado: string }>(
+      `SELECT tienda.id, campana.id AS campana_id, tienda.tarea_hija_id, campana.cot,
+              COALESCE(campana.cliente, '') AS cliente, COALESCE(tienda.cadena, '') AS cadena,
+              COALESCE(tienda.nombre, '') AS nombre, COALESCE(tienda.codigo_equipo, '') AS codigo,
+              campana.proyecto, campana.estado
+       FROM tienda
+       JOIN tarea campana ON campana.id = tienda.tarea_id
+       WHERE campana.cot <> '10000000000'
+         AND concat_ws(' ', campana.cot, campana.cliente, tienda.cadena, tienda.nombre, tienda.codigo_equipo) ILIKE $1 ESCAPE '\\'
+       ORDER BY tienda.cadena, tienda.nombre
+       LIMIT 12`,
+      [filtro],
+    );
+    const tareasDeHilo = [...tareas.rows.map((fila) => fila.id), ...tiendas.rows.map((fila) => fila.tarea_hija_id).filter((id): id is string => Boolean(id))];
+    const hilos = tareasDeHilo.length === 0
+      ? []
+      : (await this.conexiones.pg.query<HiloDestino>(
+          `SELECT id, tarea_id, orden, COALESCE(clase, 'telemetria') AS clase,
+                  COALESCE(contenedor, '') AS contenedor, COALESCE(maquina, '') AS maquina,
+                  COALESCE(chip_imei, '') AS chip_imei, COALESCE(chip_celular, '') AS chip_celular,
+                  COALESCE(modem_imei, '') AS modem_imei, COALESCE(modem_serie, '') AS modem_serie
+           FROM hilo_atencion
+           WHERE tarea_id = ANY($1::uuid[])
+           ORDER BY orden`,
+          [tareasDeHilo],
+        )).rows;
+    const porTarea = new Map<string, HiloDestino[]>();
+    for (const hilo of hilos) {
+      const lista = porTarea.get(hilo.tarea_id) ?? [];
+      lista.push(hilo);
+      porTarea.set(hilo.tarea_id, lista);
+    }
+    return {
+      tareas: tareas.rows.map((fila) => ({ ...fila, hilos: (porTarea.get(fila.id) ?? []).map(hiloPublico) })),
+      tiendas: tiendas.rows.map((fila) => ({ ...fila, hilos: (fila.tarea_hija_id ? porTarea.get(fila.tarea_hija_id) ?? [] : []).map(hiloPublico) })),
+    };
+  }
+
+  async abrirHiloConciliacion(tareaId: string): Promise<{ hiloId: string }> {
+    const tarea = await this.conexiones.pg.query(`SELECT id FROM tarea WHERE id = $1 AND cot <> '10000000000'`, [tareaId]);
+    if (!tarea.rows[0]) throw new NotFoundException('No está esa tarea.');
+    const hilos = await listarHilos(this.conexiones.pg, tareaId);
+    if (hilos.length >= 20) throw new BadRequestException('Ya hay 20 hilos en esa tarea.');
+    try {
+      if (hilos.length === 0) await crearHilos(this.conexiones.pg, tareaId, 1);
+      else await abrirFrente(this.conexiones.pg, tareaId, 'telemetria');
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'No pude abrir el hilo.');
+    }
+    const ahora = await listarHilos(this.conexiones.pg, tareaId);
+    const nuevo = ahora[ahora.length - 1];
+    if (!nuevo) throw new BadRequestException('No quedó el hilo nuevo.');
+    return { hiloId: nuevo.id };
+  }
+
+  async pasarConciliacion(autor: Autor, origen: string, origenId: string, destinoHiloId: string): Promise<{ texto: string }> {
+    if (origen !== 'hilo' && origen !== 'tienda') throw new BadRequestException('El origen es un hilo o una tienda.');
+    if (!origenId.trim() || !destinoHiloId.trim()) throw new BadRequestException('Indica el origen y el hilo de destino.');
+    const cliente = await this.conexiones.pg.connect();
+    try {
+      await cliente.query('BEGIN');
+      const destino = await leerBloque(cliente, destinoHiloId);
+      if (!destino) throw new NotFoundException('Ese hilo de destino ya no está.');
+      let texto = '';
+      if (origen === 'hilo') {
+        if (origenId === destinoHiloId) throw new BadRequestException('El origen y el destino son el mismo hilo.');
+        const fuente = await leerBloque(cliente, origenId);
+        if (!fuente) throw new NotFoundException('Ese hilo de origen ya no está.');
+        await cliente.query(`SELECT id FROM hilo_atencion WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`, [[fuente.id, destino.id].sort()]);
+        const bloqueFuente = (await leerBloque(cliente, fuente.id)) ?? fuente;
+        const bloqueDestino = (await leerBloque(cliente, destino.id)) ?? destino;
+        const codigoFuente = await leerCodigo(cliente, bloqueFuente.tarea_id);
+        const codigoDestino = await leerCodigo(cliente, bloqueDestino.tarea_id);
+        if (!bloqueLleno(bloqueFuente) && !codigoFuente.codigo) throw new BadRequestException('Ese hilo no tiene telemetría para pasar.');
+        const otros = await cliente.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM hilo_atencion
+           WHERE tarea_id = $1 AND id <> $2
+             AND (
+               COALESCE(contenedor, '') <> '' OR COALESCE(maquina, '') <> ''
+               OR COALESCE(chip_imei, '') <> '' OR COALESCE(chip_celular, '') <> ''
+               OR COALESCE(modem_imei, '') <> '' OR COALESCE(modem_serie, '') <> ''
+             )`,
+          [bloqueFuente.tarea_id, bloqueFuente.id],
+        );
+        const llevaCodigo = Boolean(codigoFuente.codigo) && ((otros.rows[0]?.n ?? 0) === 0 || codigoFuente.codigo === (bloqueFuente.contenedor ?? ''));
+        const conservaMaquina = Boolean(codigoFuente.tiendaId || codigoDestino.tiendaId);
+        await escribirBloque(cliente, bloqueDestino.id, bloqueFuente);
+        await escribirBloque(cliente, bloqueFuente.id, bloqueDestino);
+        await intercambiarFabricacion(cliente, bloqueFuente, bloqueDestino);
+        await cliente.query(
+          `UPDATE consulta_chip SET hilo_id = CASE hilo_id WHEN $1 THEN $2 ELSE $1 END WHERE hilo_id IN ($1, $2)`,
+          [bloqueFuente.id, bloqueDestino.id],
+        );
+        await escribirCodigo(cliente, {
+          ...codigoFuente,
+          codigo: llevaCodigo ? codigoDestino.codigo : codigoFuente.codigo,
+          maquina: conservaMaquina ? codigoFuente.maquina : codigoDestino.maquina,
+        });
+        await escribirCodigo(cliente, {
+          ...codigoDestino,
+          codigo: llevaCodigo ? codigoFuente.codigo : codigoDestino.codigo,
+          maquina: conservaMaquina ? codigoDestino.maquina : codigoFuente.maquina,
+        });
+        const cotFuente = await cotDe(cliente, bloqueFuente.tarea_id);
+        const cotDestino = await cotDe(cliente, bloqueDestino.tarea_id);
+        texto = `La telemetría del hilo ${bloqueFuente.orden} de COT ${cotFuente} quedó en el hilo ${bloqueDestino.orden} de COT ${cotDestino}.`;
+        await anotarPase(cliente, autor, bloqueFuente.tarea_id, codigoFuente.tiendaId, `Salió del hilo ${bloqueFuente.orden}: ${describeBloque(bloqueFuente, llevaCodigo ? codigoFuente.codigo : '')}. ${texto}`);
+        await anotarPase(cliente, autor, bloqueDestino.tarea_id, codigoDestino.tiendaId, `Llegó al hilo ${bloqueDestino.orden}: ${describeBloque(bloqueFuente, llevaCodigo ? codigoFuente.codigo : '')}. ${texto}`);
+      } else {
+        const tienda = await cliente.query<{ id: string; tarea_id: string; codigo: string; nombre: string }>(
+          `SELECT id, tarea_id, COALESCE(codigo_equipo, '') AS codigo, nombre FROM tienda WHERE id = $1 FOR UPDATE`,
+          [origenId],
+        );
+        const local = tienda.rows[0];
+        if (!local) throw new NotFoundException('Esa tienda ya no está.');
+        if (!local.codigo) throw new BadRequestException('Esa tienda no tiene telemetría para pasar.');
+        await cliente.query(`SELECT id FROM hilo_atencion WHERE id = $1 FOR UPDATE`, [destino.id]);
+        const codigoDestino = await leerCodigo(cliente, destino.tarea_id);
+        await escribirCodigo(cliente, { tiendaId: local.id, tareaId: local.tarea_id, codigo: codigoDestino.codigo, maquina: '' });
+        await escribirCodigo(cliente, { ...codigoDestino, codigo: local.codigo, maquina: codigoDestino.maquina });
+        if (!destino.contenedor) {
+          await cliente.query(`UPDATE hilo_atencion SET contenedor = $2, lleva_telemetria = true WHERE id = $1`, [destino.id, local.codigo]);
+        }
+        const cotDestino = await cotDe(cliente, destino.tarea_id);
+        texto = `La telemetría ${local.codigo} de ${local.nombre} quedó en el hilo ${destino.orden} de COT ${cotDestino}.`;
+        await anotarPase(cliente, autor, local.tarea_id, local.id, texto);
+        await anotarPase(cliente, autor, destino.tarea_id, codigoDestino.tiendaId, texto);
+      }
+      await cliente.query('COMMIT');
+      return { texto };
+    } catch (error) {
+      await cliente.query('ROLLBACK');
+      throw error;
+    } finally {
+      cliente.release();
+    }
+  }
+
   private async cuentas(verOcultas = true, verTareas = verOcultas): Promise<Cuentas> {
     const resultado = await this.conexiones.pg.query<{ tareas: string; pendientes: string; otros: string; internos: string }>(
       `WITH hilos AS (
@@ -2294,6 +2655,230 @@ export class TareasService {
 }
 
 const TAMANO = 10;
+const TAMANO_INVENTARIO = 20;
+
+type FilaInventario = {
+  id: string;
+  tarea_id: string;
+  cot: string;
+  cliente: string;
+  lugar: string;
+  proyecto: boolean;
+  campana: boolean;
+  estado: string;
+  cadena: string;
+  tienda: string;
+  orden: number | null;
+  clase: string;
+  contenedor: string;
+  maquina: string;
+  telemetria: string;
+  chip_imei: string;
+  chip_celular: string;
+  modem_imei: string;
+  modem_serie: string;
+};
+
+type PaginaInventario = {
+  equipos: FilaInventario[];
+  total: number;
+  pagina: number;
+  paginas: number;
+};
+
+type FilaConciliacion = FilaInventario & { origen: 'hilo' | 'tienda' };
+
+type PaginaConciliacion = {
+  origenes: FilaConciliacion[];
+  total: number;
+  pagina: number;
+  paginas: number;
+};
+
+type HiloDestino = {
+  id: string;
+  tarea_id: string;
+  orden: number;
+  clase: string;
+  contenedor: string;
+  maquina: string;
+  chip_imei: string;
+  chip_celular: string;
+  modem_imei: string;
+  modem_serie: string;
+};
+
+type DestinosConciliacion = {
+  tareas: Array<{ id: string; cot: string; cliente: string; lugar: string; proyecto: boolean; campana: boolean; estado: string; hilos: HiloPublico[] }>;
+  tiendas: Array<{ id: string; campana_id: string; tarea_hija_id: string | null; cot: string; cliente: string; cadena: string; nombre: string; codigo: string; proyecto: boolean; estado: string; hilos: HiloPublico[] }>;
+};
+
+type HiloPublico = { id: string; orden: number; clase: string; ocupado: boolean; resumen: string };
+
+type Sql = { query<T>(texto: string, valores?: unknown[]): Promise<{ rows: T[]; rowCount?: number | null }> };
+
+type Bloque = {
+  id: string;
+  tarea_id: string;
+  orden: number;
+  contenedor: string | null;
+  maquina: string | null;
+  despacho_texto: string | null;
+  chip_imei: string | null;
+  chip_celular: string | null;
+  chip_estado: string | null;
+  modem_serie: string;
+  modem_imei: string;
+  lleva_telemetria: boolean | null;
+  despacho_validado: boolean;
+};
+
+type CodigoLugar = { tiendaId: string | null; tareaId: string; codigo: string; maquina: string };
+
+function hiloPublico(hilo: HiloDestino): HiloPublico {
+  const resumen = [
+    hilo.contenedor ? `Contenedor ${hilo.contenedor}` : '',
+    hilo.maquina ? `Máquina ${hilo.maquina}` : '',
+    hilo.chip_imei ? `IMEI ${hilo.chip_imei}` : '',
+    hilo.modem_serie ? `Módulo ${hilo.modem_serie}` : '',
+    hilo.modem_imei ? `IMEI módulo ${hilo.modem_imei}` : '',
+  ].filter(Boolean).join(' · ');
+  const ocupado = Boolean(hilo.contenedor || hilo.maquina || hilo.chip_imei || hilo.chip_celular || hilo.modem_imei || hilo.modem_serie);
+  return { id: hilo.id, orden: hilo.orden, clase: hilo.clase, ocupado, resumen: resumen || 'Hilo libre' };
+}
+
+function bloqueLleno(bloque: Bloque): boolean {
+  return Boolean(bloque.contenedor || bloque.maquina || bloque.despacho_texto || bloque.chip_imei || bloque.chip_celular || bloque.modem_imei || bloque.modem_serie || bloque.lleva_telemetria !== null);
+}
+
+function describeBloque(bloque: Bloque, codigo: string): string {
+  return [
+    bloque.contenedor ? `contenedor ${bloque.contenedor}` : '',
+    bloque.maquina ? `máquina ${bloque.maquina}` : '',
+    bloque.chip_celular ? `celular ${bloque.chip_celular}` : '',
+    bloque.chip_imei ? `IMEI ${bloque.chip_imei}` : '',
+    bloque.modem_serie ? `módulo ${bloque.modem_serie}` : '',
+    bloque.modem_imei ? `IMEI módulo ${bloque.modem_imei}` : '',
+    codigo ? `telemetría ${codigo}` : '',
+  ].filter(Boolean).join(', ') || 'sin datos de equipo';
+}
+
+async function leerBloque(sql: Sql, id: string): Promise<Bloque | null> {
+  const filas = await sql.query<Bloque>(
+    `SELECT id, tarea_id, orden, contenedor, maquina, despacho_texto, chip_imei, chip_celular, chip_estado,
+            COALESCE(modem_serie, '') AS modem_serie, COALESCE(modem_imei, '') AS modem_imei,
+            lleva_telemetria, despacho_validado
+     FROM hilo_atencion WHERE id = $1`,
+    [id],
+  );
+  return filas.rows[0] ?? null;
+}
+
+async function escribirBloque(sql: Sql, id: string, bloque: Bloque): Promise<void> {
+  await sql.query(
+    `UPDATE hilo_atencion
+     SET contenedor = $2, maquina = $3, despacho_texto = $4,
+         chip_imei = $5, chip_celular = $6, chip_estado = $7,
+         modem_serie = $8, modem_imei = $9,
+         lleva_telemetria = $10, despacho_validado = $11, estado = 'abierto'
+     WHERE id = $1`,
+    [id, bloque.contenedor, bloque.maquina, bloque.despacho_texto, bloque.chip_imei, bloque.chip_celular, bloque.chip_estado, bloque.modem_serie, bloque.modem_imei, bloque.lleva_telemetria, bloque.despacho_validado],
+  );
+}
+
+async function leerCodigo(sql: Sql, tareaId: string): Promise<CodigoLugar> {
+  const tienda = await sql.query<{ id: string; codigo: string }>(
+    `SELECT id, COALESCE(codigo_equipo, '') AS codigo FROM tienda WHERE tarea_hija_id = $1`,
+    [tareaId],
+  );
+  if (tienda.rows[0]) return { tiendaId: tienda.rows[0].id, tareaId, codigo: tienda.rows[0].codigo, maquina: '' };
+  const tarea = await sql.query<{ codigo: string; maquina: string }>(
+    `SELECT COALESCE(codigo_equipo, '') AS codigo, COALESCE(maquina_equipo, '') AS maquina FROM tarea WHERE id = $1`,
+    [tareaId],
+  );
+  return { tiendaId: null, tareaId, codigo: tarea.rows[0]?.codigo ?? '', maquina: tarea.rows[0]?.maquina ?? '' };
+}
+
+async function escribirCodigo(sql: Sql, lugar: CodigoLugar): Promise<void> {
+  if (lugar.tiendaId) {
+    await sql.query(`UPDATE tienda SET codigo_equipo = NULLIF($2, '') WHERE id = $1`, [lugar.tiendaId, lugar.codigo]);
+    return;
+  }
+  await sql.query(`UPDATE tarea SET codigo_equipo = NULLIF($2, ''), maquina_equipo = NULLIF($3, '') WHERE id = $1`, [lugar.tareaId, lugar.codigo, lugar.maquina]);
+}
+
+async function cotDe(sql: Sql, tareaId: string): Promise<string> {
+  const fila = await sql.query<{ cot: string }>(
+    `SELECT COALESCE(padre.cot, t.cot) AS cot FROM tarea t LEFT JOIN tarea padre ON padre.id = t.padre_id WHERE t.id = $1`,
+    [tareaId],
+  );
+  return fila.rows[0]?.cot ?? '';
+}
+
+async function anotarPase(sql: Sql, autor: Autor, tareaId: string, tiendaId: string | null, texto: string): Promise<void> {
+  await sql.query(
+    `INSERT INTO nota_bitacora (id, tarea_id, tipo, canal, texto, autor_correo, autor_nombre, tienda_id)
+     VALUES ($1, $2, 'seguimiento', 'web', $3, $4, $5, $6)`,
+    [randomUUID(), tareaId, texto, autor.correo, autor.nombre, tiendaId],
+  );
+}
+
+async function intercambiarFabricacion(sql: Sql, fuente: Bloque, destino: Bloque): Promise<void> {
+  const filas = await sql.query<{
+    id: string;
+    hilo_id: string;
+    tarea_id: string;
+    odoo_id: number | null;
+    nombre: string;
+    estado: string;
+    token: string;
+    materiales: unknown;
+    chip_celular: string;
+    chip_imei: string;
+    modem_serie: string;
+    ejecutor: string;
+    reutilizada: boolean;
+    telefono: string;
+    creado_en: Date;
+    reporte_clave: string;
+    reporte_huella: string;
+  }>(
+    `SELECT id, hilo_id, tarea_id, odoo_id, nombre, estado, token, materiales, chip_celular, chip_imei, modem_serie,
+            ejecutor, reutilizada, telefono, creado_en, reporte_clave, reporte_huella
+     FROM fabricacion WHERE hilo_id = ANY($1::uuid[])`,
+    [[fuente.id, destino.id]],
+  );
+  if (filas.rows.length === 0) return;
+  await sql.query(`DELETE FROM fabricacion WHERE hilo_id = ANY($1::uuid[])`, [[fuente.id, destino.id]]);
+  for (const fila of filas.rows) {
+    const sigueFuente = fila.hilo_id === fuente.id;
+    await sql.query(
+      `INSERT INTO fabricacion (
+         id, hilo_id, tarea_id, odoo_id, nombre, estado, token, materiales, chip_celular, chip_imei, modem_serie,
+         ejecutor, reutilizada, telefono, creado_en, reporte_clave, reporte_huella
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      [
+        fila.id,
+        sigueFuente ? destino.id : fuente.id,
+        sigueFuente ? destino.tarea_id : fuente.tarea_id,
+        fila.odoo_id,
+        fila.nombre,
+        fila.estado,
+        fila.token,
+        JSON.stringify(fila.materiales ?? []),
+        fila.chip_celular,
+        fila.chip_imei,
+        fila.modem_serie,
+        fila.ejecutor,
+        fila.reutilizada,
+        fila.telefono,
+        fila.creado_en,
+        fila.reporte_clave,
+        fila.reporte_huella,
+      ],
+    );
+  }
+}
 
 type Cuentas = { tareas: number; pendientes: number; otros: number; internos: number };
 type PaginaTareas = { tareas: FilaTarea[]; total: number; pagina: number; paginas: number; cuentas: Cuentas };

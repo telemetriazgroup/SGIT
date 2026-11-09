@@ -113,6 +113,54 @@ export class TareasController {
     return this.tareas.guardarAtencion(id, cuerpo.estado, cuerpo.respuesta ?? '');
   }
 
+  @Get('conciliacion')
+  async conciliacion(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Query('pagina') pagina?: string,
+    @Query('q') busqueda?: string,
+  ) {
+    await this.exigirConciliacion(autorizacion);
+    return this.tareas.conciliacion(numero(pagina), busqueda ?? '');
+  }
+
+  @Get('conciliacion/destinos')
+  async destinosConciliacion(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Query('q') busqueda?: string,
+  ) {
+    await this.exigirConciliacion(autorizacion);
+    return this.tareas.destinosConciliacion(busqueda ?? '');
+  }
+
+  @Post('conciliacion/hilo')
+  async hiloConciliacion(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Body() cuerpo: { tareaId?: string },
+  ) {
+    await this.exigirConciliacion(autorizacion);
+    if (!cuerpo?.tareaId?.trim()) throw new BadRequestException('Indica la tarea donde se abre el hilo.');
+    return this.tareas.abrirHiloConciliacion(cuerpo.tareaId);
+  }
+
+  @Post('conciliacion')
+  async pasarConciliacion(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Body() cuerpo: { origen?: string; origenId?: string; destinoHiloId?: string },
+  ) {
+    const usuario = await this.exigirConciliacion(autorizacion);
+    return this.tareas.pasarConciliacion(usuario, cuerpo?.origen ?? '', cuerpo?.origenId ?? '', cuerpo?.destinoHiloId ?? '');
+  }
+
+  @Get('inventario')
+  async inventario(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Query('pagina') pagina?: string,
+    @Query('q') busqueda?: string,
+  ) {
+    const usuario = await this.exigir(autorizacion);
+    return this.tareas.inventario(numero(pagina), busqueda ?? '', veTodasLasTareas(usuario.rol));
+  }
+
   @Get('tareas')
   async listar(
     @Headers('authorization') autorizacion: string | undefined,
@@ -606,6 +654,14 @@ export class TareasController {
     const token = bearer(autorizacion);
     if (!token) throw new UnauthorizedException('Sesión no válida.');
     return this.identidad.actual(token);
+  }
+
+  private async exigirConciliacion(autorizacion?: string) {
+    const usuario = await this.exigir(autorizacion);
+    if (usuario.rol !== 'superusuario' && usuario.rol !== 'administrador') {
+      throw new ForbiddenException('Solo el administrador o el superusuario concilia una telemetría.');
+    }
+    return usuario;
   }
 
   private async exigirEdicion(autorizacion?: string) {
