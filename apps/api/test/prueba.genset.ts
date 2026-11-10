@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { puedeValidarGenset } from '../src/identidad/permisos';
+import { interpretarD00 } from '../src/genset/interpretar';
 import {
   camposDe,
   conexionDe,
@@ -104,6 +105,48 @@ test('la frescura marca en línea, reportó hoy o sin reporte', () => {
   assert.equal(conexionDe(null, ahora), 'sin_reporte');
   const fechas = camposDe(trama.data).find((campo) => campo.nombre === 'fecha');
   assert.equal(fechas?.valor, '2026-11-10T09:46:29.906Z');
+});
+
+test('d00 se interpreta con horómetros, factores y el centinela de combustible', () => {
+  const corta = interpretarD00('E3020000,37060000,1108');
+  assert.equal(corta.medidas[0]?.valor, 739);
+  assert.equal(corta.medidas[0]?.texto, '739 h');
+  assert.equal(corta.medidas[1]?.valor, 1591);
+  assert.equal(corta.medidas[2]?.valor, 436);
+  assert.equal(corta.medidas[2]?.texto, '436 V');
+  assert.equal(corta.corta, true);
+  assert.equal(corta.medidas[3]?.valor, null);
+  assert.equal(corta.medidas[3]?.calidad, 1);
+  assert.equal(interpretarD00('ZZ')?.medidas[0]?.aviso, 'No se pudo leer.');
+
+  const muestra = interpretarD00('F7010000,F7010000,118A,56F,2C3,25F,AD,114E,0,0,4,0,0,3,28F,11BC,25F,8B,2C2,71A');
+  assert.equal(muestra.medidas.find((medida) => medida.nombre === 'Tr_Timer1')?.valor, 503);
+  assert.equal(muestra.medidas.find((medida) => medida.nombre === 'Rt_Battery')?.valor, 13.91);
+  assert.equal(muestra.medidas.find((medida) => medida.nombre === 'Rt_Battery')?.texto, '13,91 V');
+  assert.equal(muestra.medidas.find((medida) => medida.nombre === 'Dv_Fuel')?.valor, 65.5);
+  assert.equal(muestra.medidas.find((medida) => medida.nombre === 'Dv_Battery')?.valor, 13.9);
+  assert.equal(muestra.medidas.find((medida) => medida.nombre === 'Dv_rpm')?.valor, 1818);
+  assert.equal(muestra.flag32, false);
+
+  const centinela = Array(20).fill('1');
+  centinela[6] = '0';
+  centinela[14] = 'FFFF';
+  const sinSensor = interpretarD00(centinela.join(','));
+  assert.equal(sinSensor.medidas[14]?.texto, 'No programado');
+  assert.equal(sinSensor.medidas[14]?.calidad, 2);
+  assert.equal(sinSensor.flag32, null);
+
+  const cero = Array(20).fill('A');
+  cero[6] = '0';
+  cero[14] = '5EE';
+  assert.equal(interpretarD00(cero.join(',')).flag32, null);
+
+  const distinto = Array(20).fill('A');
+  distinto[6] = '64';
+  distinto[14] = '28F';
+  const cruce = interpretarD00(distinto.join(','));
+  assert.equal(cruce.flag32, true);
+  assert.match(cruce.avisos.join(' '), /no coinciden/);
 });
 
 test('técnico, administrador, superusuario y operador validan generadores', () => {

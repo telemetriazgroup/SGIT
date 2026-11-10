@@ -1,5 +1,6 @@
 import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { AlmacenCorreo } from '../buzon/almacen';
 import type { Conexiones } from '../conexiones';
 import { clienteHttp, type ClienteGenset } from './cliente';
 import {
@@ -31,6 +32,23 @@ export type DispositivoGenset = {
   tramas: number;
   consultado_en: string | null;
   consultado_por: string;
+  carreta: string;
+  serie_maquina: string;
+  codigo_genset: string;
+};
+
+export type FotoGenset = {
+  id: string;
+  nombre: string;
+  mime: string;
+};
+
+export type FichaGenset = {
+  carreta: string;
+  serie_maquina: string;
+  codigo_genset: string;
+  observaciones: string;
+  fotos: FotoGenset[];
 };
 
 export type ListaGenset = {
@@ -50,6 +68,7 @@ export type ConsultaGenset = {
   mensaje: string;
   trama: TramaVista | null;
   historial: TramaVista[];
+  ficha: FichaGenset;
 };
 
 type FilaDispositivo = {
@@ -64,6 +83,9 @@ type FilaDispositivo = {
   consultado_en: Date | string | null;
   consultado_por: string;
   tramas: number;
+  carreta: string;
+  serie_maquina: string;
+  codigo_genset: string;
 };
 
 type FilaTrama = {
@@ -106,7 +128,7 @@ export class GensetService {
   async listar(busqueda = ''): Promise<ListaGenset> {
     const filas = await this.conexiones.pg.query<FilaDispositivo>(
       `SELECT imei, estado, tipo, fecha, ultimo_dato, last_ip, secured, presente,
-              consultado_en, consultado_por,
+              consultado_en, consultado_por, carreta, serie_maquina, codigo_genset,
               (SELECT count(*)::int FROM genset_trama t WHERE t.imei = d.imei) AS tramas
        FROM genset_dispositivo d
        ORDER BY presente DESC, ultimo_dato DESC NULLS LAST, imei`,
@@ -115,10 +137,10 @@ export class GensetService {
       `SELECT consultado_en, coleccion, aviso FROM genset_lista WHERE id = true`,
     );
     const ahora = new Date();
-    const texto = busqueda.trim();
+    const texto = busqueda.trim().toLowerCase();
     const dispositivos = filas.rows
       .map((fila) => this.dispositivo(fila, ahora))
-      .filter((equipo) => !texto || equipo.imei.includes(texto));
+      .filter((equipo) => !texto || [equipo.imei, equipo.carreta, equipo.serie_maquina, equipo.codigo_genset].some((valor) => valor.toLowerCase().includes(texto)));
     const cabecera = meta.rows[0];
     return {
       dispositivos,
@@ -146,7 +168,7 @@ export class GensetService {
     const existe = await this.conexiones.pg.query(`SELECT 1 FROM genset_dispositivo WHERE imei = $1`, [limpio]);
     if ((existe.rowCount ?? 0) === 0) throw new NotFoundException('Ese IMEI no está en la lista de generadores.');
     const historial = await this.leerHistorial(limpio);
-    return { imei: limpio, nueva: false, mensaje: '', trama: historial[0] ?? null, historial };
+    return { imei: limpio, nueva: false, mensaje: '', trama: historial[0] ?? null, historial, ficha: await this.leerFicha(limpio) };
   }
 
   async consultar(imei: string, correo: string): Promise<ConsultaGenset> {
@@ -159,7 +181,66 @@ export class GensetService {
     const firma = firmaDeTrama(crudo);
     const nueva = await this.guardarSiCambia(limpio, firma, correo, crudo);
     const historial = await this.leerHistorial(limpio);
-    return { imei: limpio, nueva, mensaje: leida.mensaje, trama: historial[0] ?? null, historial };
+    return { imei: limpio, nueva, mensaje: leida.mensaje, trama: historial[0] ?? null, historial, ficha: await this.leerFicha(limpio) };
+  }
+
+  async guardarFicha(imei: string, cuerpo: { carreta?: string; serie_maquina?: string; codigo_genset?: string; observaciones?: string }): Promise<FichaGenset> {
+    const limpio = imei.trim();
+    if (!esImei(limpio)) throw new BadRequestException('El IMEI tiene que ser numérico.');
+    const resultado = await this.conexiones.pg.query(
+      `UPDATE genset_dispositivo
+       SET carreta = $2, serie_maquina = $3, codigo_genset = $4, observaciones = $5
+       WHERE imei = $1`,
+      [limpio, recortar(cuerpo.carreta, 80), recortar(cuerpo.serie_maquina, 80), recortar(cuerpo.codigo_genset, 80), recortar(cuerpo.observaciones, 2000)],
+    );
+    if ((resultado.rowCount ?? 0) === 0) throw new NotFoundException('Ese IMEI no está en la lista de generadores.');
+    return this.leerFicha(limpio);
+  }
+
+  async agregarFotos(imei: string, correo: string, entradas: Array<{ nombre?: string; mime?: string; contenido?: string }>): Promise<FichaGenset> {
+    const limpio = imei.trim();
+    if (!esImei(limpio)) throw new BadRequestException('El IMEI tiene que ser numérico.');
+    const existe = await this.conexiones.pg.query(`SELECT 1 FROM genset_dispositivo WHERE imei = $1`, [limpio]);
+    if ((existe.rowCount ?? 0) === 0) throw new NotFoundException('Ese IMEI no está en la lista de generadores.');
+    const fotos = fotosDe(entradas);
+    if (fotos.length === 0) throw new BadRequestException('Elige al menos una foto.');
+    const cuantas = await this.conexiones.pg.query<{ total: number }>(`SELECT count(*)::int AS total FROM genset_foto WHERE imei = $1`, [limpio]);
+    if ((cuantas.rows[0]?.total ?? 0) + fotos.length > 30) throw new BadRequestException('Este equipo ya tiene 30 fotos.');
+    const almacen = new AlmacenCorreo(this.conexiones);
+    for (const foto of fotos) {
+      const id = randomUUID();
+      const clave = `genset/${limpio}/${id}`;
+      await almacen.guardar(clave, foto.contenido, foto.mime);
+      await this.conexiones.pg.query(
+        `INSERT INTO genset_foto (id, imei, clave, nombre, mime, subida_por) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [id, limpio, clave, foto.nombre, foto.mime, correo],
+      );
+    }
+    return this.leerFicha(limpio);
+  }
+
+  async quitarFoto(imei: string, fotoId: string): Promise<FichaGenset> {
+    const limpio = imei.trim();
+    if (!esImei(limpio)) throw new BadRequestException('El IMEI tiene que ser numérico.');
+    const filas = await this.conexiones.pg.query<{ clave: string }>(`SELECT clave FROM genset_foto WHERE id = $1 AND imei = $2`, [fotoId, limpio]);
+    const clave = filas.rows[0]?.clave;
+    if (!clave) throw new NotFoundException('Esa foto ya no está.');
+    await this.conexiones.pg.query(`DELETE FROM genset_foto WHERE id = $1 AND imei = $2`, [fotoId, limpio]);
+    await new AlmacenCorreo(this.conexiones).quitar(clave).catch(() => undefined);
+    return this.leerFicha(limpio);
+  }
+
+  async leerFoto(imei: string, fotoId: string): Promise<{ nombre: string; mime: string; contenido: Buffer }> {
+    const limpio = imei.trim();
+    if (!esImei(limpio)) throw new BadRequestException('El IMEI tiene que ser numérico.');
+    const filas = await this.conexiones.pg.query<{ clave: string; nombre: string; mime: string }>(
+      `SELECT clave, nombre, mime FROM genset_foto WHERE id = $1 AND imei = $2`,
+      [fotoId, limpio],
+    );
+    const fila = filas.rows[0];
+    if (!fila) throw new NotFoundException('Esa foto ya no está.');
+    const contenido = await new AlmacenCorreo(this.conexiones).leer(fila.clave);
+    return { nombre: fila.nombre, mime: fila.mime, contenido };
   }
 
   private async bajarLista(): Promise<ListaGenset> {
@@ -299,8 +380,48 @@ export class GensetService {
       tramas: fila.tramas,
       consultado_en: iso(fila.consultado_en),
       consultado_por: fila.consultado_por,
+      carreta: fila.carreta ?? '',
+      serie_maquina: fila.serie_maquina ?? '',
+      codigo_genset: fila.codigo_genset ?? '',
     };
   }
+
+  private async leerFicha(imei: string): Promise<FichaGenset> {
+    const filas = await this.conexiones.pg.query<{ carreta: string; serie_maquina: string; codigo_genset: string; observaciones: string }>(
+      `SELECT carreta, serie_maquina, codigo_genset, observaciones FROM genset_dispositivo WHERE imei = $1`,
+      [imei],
+    );
+    const fotos = await this.conexiones.pg.query<FotoGenset>(
+      `SELECT id, nombre, mime FROM genset_foto WHERE imei = $1 ORDER BY subida_en, id`,
+      [imei],
+    );
+    const fila = filas.rows[0];
+    return {
+      carreta: fila?.carreta ?? '',
+      serie_maquina: fila?.serie_maquina ?? '',
+      codigo_genset: fila?.codigo_genset ?? '',
+      observaciones: fila?.observaciones ?? '',
+      fotos: fotos.rows,
+    };
+  }
+}
+
+const MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+function recortar(valor: string | undefined, limite: number): string {
+  return (valor ?? '').trim().slice(0, limite);
+}
+
+function fotosDe(entradas: Array<{ nombre?: string; mime?: string; contenido?: string }>): Array<{ nombre: string; mime: string; contenido: Buffer }> {
+  const fotos = [];
+  for (const entrada of entradas.slice(0, 8)) {
+    const contenido = Buffer.from(entrada.contenido ?? '', 'base64');
+    if (contenido.length === 0 || contenido.length > 4 * 1024 * 1024) throw new BadRequestException('Cada foto tiene que pesar menos de 4 MB.');
+    const mime = (entrada.mime || 'image/jpeg').toLowerCase() === 'image/jpg' ? 'image/jpeg' : (entrada.mime || 'image/jpeg').toLowerCase();
+    if (!MIMES.has(mime)) throw new BadRequestException('La foto tiene que ser JPG, PNG, WEBP o GIF.');
+    fotos.push({ nombre: (entrada.nombre ?? 'foto').slice(0, 180), mime, contenido });
+  }
+  return fotos;
 }
 
 function iso(valor: Date | string | null): string | null {

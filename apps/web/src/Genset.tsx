@@ -15,6 +15,9 @@ type Dispositivo = {
   tramas: number;
   consultado_en: string | null;
   consultado_por: string;
+  carreta: string;
+  serie_maquina: string;
+  codigo_genset: string;
 };
 
 type Lista = {
@@ -40,6 +43,23 @@ type Gps = {
   texto: string;
 };
 
+type Medida = {
+  nombre: string;
+  etiqueta: string;
+  valor: number | null;
+  texto: string;
+  unidad: string;
+  calidad: number;
+  aviso: string;
+};
+
+type Interpretacion = {
+  medidas: Medida[];
+  corta: boolean;
+  flag32: boolean | null;
+  avisos: string[];
+};
+
 type Trama = {
   id: string;
   consultado_en: string;
@@ -47,6 +67,17 @@ type Trama = {
   gps: Gps | null;
   campos: Campo[];
   crudo: Record<string, unknown>;
+  interpretacion: Interpretacion;
+};
+
+type Foto = { id: string; nombre: string; mime: string };
+
+type Ficha = {
+  carreta: string;
+  serie_maquina: string;
+  codigo_genset: string;
+  observaciones: string;
+  fotos: Foto[];
 };
 
 type Consulta = {
@@ -55,6 +86,7 @@ type Consulta = {
   mensaje: string;
   trama: Trama | null;
   historial: Trama[];
+  ficha: Ficha;
 };
 
 type Filtro = '' | 'en_linea' | 'hoy' | 'sin_reporte';
@@ -84,6 +116,7 @@ export function PanelGenset({ apiUrl, token }: { apiUrl: string; token: string }
   const [aviso, setAviso] = useState<string | null>(null);
   const [fallo, setFallo] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  const [verDatos, setVerDatos] = useState(false);
   const pedido = useRef(0);
 
   useEffect(() => {
@@ -142,7 +175,8 @@ export function PanelGenset({ apiUrl, token }: { apiUrl: string; token: string }
     const actual = pedido.current + 1;
     pedido.current = actual;
     setElegido(imei);
-    setDetalle(null);
+    if (elegido !== imei) setVerDatos(false);
+    setDetalle((previo) => (previo?.imei === imei ? previo : null));
     setFallo(null);
     setOcupado(true);
     try {
@@ -162,7 +196,8 @@ export function PanelGenset({ apiUrl, token }: { apiUrl: string; token: string }
   }
 
   const equipos = lista?.dispositivos ?? [];
-  const buscados = equipos.filter((equipo) => !consulta.trim() || equipo.imei.includes(consulta.trim()));
+  const aguja = consulta.trim().toLowerCase();
+  const buscados = equipos.filter((equipo) => !aguja || [equipo.imei, equipo.carreta, equipo.serie_maquina, equipo.codigo_genset].some((valor) => (valor ?? '').toLowerCase().includes(aguja)));
   const cuentas = {
     todos: buscados.length,
     en_linea: buscados.filter((equipo) => equipo.conexion === 'en_linea').length,
@@ -195,7 +230,7 @@ export function PanelGenset({ apiUrl, token }: { apiUrl: string; token: string }
           evento.preventDefault();
         }}
       >
-        <input id="buscar-genset" value={consulta} placeholder="Buscar IMEI" inputMode="numeric" onChange={(evento) => setConsulta(evento.target.value)} />
+        <input id="buscar-genset" value={consulta} placeholder="Buscar IMEI, carreta, serie o código" onChange={(evento) => setConsulta(evento.target.value)} />
       </form>
       <div className="chips-filtros genset-filtros">
         {(
@@ -241,6 +276,9 @@ export function PanelGenset({ apiUrl, token }: { apiUrl: string; token: string }
                   <td>
                     {equipo.imei}
                     {equipo.presente ? '' : <span className="genset-fuera"> · fuera de la lista</span>}
+                    {equipo.carreta || equipo.codigo_genset || equipo.serie_maquina ? (
+                      <div className="genset-fuera">{[equipo.carreta, equipo.serie_maquina, equipo.codigo_genset].filter(Boolean).join(' · ')}</div>
+                    ) : null}
                   </td>
                   <td>{equipo.tipo || '—'}</td>
                   <td>{fechaLocal(equipo.ultimo_dato)}</td>
@@ -259,10 +297,42 @@ export function PanelGenset({ apiUrl, token }: { apiUrl: string; token: string }
         <div className="modal-fondo" onMouseDown={() => setElegido(null)}>
           <div className="modal modal-genset" role="dialog" aria-modal="true" aria-labelledby="titulo-genset" onMouseDown={(evento) => evento.stopPropagation()}>
             <h3 id="titulo-genset">{elegido}</h3>
+            {detalle ? (
+              <FichaEquipo
+                key={detalle.imei}
+                apiUrl={apiUrl}
+                token={token}
+                imei={detalle.imei}
+                ficha={detalle.ficha}
+                onFicha={(ficha) => {
+                  setDetalle((actual) => (actual ? { ...actual, ficha } : actual));
+                  setLista((actual) =>
+                    actual
+                      ? {
+                          ...actual,
+                          dispositivos: actual.dispositivos.map((equipo) =>
+                            equipo.imei === detalle.imei ? { ...equipo, carreta: ficha.carreta, serie_maquina: ficha.serie_maquina, codigo_genset: ficha.codigo_genset } : equipo,
+                          ),
+                        }
+                      : actual,
+                  );
+                }}
+                onAviso={setAviso}
+                onFallo={setFallo}
+              />
+            ) : null}
             <p className="meta">Última trama que el servidor tiene de este generador.</p>
             {ocupado && !detalle ? <p>Consultando la última trama…</p> : null}
             {fallo ? <p className="error">{fallo}</p> : null}
             {detalle ? <NotaConsulta detalle={detalle} /> : null}
+            {detalle?.trama ? (
+              <div className="bitacora-acciones">
+                <button id="interpretar-genset" type="button" aria-pressed={verDatos} onClick={() => setVerDatos((actual) => !actual)}>
+                  Interpretar datos
+                </button>
+              </div>
+            ) : null}
+            {verDatos && detalle?.trama ? <TablaInterpretada interpretacion={detalle.trama.interpretacion} /> : null}
             {detalle?.trama ? <TramaActual trama={detalle.trama} /> : null}
             {detalle && detalle.historial.length > 1 ? <Trazabilidad historial={detalle.historial} /> : null}
             <div className="modal-acciones">
@@ -277,6 +347,241 @@ export function PanelGenset({ apiUrl, token }: { apiUrl: string; token: string }
         </div>
       ) : null}
     </section>
+  );
+}
+
+function FichaEquipo({
+  apiUrl,
+  token,
+  imei,
+  ficha,
+  onFicha,
+  onAviso,
+  onFallo,
+}: {
+  apiUrl: string;
+  token: string;
+  imei: string;
+  ficha: Ficha;
+  onFicha: (ficha: Ficha) => void;
+  onAviso: (aviso: string | null) => void;
+  onFallo: (fallo: string | null) => void;
+}) {
+  const [carreta, setCarreta] = useState(ficha.carreta);
+  const [serie, setSerie] = useState(ficha.serie_maquina);
+  const [codigo, setCodigo] = useState(ficha.codigo_genset);
+  const [observaciones, setObservaciones] = useState(ficha.observaciones);
+  const [archivos, setArchivos] = useState<File[]>([]);
+  const [lote, setLote] = useState(0);
+  const [tarea, setTarea] = useState<'datos' | 'fotos' | null>(null);
+  const [ampliada, setAmpliada] = useState<{ url: string; nombre: string } | null>(null);
+
+  async function guardar() {
+    setTarea('datos');
+    onFallo(null);
+    try {
+      const guardada = await pedir<Ficha>(apiUrl, token, `/genset/${imei}/ficha`, {
+        method: 'POST',
+        body: JSON.stringify({ carreta, serie_maquina: serie, codigo_genset: codigo, observaciones }),
+      });
+      onFicha(guardada);
+      onAviso('Los datos del equipo quedaron guardados.');
+    } catch (error: unknown) {
+      onFallo(texto(error));
+    } finally {
+      setTarea(null);
+    }
+  }
+
+  async function cargarFotos() {
+    if (archivos.length === 0) return;
+    setTarea('fotos');
+    onFallo(null);
+    const elegidas = archivos;
+    try {
+      let actual = ficha;
+      for (let indice = 0; indice < elegidas.length; indice += 1) {
+        const archivo = elegidas[indice];
+        if (!archivo) continue;
+        onAviso(`Subiendo foto ${indice + 1} de ${elegidas.length}…`);
+        actual = await pedir<Ficha>(apiUrl, token, `/genset/${imei}/fotos`, {
+          method: 'POST',
+          body: JSON.stringify({ fotos: [await leerFoto(archivo)] }),
+        });
+        onFicha(actual);
+      }
+      setArchivos([]);
+      setLote((valor) => valor + 1);
+      onAviso(elegidas.length === 1 ? 'La foto quedó cargada.' : `Quedaron cargadas ${elegidas.length} fotos.`);
+    } catch (error: unknown) {
+      onFallo(texto(error));
+    } finally {
+      setTarea(null);
+    }
+  }
+
+  async function quitar(foto: Foto) {
+    if (!window.confirm(`¿Quitar la foto ${foto.nombre}?`)) return;
+    setTarea('fotos');
+    onFallo(null);
+    try {
+      onFicha(await pedir<Ficha>(apiUrl, token, `/genset/${imei}/fotos/${foto.id}`, { method: 'DELETE' }));
+      onAviso('La foto quedó quitada.');
+    } catch (error: unknown) {
+      onFallo(texto(error));
+    } finally {
+      setTarea(null);
+    }
+  }
+
+  return (
+    <div>
+      <h3>Datos del equipo</h3>
+      <form
+        className="genset-ficha"
+        onSubmit={(evento) => {
+          evento.preventDefault();
+          void guardar();
+        }}
+      >
+        <label>
+          Carreta
+          <input value={carreta} maxLength={80} onChange={(evento) => setCarreta(evento.target.value)} />
+        </label>
+        <label>
+          Serie máquina
+          <input value={serie} maxLength={80} onChange={(evento) => setSerie(evento.target.value)} />
+        </label>
+        <label>
+          Código GENSET
+          <input value={codigo} maxLength={80} onChange={(evento) => setCodigo(evento.target.value)} />
+        </label>
+        <label>
+          Observaciones
+          <textarea value={observaciones} maxLength={2000} onChange={(evento) => setObservaciones(evento.target.value)} />
+        </label>
+        <button type="submit" className="primario" disabled={tarea !== null}>
+          {tarea === 'datos' ? 'Guardando…' : 'Guardar datos'}
+        </button>
+      </form>
+      <h3>Fotos</h3>
+      {ficha.fotos.length === 0 ? <p className="meta">Todavía no hay fotos de este equipo.</p> : null}
+      <div className="orden-fotos">
+        {ficha.fotos.map((foto) => (
+          <FotoMini key={foto.id} apiUrl={apiUrl} token={token} imei={imei} foto={foto} onAbrir={setAmpliada} onQuitar={() => void quitar(foto)} />
+        ))}
+      </div>
+      <form
+        className="genset-ficha"
+        onSubmit={(evento) => {
+          evento.preventDefault();
+          void cargarFotos();
+        }}
+      >
+        <label>
+          Cargar fotos
+          <input
+            key={lote}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            onChange={(evento) => setArchivos(Array.from(evento.target.files ?? []))}
+          />
+        </label>
+        <p className="meta">{archivos.length > 0 ? archivos.map((archivo) => archivo.name).join(', ') : 'Puedes elegir varias.'}</p>
+        <button type="submit" disabled={tarea !== null || archivos.length === 0}>
+          {tarea === 'fotos' ? 'Cargando…' : 'Cargar fotos'}
+        </button>
+      </form>
+      {ampliada ? (
+        <div className="modal-fondo foto" onMouseDown={() => setAmpliada(null)}>
+          <div className="modal modal-foto" role="dialog" aria-modal="true" aria-label={ampliada.nombre} onMouseDown={(evento) => evento.stopPropagation()}>
+            <img src={ampliada.url} alt={ampliada.nombre} />
+            <p>{ampliada.nombre}</p>
+            <button type="button" onClick={() => setAmpliada(null)}>
+              Cerrar
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FotoMini({
+  apiUrl,
+  token,
+  imei,
+  foto,
+  onAbrir,
+  onQuitar,
+}: {
+  apiUrl: string;
+  token: string;
+  imei: string;
+  foto: Foto;
+  onAbrir: (foto: { url: string; nombre: string }) => void;
+  onQuitar: () => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let vigente = true;
+    let objeto = '';
+    void fetch(`${apiUrl}/genset/${imei}/fotos/${foto.id}`, { headers: { authorization: `Bearer ${token}` } })
+      .then((respuesta) => (respuesta.ok ? respuesta.blob() : null))
+      .then((blob) => {
+        if (!blob || !vigente) return;
+        objeto = URL.createObjectURL(blob);
+        setUrl(objeto);
+      })
+      .catch(() => undefined);
+    return () => {
+      vigente = false;
+      if (objeto) URL.revokeObjectURL(objeto);
+    };
+  }, [apiUrl, token, imei, foto.id]);
+  return (
+    <div>
+      <button type="button" className="miniatura" disabled={!url} onClick={() => url && onAbrir({ url, nombre: foto.nombre })}>
+        {url ? <img src={url} alt={foto.nombre} /> : foto.nombre}
+      </button>
+      <button type="button" className="enlace" onClick={onQuitar}>
+        Quitar
+      </button>
+    </div>
+  );
+}
+
+function TablaInterpretada({ interpretacion }: { interpretacion: Interpretacion }) {
+  return (
+    <div className="genset-interpretar">
+      {interpretacion.avisos.map((aviso) => (
+        <p key={aviso} className={aviso.includes('no coinciden') ? 'error' : 'bajada'}>
+          {aviso}
+        </p>
+      ))}
+      <table className="tabla-chips">
+        <thead>
+          <tr>
+            <th>Campo</th>
+            <th>Valor</th>
+            <th>Nota</th>
+          </tr>
+        </thead>
+        <tbody>
+          {interpretacion.medidas.map((medida) => (
+            <tr key={medida.nombre}>
+              <td>
+                {medida.etiqueta}
+                <div className="genset-fuera">{medida.nombre}</div>
+              </td>
+              <td>{medida.texto}</td>
+              <td>{medida.aviso || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -393,4 +698,17 @@ async function pedir<T>(apiUrl: string, token: string, ruta: string, init?: Requ
 
 function texto(error: unknown): string {
   return error instanceof Error ? error.message : 'No se pudo completar la operación.';
+}
+
+function leerFoto(archivo: File): Promise<{ nombre: string; mime: string; contenido: string }> {
+  if (archivo.size > 4 * 1024 * 1024) return Promise.reject(new Error('Cada foto tiene que pesar menos de 4 MB.'));
+  return new Promise((resolve, reject) => {
+    const lector = new FileReader();
+    lector.onerror = () => reject(new Error('No pude leer la foto.'));
+    lector.onload = () => {
+      const data = String(lector.result);
+      resolve({ nombre: archivo.name, mime: archivo.type || 'image/jpeg', contenido: data.slice(data.indexOf(',') + 1) });
+    };
+    lector.readAsDataURL(archivo);
+  });
 }

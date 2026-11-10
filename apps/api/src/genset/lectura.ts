@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { interpretarD00, type InterpretacionGenset } from './interpretar';
 
 export type ConexionGenset = 'en_linea' | 'reciente' | 'sin_reporte';
 
@@ -43,6 +44,7 @@ export type TramaVista = {
   gps: GpsLeido | null;
   campos: CampoTrama[];
   crudo: Record<string, unknown>;
+  interpretacion: InterpretacionGenset;
 };
 
 const TREINTA_MINUTOS = 30 * 60 * 1000;
@@ -167,6 +169,7 @@ export function vistaDeTrama(fila: { id: string; consultado_en: string; consulta
     gps,
     campos: camposDe(crudo),
     crudo,
+    interpretacion: interpretarD00(typeof crudo.d00 === 'string' ? crudo.d00 : null),
   };
 }
 

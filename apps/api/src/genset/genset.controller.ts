@@ -1,4 +1,4 @@
-import { Controller, Get, Headers, Inject, Param, Post, Query, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Headers, Inject, Param, Post, Query, StreamableFile, UnauthorizedException } from '@nestjs/common';
 import { IdentidadService } from '../identidad/identidad.service';
 import { puedeValidarGenset } from '../identidad/permisos';
 import { GensetService } from './genset.service';
@@ -32,6 +32,39 @@ export class GensetController {
   async consultar(@Headers('authorization') autorizacion: string | undefined, @Param('imei') imei: string) {
     const usuario = await this.exigir(autorizacion);
     return this.genset.consultar(imei, usuario.correo);
+  }
+
+  @Post('genset/:imei/ficha')
+  async ficha(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('imei') imei: string,
+    @Body() cuerpo: { carreta?: string; serie_maquina?: string; codigo_genset?: string; observaciones?: string },
+  ) {
+    await this.exigir(autorizacion);
+    return this.genset.guardarFicha(imei, cuerpo ?? {});
+  }
+
+  @Post('genset/:imei/fotos')
+  async fotos(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Param('imei') imei: string,
+    @Body() cuerpo: { fotos?: Array<{ nombre?: string; mime?: string; contenido?: string }> },
+  ) {
+    const usuario = await this.exigir(autorizacion);
+    return this.genset.agregarFotos(imei, usuario.correo, cuerpo?.fotos ?? []);
+  }
+
+  @Get('genset/:imei/fotos/:fotoId')
+  async foto(@Headers('authorization') autorizacion: string | undefined, @Param('imei') imei: string, @Param('fotoId') fotoId: string) {
+    await this.exigir(autorizacion);
+    const archivo = await this.genset.leerFoto(imei, fotoId);
+    return new StreamableFile(archivo.contenido, { type: archivo.mime, disposition: `inline; filename="${archivo.nombre.replace(/"/g, '')}"` });
+  }
+
+  @Delete('genset/:imei/fotos/:fotoId')
+  async quitarFoto(@Headers('authorization') autorizacion: string | undefined, @Param('imei') imei: string, @Param('fotoId') fotoId: string) {
+    await this.exigir(autorizacion);
+    return this.genset.quitarFoto(imei, fotoId);
   }
 
   private async exigir(autorizacion?: string) {

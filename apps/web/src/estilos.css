@@ -2990,6 +2990,31 @@ button.enlace:disabled {
   grid-template-columns: minmax(140px, 190px) minmax(0, 1fr);
 }
 
+.genset-ficha {
+  margin-top: 8px;
+}
+
+.genset-ficha textarea {
+  min-height: 72px;
+  padding: 8px 12px;
+  border: 1px solid #c9c0b3;
+  background: #fff;
+  font: inherit;
+}
+
+.genset-ficha input[type='file'] {
+  height: auto;
+  padding: 8px 0;
+}
+
+.genset-interpretar {
+  margin: 8px 0 16px;
+}
+
+.modal.modal-genset .modal-fondo.foto {
+  z-index: 40;
+}
+
 .genset-trama {
   margin: 8px 0 0;
   padding: 10px 12px;
