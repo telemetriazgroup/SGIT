@@ -1,0 +1,268 @@
+{
+    "coleccion": "G_dispositivos_11_2026",
+    "mes": 11,
+    "anio": 2026,
+    "total": 26,
+    "dispositivos": [
+      {
+        "imei": "860389054928011",
+        "estado": 1,
+        "fecha": "2026-10-31T19:00:02.619000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:50:34.349000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "863576046902271",
+        "estado": 1,
+        "fecha": "2026-10-31T19:07:54.175000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:48:37.940000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "868428044692592",
+        "estado": 1,
+        "fecha": "2026-10-31T19:00:36.825000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:48:03.612000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "867372052745077",
+        "estado": 1,
+        "fecha": "2026-10-31T19:02:17.221000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:47:17.036000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "868428049304086",
+        "estado": 1,
+        "fecha": "2026-11-03T16:49:44.922000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:47:11.255000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "860389050537162",
+        "estado": 1,
+        "fecha": "2026-10-31T19:04:45.858000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:46:24.711000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "868428041447644",
+        "estado": 1,
+        "fecha": "2026-10-31T19:04:49.763000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:45:19.111000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "860389058912276",
+        "estado": 1,
+        "fecha": "2026-11-02T08:47:15.260000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:43:36.753000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "868428047365022",
+        "estado": 1,
+        "fecha": "2026-10-31T19:02:02.401000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:38:22.239000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "868428049518362",
+        "estado": 1,
+        "fecha": "2026-11-03T11:16:34.109000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T09:26:41.229000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "866782042018727",
+        "estado": 1,
+        "fecha": "2026-10-31T19:01:27.480000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T07:23:41.616000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "860389058321445",
+        "estado": 1,
+        "fecha": "2026-11-01T06:22:59.035000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T06:22:47.734000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "860389050863733",
+        "estado": 1,
+        "fecha": "2026-10-31T19:00:26.208000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-10T02:50:05.429000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "862643033733233",
+        "estado": 1,
+        "fecha": "2026-11-04T06:02:50.926000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-09T23:02:05.365000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "863576042247473",
+        "estado": 1,
+        "fecha": "2026-10-31T19:01:09.989000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-09T12:54:12.273000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "866782049539089",
+        "estado": 1,
+        "fecha": "2026-11-01T17:41:24.454000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-09T02:23:00.423000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "860389053673048",
+        "estado": 1,
+        "fecha": "2026-10-31T19:00:21.084000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-08T20:01:19.506000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "866782043762695",
+        "estado": 1,
+        "fecha": "2026-11-01T13:03:50.866000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-08T11:29:08.521000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "866262036526670",
+        "estado": 1,
+        "fecha": "2026-10-31T20:31:52.956000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-08T02:19:55.298000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "867856033722130",
+        "estado": 1,
+        "fecha": "2026-10-31T19:00:10.501000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-07T17:59:13.209000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "867858039223964",
+        "estado": 1,
+        "fecha": "2026-10-31T21:16:57.042000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-06T09:05:54.109000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "867858038021385",
+        "estado": 1,
+        "fecha": "2026-11-02T02:41:20.658000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-06T02:12:17.203000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "860719025125901",
+        "estado": 1,
+        "fecha": "2026-11-03T18:02:15.650000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-04T22:35:02.848000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "864764035978200",
+        "estado": 1,
+        "fecha": "2026-11-03T10:58:24.690000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-03T10:58:24.690000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "867858038328467",
+        "estado": 1,
+        "fecha": "2026-11-03T08:57:45.666000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-03T09:02:04.437000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      },
+      {
+        "imei": "866262033868364",
+        "estado": 1,
+        "fecha": "2026-10-31T19:00:57.944000",
+        "tipo": "Generador",
+        "ultimo_dato": "2026-11-01T12:58:58.605000",
+        "last_ip": null,
+        "secured": false,
+        "api_key_hash": null
+      }
+    ]
+  }

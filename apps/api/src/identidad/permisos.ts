@@ -17,3 +17,7 @@ export function puedeAtenderTarea(rol: Rol): boolean {
 export function puedeOperarSistema(rol: Rol): boolean {
   return rol === 'superusuario' || rol === 'operador';
 }
+
+export function puedeValidarGenset(rol: Rol): boolean {
+  return rol === 'tecnico' || rol === 'administrador' || rol === 'superusuario' || rol === 'operador';
+}

@@ -2938,6 +2938,69 @@ button.enlace:disabled {
   }
 }
 
+.genset-marca {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.genset-marca.en_linea {
+  background: #d7ebe0;
+  color: #1f4d3a;
+}
+
+.genset-marca.reciente {
+  background: #f3e6c4;
+  color: #6a4b12;
+}
+
+.genset-marca.sin_reporte {
+  background: #eeeae3;
+  color: #5c564c;
+}
+
+.genset-tabla {
+  overflow-x: auto;
+}
+
+.genset-filtros button {
+  background: transparent;
+  color: #1f4d3a;
+  border: 1px solid #1f4d3a;
+}
+
+.genset-filtros button.activo {
+  background: #1f4d3a;
+  color: #f7f3ea;
+  border-color: #1f4d3a;
+}
+
+.genset-fuera {
+  color: #8a8478;
+}
+
+.modal.modal-genset {
+  width: min(880px, 100%);
+}
+
+.modal.modal-genset dl {
+  grid-template-columns: minmax(140px, 190px) minmax(0, 1fr);
+}
+
+.genset-trama {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  background: #f7f4ee;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 0.82rem;
+}
+
 @media (max-width: 900px) {
   .odoo-cuerpo,
   .odoo-formulario {

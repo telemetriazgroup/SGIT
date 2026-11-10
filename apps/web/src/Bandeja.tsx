@@ -5,6 +5,7 @@ import { MiCuenta, PanelEquipo, PanelVirtual } from './Equipo';
 import { Logo } from './Logo';
 import { PanelChips } from './Chips';
 import { PanelModems } from './Modems';
+import { PanelGenset } from './Genset';
 import { PanelLector } from './Lector';
 import { PanelImprimir } from './Imprimir';
 import { PanelOdoo } from './Odoo';
@@ -102,6 +103,10 @@ function editaTareas(rol: string): boolean {
   return operaElSistema(rol) || rol === 'administrador';
 }
 
+function veGenset(rol: string): boolean {
+  return rol === 'tecnico' || rol === 'administrador' || rol === 'superusuario' || rol === 'operador';
+}
+
 function etiquetaRol(rol: string): string {
   if (rol === 'superusuario') return 'Superusuario';
   if (rol === 'administrador') return 'Administrador';
@@ -132,7 +137,7 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
   const [aviso, setAviso] = useState<string | null>(avisoInicial());
   const [ocupado, setOcupado] = useState(false);
   const imprime = sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador';
-  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'proyectos' | 'inventario' | 'conciliacion' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'virtual' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'qr' | 'cuenta'>(
+  const [vista, setVista] = useState<'recibidos' | 'enviados' | 'tareas' | 'proyectos' | 'inventario' | 'conciliacion' | 'diccionario' | 'fechas' | 'bot' | 'salida' | 'equipo' | 'virtual' | 'odoo' | 'respaldo' | 'lector' | 'imprimir' | 'chips' | 'modems' | 'genset' | 'qr' | 'cuenta'>(
     editar && /\/servicio\/salida\/?$/.test(window.location.pathname) ? 'salida' : sistema ? 'recibidos' : 'tareas',
   );
   const [redactando, setRedactando] = useState(false);
@@ -482,6 +487,18 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
           >
             Inventario
           </button>
+          {veGenset(sesion.usuario.rol) ? (
+          <button
+            type="button"
+            className={vista === 'genset' ? 'activo' : ''}
+            onClick={() => {
+              setVista('genset');
+              setHilo(null);
+            }}
+          >
+            GENSET
+          </button>
+          ) : null}
           {sesion.usuario.rol === 'superusuario' || sesion.usuario.rol === 'administrador' ? (
           <button
             type="button"
@@ -681,6 +698,8 @@ export function Bandeja({ apiUrl, sesion, onSalir, onNombre, onSesion }: Props) 
             <PanelChips apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'modems' ? (
             <PanelModems apiUrl={apiUrl} token={sesion.token} />
+          ) : vista === 'genset' ? (
+            <PanelGenset apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'imprimir' ? (
             <PanelImprimir apiUrl={apiUrl} token={sesion.token} />
           ) : vista === 'odoo' ? (

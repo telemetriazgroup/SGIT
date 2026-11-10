@@ -14,9 +14,10 @@ import { LectorModule } from './lector/lector.module';
 import { ImpresionModule } from './impresion/impresion.module';
 import { SalidaModule } from './salida/salida.module';
 import { RespaldoModule } from './respaldo/respaldo.module';
+import { GensetModule } from './genset/genset.module';
 
 @Module({
-  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule, ChipsModule, ModemsModule, FabricacionModule, RespaldoModule, LectorModule, ImpresionModule, SalidaModule],
+  imports: [ConexionesModule, SaludModule, IdentidadModule, BuzonModule, TareasModule, BotModule, ChipsModule, ModemsModule, FabricacionModule, RespaldoModule, LectorModule, ImpresionModule, SalidaModule, GensetModule],
   providers: [
     {
       provide: PrepararBase,
