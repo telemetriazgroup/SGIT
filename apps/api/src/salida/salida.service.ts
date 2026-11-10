@@ -2,7 +2,8 @@ import { randomUUID } from 'crypto';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { Conexiones } from '../conexiones';
 import { leerConfiguracion } from '../configuracion';
-import { candidatosTelefono, htmlRegistro, listaDe, momentoCorreo, separarCorreos, telefonoSalida, telefonoValido, TOPE_SALIDA } from './reglas';
+import { asuntoRegistro, htmlFichaConductor, leerRegistro, mensajeWhatsappRegistro, textoRegistro } from './ficha-registro';
+import { candidatosTelefono, htmlRegistro, listaDe, momentoCorreo, NOMBRE_REGISTRO_CONDUCTORES, separarCorreos, telefonoSalida, telefonoValido, TOPE_SALIDA } from './reglas';
 
 export type FilaWhatsapp = {
   id: string;
@@ -184,6 +185,60 @@ export class SalidaService {
       whatsapp: await this.encolarWhatsapp(whatsapp),
       correos: await this.encolarCorreos(correos, opciones),
     };
+  }
+
+  async recibirRegistro(cuerpo: {
+    whatsapp?: PiezaWhatsapp | PiezaWhatsapp[];
+    correo?: PiezaCorreo | PiezaCorreo[];
+    correos?: PiezaCorreo | PiezaCorreo[];
+    registro?: unknown;
+  }): Promise<{ whatsapp: ResultadoWhatsapp[]; correos: ResultadoCorreo[] }> {
+    const whatsapp = listaDe(cuerpo.whatsapp);
+    const correos = [...listaDe(cuerpo.correo), ...listaDe(cuerpo.correos)];
+    if (whatsapp.length === 0 && correos.length === 0) throw new BadRequestException('Indica un WhatsApp o un correo.');
+    if (whatsapp.length > TOPE_SALIDA || correos.length > TOPE_SALIDA) throw new BadRequestException(`El máximo es ${TOPE_SALIDA} mensajes por envío.`);
+    const leido = leerRegistro(cuerpo.registro);
+    if ('error' in leido) {
+      return {
+        whatsapp: whatsapp.map((pieza) => ({
+          id: '',
+          telefono: telefonoSalida(pieza.telefono ?? ''),
+          estado: 'rechazado',
+          aviso: null,
+          motivo: leido.error,
+        })),
+        correos: correos.map((pieza) => ({
+          id: '',
+          direccion: pieza.direccion ?? pieza.para ?? '',
+          estado: 'rechazado',
+          noEnviarAntes: null,
+          motivo: leido.error,
+        })),
+      };
+    }
+    const ficha = leido.ficha;
+    return this.recibir(
+      {
+        whatsapp: whatsapp.map((pieza) => ({
+          telefono: pieza.telefono,
+          contacto: pieza.contacto,
+          mensaje: mensajeWhatsappRegistro(ficha),
+        })),
+        correo: correos.map((pieza) => ({
+          direccion: pieza.direccion,
+          para: pieza.para,
+          copia: pieza.copia,
+          cc: pieza.cc,
+          copiaOculta: pieza.copiaOculta,
+          cco: pieza.cco,
+          bcc: pieza.bcc,
+          asunto: (pieza.asunto ?? '').trim() || asuntoRegistro(ficha),
+          cuerpo: textoRegistro(ficha),
+          html: htmlFichaConductor(ficha),
+        })),
+      },
+      { htmlObligatorio: true, remitenteNombre: NOMBRE_REGISTRO_CONDUCTORES },
+    );
   }
 
   private async encolarWhatsapp(piezas: PiezaWhatsapp[]): Promise<ResultadoWhatsapp[]> {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { asuntoRegistro, htmlFichaConductor, leerRegistro, mensajeWhatsappRegistro, MOTIVO_FICHA_REGISTRO, textoRegistro } from '../src/salida/ficha-registro';
 import { candidatosTelefono, correoRaw, htmlRegistro, momentoCorreo, MOTIVO_HTML_REGISTRO, NOMBRE_REGISTRO_CONDUCTORES, PAUSA_CORREO_MS, separarCorreos, telefonoSalida, telefonoValido, textoContacto } from '../src/salida/reglas';
 
 test('un correo queda 20 segundos después del anterior', () => {
@@ -78,6 +79,79 @@ test('el correo crudo incluye copia y copia oculta', () => {
   const texto = Buffer.from(raw, 'base64url').toString('utf8');
   assert.match(texto, /Cc: copia@ejemplo.com/);
   assert.match(texto, /Bcc: oculta@ejemplo.com/);
+});
+
+const fichaEjemplo = {
+  sede: 'LIMA',
+  motivo: 'CARGAR CONTENEDOR',
+  fecha: '10/11/2026',
+  hora: '09:56:08',
+  placaTracto: 'CYB.476',
+  placaCarreta: 'A8F974',
+  conductor: 'DOMINGO CHUCO CAPCHA',
+  empresa: 'LH TRADE',
+  ruc: '20545385296',
+  brevete: '21106707',
+  telefono: '954124973',
+  codigoEquipo: 'NO INDICADO',
+  estado: 'REGISTRADO',
+  observaciones: 'SIN OBSERVACIONES',
+  id: 'ZG-20261110-095608',
+};
+
+test('la ficha del registro separa cada dato y completa los vacíos', () => {
+  const leido = leerRegistro(fichaEjemplo);
+  assert.ok('ficha' in leido);
+  if (!('ficha' in leido)) return;
+  assert.equal(leido.ficha.fechaHora, '10/11/2026 09:56:08');
+  assert.equal(asuntoRegistro(leido.ficha), '[LIMA] CARGAR CONTENEDOR | CYB.476');
+  const corto = leerRegistro({ sede: 'LIMA', motivo: 'CARGAR CONTENEDOR', fecha: '10/11/2026', placa_tracto: 'CYB.476', conductor: 'DOMINGO', id: 'ZG-1' });
+  assert.ok('ficha' in corto);
+  if (!('ficha' in corto)) return;
+  assert.equal(corto.ficha.placaCarreta, 'NO INDICADO');
+  assert.equal(corto.ficha.observaciones, 'SIN OBSERVACIONES');
+  assert.equal(corto.ficha.estado, 'REGISTRADO');
+  assert.equal(leerRegistro({}).error, MOTIVO_FICHA_REGISTRO);
+  assert.equal(leerRegistro({ sede: 'LIMA' }).error, MOTIVO_FICHA_REGISTRO);
+});
+
+test('el whatsapp del registro lleva cada dato en su línea', () => {
+  const leido = leerRegistro({ ...fichaEjemplo, conductor: 'DOMINGO <script>' });
+  assert.ok('ficha' in leido);
+  if (!('ficha' in leido)) return;
+  const mensaje = mensajeWhatsappRegistro(leido.ficha);
+  const lineas = mensaje.split('\n').filter((linea) => linea.startsWith('*') && linea.includes(':*'));
+  assert.equal(lineas.length, 14);
+  assert.match(mensaje, /\*Sede:\* LIMA/);
+  assert.match(mensaje, /\*Placa tracto:\* CYB\.476/);
+  assert.match(mensaje, /\*Conductor:\* DOMINGO <script>/);
+  assert.match(mensaje, /\*ID de registro:\* ZG-20261110-095608/);
+  assert.ok(mensaje.includes('\n\n'));
+  assert.ok(mensaje.length <= 4000);
+  assert.doesNotMatch(mensaje, /LIMA CARGAR CONTENEDOR CYB\.476 DOMINGO/);
+});
+
+test('el correo del registro dibuja la ficha y escapa el html', () => {
+  const leido = leerRegistro({ ...fichaEjemplo, empresa: 'LH & TRADE <b>' });
+  assert.ok('ficha' in leido);
+  if (!('ficha' in leido)) return;
+  const html = htmlFichaConductor(leido.ficha);
+  const texto = textoRegistro(leido.ficha);
+  assert.match(html, /NUEVO REGISTRO DE CONDUCTOR/);
+  assert.match(html, /INGENIERÍA EN FRÍO/);
+  assert.match(html, /DETALLE DEL REGISTRO/);
+  assert.match(html, /✓ REGISTRADO/);
+  assert.match(html, /CYB\.476/);
+  assert.match(html, /10\/11\/2026<br>09:56:08/);
+  assert.match(html, /ZG-20261110-095608/);
+  assert.match(html, /LH &amp; TRADE &lt;b&gt;/);
+  assert.doesNotMatch(html, /<b>/);
+  assert.match(texto, /SEDE: LIMA/);
+  assert.match(texto, /PLACA CARRETA: A8F974/);
+  assert.match(texto, /ID DE REGISTRO: ZG-20261110-095608/);
+  assert.ok(html.length <= 20000);
+  assert.ok(texto.length <= 8000);
+  assert.equal(htmlRegistro(html).motivo, null);
 });
 
 test('una lista de correos acepta coma, punto y coma y saltos de línea', () => {

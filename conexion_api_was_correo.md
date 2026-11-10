@@ -212,3 +212,13 @@ Motivos de rechazo:
 ## Qué no hace esta ruta
 
 No devuelve el texto enviado ni la clave. No cancela un mensaje ya encolado. No apila otro mensaje al mismo número o correo mientras el anterior sigue sin salir.
+
+## Registro de conductores (ZDRY)
+
+El aviso de una inscripción de conductor sale por otra ruta. SGIT arma la ficha y el WhatsApp. El contrato y los enlaces están en `conexion_zdry_registro.md`.
+
+| Dato | Valor |
+|---|---|
+| Método | `POST` |
+| URL oficial | `https://ztrack.app/servicio/salida-registro` |
+| URL equivalente | `https://ztrack.app/SGIT/servicio/salida-registro` |
