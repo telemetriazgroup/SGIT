@@ -4,6 +4,7 @@ import path from 'path';
 import qrcodeTerminal from 'qrcode-terminal';
 import { Client, LocalAuth, MessageMedia } from 'whatsapp-web.js';
 import { crearClienteBot, type CapturaMensaje } from './api';
+import { enviarEnWhatsapp } from './enviar-pagina';
 import { enlazarEstado } from './estado';
 import { cerrarNavegadorDeSesion } from './navegador';
 import { directorioDeEstado, rutaDeSesion } from './rutas';
@@ -302,73 +303,7 @@ async function enviarEnSesion(destino: string, pieza: { texto: string; mime?: st
   const pagina = cliente.pupPage;
   const numero = destino.replace(/\D/g, '');
   if (!pagina || !numero) throw new Error('WhatsApp no está abierto.');
-  const resultado = await pagina.evaluate(async (telefono: string, envio: { texto: string; mime?: string; data?: string; filename?: string }) => {
-    const paginaWa = window as unknown as { require: (nombre: string) => any; WWebJS?: { sendMessage: (chat: unknown, texto: string, opciones: unknown) => Promise<unknown> } };
-    if (!paginaWa.WWebJS?.sendMessage) return { ok: false, error: 'WhatsApp todavía no está listo.' };
-    const textoDe = (valor: any): string => {
-      try {
-        if (!valor) return '';
-        if (typeof valor === 'string') return valor;
-        return String(valor.user || valor._serialized || '');
-      } catch {
-        return '';
-      }
-    };
-    const chats = paginaWa.require('WAWebCollections').Chat;
-    const modelos = (chats.getModelsArray && chats.getModelsArray()) || [];
-    let chat: any = null;
-    for (const item of modelos) {
-      const id = textoDe(item && item.id);
-      let contacto = '';
-      try {
-        contacto = textoDe(item && item.contact && item.contact.phoneNumber);
-      } catch {
-        contacto = '';
-      }
-      if (id.includes(telefono) || contacto.includes(telefono)) {
-        chat = item;
-        break;
-      }
-    }
-    if (!chat) {
-      try {
-        const fabrica = paginaWa.require('WAWebWidFactory');
-        const base = fabrica.createWid(`${telefono}@c.us`);
-        const existe = base ? await paginaWa.require('WAWebQueryExistsJob').queryWidExists(base) : null;
-        const wid = (existe && existe.wid) || base;
-        if (!wid) return { ok: false, error: `no armé el chat de ${telefono}` };
-        try {
-          chat = chats.get(wid);
-        } catch {
-          chat = null;
-        }
-        if (!chat) {
-          const creado = await paginaWa.require('WAWebFindChatAction').findOrCreateLatestChat(wid);
-          chat = creado && creado.chat;
-        }
-      } catch (error) {
-        const mensaje = error instanceof Error ? error.message : 'no abrí el chat';
-        return { ok: false, error: mensaje };
-      }
-    }
-    if (!chat) return { ok: false, error: `no hay chat para ${telefono}` };
-    const opciones: { waitUntilMsgSent: boolean; linkPreview: boolean; media?: { mimetype: string; data: string; filename: string } } = {
-      waitUntilMsgSent: true,
-      linkPreview: false,
-    };
-    let contenido = envio.texto;
-    if (envio.data && envio.mime) {
-      opciones.media = { mimetype: envio.mime, data: envio.data, filename: envio.filename || 'archivo' };
-      contenido = '';
-    }
-    try {
-      const mensaje = await paginaWa.WWebJS.sendMessage(chat, contenido, opciones);
-      return { ok: Boolean(mensaje), error: mensaje ? '' : 'WhatsApp no confirmó el envío.' };
-    } catch (error) {
-      const mensaje = error instanceof Error ? error.message : 'WhatsApp rechazó el envío';
-      return { ok: false, error: mensaje };
-    }
-  }, numero, pieza);
+  const resultado = await pagina.evaluate(enviarEnWhatsapp, numero, pieza);
   if (!resultado?.ok) throw new Error(resultado?.error || 'no salió');
 }
 
