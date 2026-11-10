@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { candidatosTelefono, correoRaw, momentoCorreo, PAUSA_CORREO_MS, separarCorreos, telefonoSalida, telefonoValido, textoContacto } from '../src/salida/reglas';
+import { candidatosTelefono, correoRaw, htmlRegistro, momentoCorreo, MOTIVO_HTML_REGISTRO, NOMBRE_REGISTRO_CONDUCTORES, PAUSA_CORREO_MS, separarCorreos, telefonoSalida, telefonoValido, textoContacto } from '../src/salida/reglas';
 
 test('un correo queda 20 segundos después del anterior', () => {
   const ahora = new Date('2026-10-29T14:00:00.000Z');
@@ -33,6 +33,34 @@ test('el correo crudo lleva destinatario y asunto', () => {
   assert.match(texto, /Hola/);
   assert.doesNotMatch(texto, /Cc:/);
   assert.doesNotMatch(texto, /Bcc:/);
+});
+
+test('el registro de conductores nombra al remitente y manda las dos partes', () => {
+  const raw = correoRaw(
+    'telemetria@zgroup.com.pe',
+    'operaciones@zgroup.com.pe',
+    '[LIMA] CARGAR CONTENEDOR | CYB.476',
+    'SEDE: LIMA',
+    '',
+    '',
+    '<p>Nuevo registro de conductor</p>',
+    NOMBRE_REGISTRO_CONDUCTORES,
+  );
+  const texto = Buffer.from(raw, 'base64url').toString('utf8');
+  assert.match(texto, /From: "Registro de Conductores - ZGROUP" <telemetria@zgroup.com.pe>/);
+  assert.match(texto, /multipart\/alternative/);
+  assert.match(texto, /text\/plain/);
+  assert.match(texto, /text\/html/);
+  assert.match(texto, /SEDE: LIMA/);
+  assert.match(texto, /Nuevo registro de conductor/);
+});
+
+test('el html del registro es obligatorio y cabe en 20000 caracteres', () => {
+  assert.equal(htmlRegistro('').motivo, MOTIVO_HTML_REGISTRO);
+  assert.equal(htmlRegistro('   ').motivo, MOTIVO_HTML_REGISTRO);
+  assert.equal(htmlRegistro('x'.repeat(20001)).motivo, MOTIVO_HTML_REGISTRO);
+  assert.equal(htmlRegistro('<p>ok</p>').motivo, null);
+  assert.equal(htmlRegistro('<p>ok</p>').html, '<p>ok</p>');
 });
 
 test('el correo con diseño sale como texto y como html', () => {

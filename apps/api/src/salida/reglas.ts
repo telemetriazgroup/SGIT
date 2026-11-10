@@ -1,6 +1,9 @@
 export const PAUSA_CORREO_MS = 20_000;
 export const TOPE_SALIDA = 30;
 export const TOPE_DESTINOS = 20;
+export const TOPE_HTML = 20_000;
+export const NOMBRE_REGISTRO_CONDUCTORES = 'Registro de Conductores - ZGROUP';
+export const MOTIVO_HTML_REGISTRO = 'El cuerpo HTML es obligatorio y llega hasta 20000 caracteres.';
 
 export function telefonoSalida(valor: string): string {
   const limpio = valor.replace(/\D/g, '');
@@ -53,10 +56,16 @@ export function textoContacto(contacto: string): string {
   return `Para continuar, comunícate al ${contacto}.`;
 }
 
-export function correoRaw(de: string, para: string, asunto: string, cuerpo: string, copia = '', copiaOculta = '', html = ''): string {
+export function htmlRegistro(valor: string | undefined): { html: string; motivo: string | null } {
+  const html = (valor ?? '').trim();
+  if (!html || html.length > TOPE_HTML) return { html: '', motivo: MOTIVO_HTML_REGISTRO };
+  return { html, motivo: null };
+}
+
+export function correoRaw(de: string, para: string, asunto: string, cuerpo: string, copia = '', copiaOculta = '', html = '', nombreDe = ''): string {
   const texto = cuerpo.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
   const diseno = html.trim().replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
-  const cabeceras = [`From: ${unaLinea(de)}`, `To: ${unaLinea(para)}`];
+  const cabeceras = [`From: ${desdeConNombre(de, nombreDe)}`, `To: ${unaLinea(para)}`];
   if (copia.trim()) cabeceras.push(`Cc: ${unaLinea(copia)}`);
   if (copiaOculta.trim()) cabeceras.push(`Bcc: ${unaLinea(copiaOculta)}`);
   cabeceras.push(`Subject: ${asuntoCodificado(unaLinea(asunto))}`, 'MIME-Version: 1.0');
@@ -76,6 +85,14 @@ function parteTexto(limite: string, texto: string): string {
 
 function parteHtml(limite: string, html: string): string {
   return [`--${limite}`, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: 8bit', '', html, ''].join('\r\n');
+}
+
+function desdeConNombre(correo: string, nombre: string): string {
+  const casilla = unaLinea(correo);
+  const visible = unaLinea(nombre);
+  if (!visible) return casilla;
+  if (/^[\x20-\x7E]*$/.test(visible)) return `"${visible.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" <${casilla}>`;
+  return `=?UTF-8?B?${Buffer.from(visible, 'utf8').toString('base64')}?= <${casilla}>`;
 }
 
 function unaLinea(valor: string): string {

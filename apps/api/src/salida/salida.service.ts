@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { Conexiones } from '../conexiones';
 import { leerConfiguracion } from '../configuracion';
-import { candidatosTelefono, listaDe, momentoCorreo, separarCorreos, telefonoSalida, telefonoValido, TOPE_SALIDA } from './reglas';
+import { candidatosTelefono, htmlRegistro, listaDe, momentoCorreo, separarCorreos, telefonoSalida, telefonoValido, TOPE_SALIDA } from './reglas';
 
 export type FilaWhatsapp = {
   id: string;
@@ -172,14 +172,17 @@ export class SalidaService {
     }
   }
 
-  async recibir(cuerpo: { whatsapp?: PiezaWhatsapp | PiezaWhatsapp[]; correo?: PiezaCorreo | PiezaCorreo[]; correos?: PiezaCorreo | PiezaCorreo[] }): Promise<{ whatsapp: ResultadoWhatsapp[]; correos: ResultadoCorreo[] }> {
+  async recibir(
+    cuerpo: { whatsapp?: PiezaWhatsapp | PiezaWhatsapp[]; correo?: PiezaCorreo | PiezaCorreo[]; correos?: PiezaCorreo | PiezaCorreo[] },
+    opciones?: { htmlObligatorio?: boolean; remitenteNombre?: string },
+  ): Promise<{ whatsapp: ResultadoWhatsapp[]; correos: ResultadoCorreo[] }> {
     const whatsapp = listaDe(cuerpo.whatsapp);
     const correos = [...listaDe(cuerpo.correo), ...listaDe(cuerpo.correos)];
     if (whatsapp.length === 0 && correos.length === 0) throw new BadRequestException('Indica un WhatsApp o un correo.');
     if (whatsapp.length > TOPE_SALIDA || correos.length > TOPE_SALIDA) throw new BadRequestException(`El máximo es ${TOPE_SALIDA} mensajes por envío.`);
     return {
       whatsapp: await this.encolarWhatsapp(whatsapp),
-      correos: await this.encolarCorreos(correos),
+      correos: await this.encolarCorreos(correos, opciones),
     };
   }
 
@@ -252,9 +255,10 @@ export class SalidaService {
     }
   }
 
-  private async encolarCorreos(piezas: PiezaCorreo[]): Promise<ResultadoCorreo[]> {
+  private async encolarCorreos(piezas: PiezaCorreo[], opciones?: { htmlObligatorio?: boolean; remitenteNombre?: string }): Promise<ResultadoCorreo[]> {
     const salida: ResultadoCorreo[] = [];
     let cursor = await this.ultimoCorreo();
+    const remitente = opciones?.htmlObligatorio ? (opciones.remitenteNombre ?? '').trim() : '';
     for (const pieza of piezas) {
       const destinos = leerDestinos(pieza);
       const direccion = destinos.direccion;
@@ -264,7 +268,6 @@ export class SalidaService {
       }
       const asunto = (pieza.asunto ?? '').trim();
       const texto = (pieza.cuerpo ?? '').trim();
-      const html = (pieza.html ?? '').trim().slice(0, 20000);
       if (!asunto || asunto.length > 180) {
         salida.push({ id: '', direccion, estado: 'rechazado', noEnviarAntes: null, motivo: 'El asunto es obligatorio y llega hasta 180 caracteres.' });
         continue;
@@ -273,6 +276,12 @@ export class SalidaService {
         salida.push({ id: '', direccion, estado: 'rechazado', noEnviarAntes: null, motivo: 'El cuerpo es obligatorio y llega hasta 8000 caracteres.' });
         continue;
       }
+      const leido = opciones?.htmlObligatorio ? htmlRegistro(pieza.html) : { html: (pieza.html ?? '').trim().slice(0, 20000), motivo: null };
+      if (leido.motivo) {
+        salida.push({ id: '', direccion, estado: 'rechazado', noEnviarAntes: null, motivo: leido.motivo });
+        continue;
+      }
+      const html = leido.html;
       const enCola = await this.correoEnEspera(destinos.para);
       if (enCola) {
         salida.push({
@@ -288,9 +297,9 @@ export class SalidaService {
       cursor = cuando;
       const id = randomUUID();
       await this.conexiones.pg.query(
-        `INSERT INTO salida_correo (id, direccion, copia, copia_oculta, asunto, cuerpo, html, estado, no_enviar_antes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pendiente', $8)`,
-        [id, direccion, destinos.copia, destinos.copiaOculta, asunto, texto, html, cuando.toISOString()],
+        `INSERT INTO salida_correo (id, direccion, copia, copia_oculta, asunto, cuerpo, html, remitente_nombre, estado, no_enviar_antes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pendiente', $9)`,
+        [id, direccion, destinos.copia, destinos.copiaOculta, asunto, texto, html, remitente, cuando.toISOString()],
       );
       salida.push({ id, direccion, estado: 'en_cola', noEnviarAntes: cuando.toISOString() });
     }

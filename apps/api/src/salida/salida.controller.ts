@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, Inject, Param, Post, Query, Unauthorize
 import { timingSafeEqual } from 'crypto';
 import { leerConfiguracion } from '../configuracion';
 import { IdentidadService } from '../identidad/identidad.service';
+import { NOMBRE_REGISTRO_CONDUCTORES } from './reglas';
 import { SalidaService, type PiezaCorreo, type PiezaWhatsapp } from './salida.service';
 
 @Controller()
@@ -43,6 +44,16 @@ export class SalidaController {
   ) {
     await this.exigir(autorizacion, clave);
     return this.salida.recibir(cuerpo ?? {});
+  }
+
+  @Post('salida-registro')
+  async registro(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Headers('x-salida-clave') clave: string | undefined,
+    @Body() cuerpo: { whatsapp?: PiezaWhatsapp | PiezaWhatsapp[]; correo?: PiezaCorreo | PiezaCorreo[]; correos?: PiezaCorreo | PiezaCorreo[] },
+  ) {
+    await this.exigir(autorizacion, clave);
+    return this.salida.recibir(cuerpo ?? {}, { htmlObligatorio: true, remitenteNombre: NOMBRE_REGISTRO_CONDUCTORES });
   }
 
   private async exigir(autorizacion?: string, clave?: string): Promise<void> {
