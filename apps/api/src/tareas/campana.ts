@@ -127,10 +127,25 @@ function tiendasEnLineas(lineas: string[], columnas: ColumnaTienda[]): TiendaLei
     if (fila.length < cabezas.length) break;
     filas.push(fila);
   }
-  return tiendasDeFilas([cabezas, ...filas], columnas);
+  return tiendasDeFilas([cabezas, ...filas], columnas, true);
 }
 
-function tiendasDeFilas(filas: string[][], columnas: ColumnaTienda[]): TiendaLeida[] {
+export function esLocal(cadena: string, tienda: string): boolean {
+  return pareceNombre(cadena) && pareceNombre(tienda);
+}
+
+function pareceNombre(valor: string): boolean {
+  const texto = valor.trim();
+  if (texto.length < 2 || texto.length > 40) return false;
+  if (/@|https?:|cid:|mailto:|[<>]|^de:/i.test(texto)) return false;
+  if (/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(texto) || /^\d{1,2}:\d{2}/.test(texto)) return false;
+  if (/^[\d\s.+()-]+$/.test(texto)) return false;
+  if (!/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(texto)) return false;
+  if (/\b(buenos|estimado|programaci[oó]n|despachos|campa[nñ]a|instalaci[oó]n|asunto)\b/i.test(texto)) return false;
+  return true;
+}
+
+function tiendasDeFilas(filas: string[][], columnas: ColumnaTienda[], cortar = false): TiendaLeida[] {
   const cabezas = filas[0]?.map(plano) ?? [];
   const aliasTienda = new Set(columnas.filter((columna) => columna.campo === 'tienda').map((columna) => columna.alias));
   const aliasCadena = new Set(columnas.filter((columna) => columna.campo === 'cadena').map((columna) => columna.alias));
@@ -142,30 +157,38 @@ function tiendasDeFilas(filas: string[][], columnas: ColumnaTienda[]): TiendaLei
     const columna = columnas.find((item) => item.alias === cabeza);
     if (columna && !indice.has(columna.campo)) indice.set(columna.campo, posicion);
   });
-  return filas.slice(1).flatMap((fila) => {
+  const salida: TiendaLeida[] = [];
+  for (const fila of filas.slice(1)) {
     const tienda = fila[tiendaEn]?.trim() ?? '';
-    if (!tienda || plano(tienda) === 'tienda') return [];
     const toma = (campo: keyof TiendaLeida) => {
       const posicion = indice.get(campo);
       return posicion == null ? '' : (fila[posicion] ?? '').trim();
     };
+    const cadena = toma('cadena');
+    if (!tienda || plano(tienda) === 'tienda') {
+      if (cortar) break;
+      continue;
+    }
+    if (!esLocal(cadena, tienda)) {
+      if (cortar) break;
+      continue;
+    }
     const orden = Number(toma('orden'));
-    return [
-      {
-        orden: Number.isInteger(orden) && orden > 0 ? orden : null,
-        cadena: toma('cadena'),
-        tienda,
-        contacto: toma('contacto'),
-        celular: toma('celular'),
-        entregaFecha: fechaDe(toma('entregaFecha')),
-        entregaHora: horaDe(toma('entregaHora')),
-        status: toma('status'),
-        tamano: toma('tamano'),
-        direccion: toma('direccion'),
-        mapa: mapaDe(toma('mapa')),
-      },
-    ];
-  });
+    salida.push({
+      orden: Number.isInteger(orden) && orden > 0 ? orden : null,
+      cadena,
+      tienda,
+      contacto: toma('contacto'),
+      celular: toma('celular'),
+      entregaFecha: fechaDe(toma('entregaFecha')),
+      entregaHora: horaDe(toma('entregaHora')),
+      status: toma('status'),
+      tamano: toma('tamano'),
+      direccion: toma('direccion'),
+      mapa: mapaDe(toma('mapa')),
+    });
+  }
+  return salida;
 }
 
 function unicas(tiendas: TiendaLeida[]): TiendaLeida[] {

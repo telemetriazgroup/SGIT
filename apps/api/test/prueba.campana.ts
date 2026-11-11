@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { claveTienda, coincideTienda, columnasValidas, tiendasDeHtml, tiendasDeTexto, type ColumnaTienda } from '../src/tareas/campana';
+import { claveTienda, coincideTienda, columnasValidas, esLocal, tiendasDeHtml, tiendasDeTexto, type ColumnaTienda } from '../src/tareas/campana';
 
 const html = `
 <table>
@@ -31,6 +31,46 @@ test('un correo posterior no duplica la tienda y el servicio se ata por el nombr
   assert.equal(coincideTienda('#2336 - DONOFRIO // METRO BARRANCA - Done', 'BARRANCA'), true);
   assert.equal(coincideTienda('#2336 - DONOFRIO // METRO BREÑA - New', 'BRENA'), true);
   assert.equal(coincideTienda('#2336 - DONOFRIO // METRO BREÑA - New', 'BARRANCA'), false);
+});
+
+test('el texto del hilo no convierte la firma ni las fechas en tiendas', () => {
+  const texto = [
+    'CADENA',
+    'TIENDA',
+    'VIVANDA',
+    'ASIA',
+    'TOTTUS',
+    'LA MARINA',
+    '[cid:image020.jpg@01DC7D44.8B37C7B0]',
+    'De: Kiara Castillo <comercial1@zgroup.com.pe>',
+    '0',
+    '0',
+    'MAPS',
+    '2',
+    '20 RH',
+    '10',
+    '16/11/2026',
+    '10:00 a.m.',
+    'COMAS',
+    '5/11/2026',
+  ].join('\n');
+  const tiendas = tiendasDeTexto(texto);
+  assert.deepEqual(tiendas.map((tienda) => `${tienda.cadena} · ${tienda.tienda}`), ['VIVANDA · ASIA', 'TOTTUS · LA MARINA']);
+  assert.equal(esLocal('VIVANDA', 'ASIA'), true);
+  assert.equal(esLocal('0', '0'), false);
+  assert.equal(esLocal('MAPS', '2'), false);
+});
+
+test('una fila suelta dentro de la tabla no borra la tienda siguiente', () => {
+  const sucio = `
+<table>
+  <tr><td>CADENA</td><td>TIENDA</td></tr>
+  <tr><td>VIVANDA</td><td>ASIA</td></tr>
+  <tr><td>0</td><td>0</td></tr>
+  <tr><td>TOTTUS</td><td>QUILCA</td></tr>
+</table>`;
+  const tiendas = tiendasDeHtml(sucio);
+  assert.deepEqual(tiendas.map((tienda) => tienda.tienda), ['ASIA', 'QUILCA']);
 });
 
 test('otra forma de columnas lee la tienda y la fecha escrita', () => {

@@ -1610,7 +1610,7 @@ function TiendasCampana({
     <section className="campana">
       <h3>Tiendas de la campaña</h3>
       <p>La campaña agrupa tiendas. Cada tienda queda plegada: ábrela para ver el detalle. Cada una se abre como una cotización y ahí se crean sus hilos, uno o varios, desde esta ficha o por WhatsApp.</p>
-      {editar ? <FormasTienda apiUrl={apiUrl} token={token} tareaId={ficha.id} alGuardar={alGuardar} alFallar={alFallar} /> : null}
+      {editar ? <FormasTienda apiUrl={apiUrl} token={token} tareaId={ficha.id} archivo={archivo} alGuardar={alGuardar} alFallar={alFallar} /> : null}
       {archivo ? <AltaTienda apiUrl={apiUrl} token={token} tareaId={ficha.id} alGuardar={alGuardar} alFallar={alFallar} /> : null}
       {activas.length === 0 ? <p>Todavía no hay tiendas activas en esta cotización.</p> : null}
       {activas.length > 0 || archivadas.length > 0 ? (
@@ -1716,12 +1716,14 @@ function FormasTienda({
   apiUrl,
   token,
   tareaId,
+  archivo,
   alGuardar,
   alFallar,
 }: {
   apiUrl: string;
   token: string;
   tareaId: string;
+  archivo: boolean;
   alGuardar: (tarea: Tarea) => void;
   alFallar: (aviso: string) => void;
 }) {
@@ -1772,6 +1774,19 @@ function FormasTienda({
       >
         Volver a leer las tiendas
       </button>
+      {archivo ? (
+        <button
+          type="button"
+          onClick={() => {
+            if (!window.confirm('Quita las tiendas que no salen del cronograma. Las que ya tienen hilo se quedan.')) return;
+            void pedir<Tarea>(apiUrl, token, `/tareas/${tareaId}/tiendas/reordenar`, { method: 'POST', body: '{}' })
+              .then(alGuardar)
+              .catch((error: unknown) => alFallar(texto(error)));
+          }}
+        >
+          Reordenar
+        </button>
+      ) : null}
       {abierta ? (
         <>
           <p>Cada forma dice cómo vienen las columnas del cronograma. Al leer los correos se usa la forma activa que reconozca más tiendas.</p>

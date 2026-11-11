@@ -616,6 +616,49 @@ export class TareasService {
     return this.incorporarTiendas(id, fila.cot);
   }
 
+  async reordenarTiendas(id: string): Promise<number> {
+    const tarea = await this.conexiones.pg.query<{ cot: string; campana: boolean }>(`SELECT cot, campana FROM tarea WHERE id = $1`, [id]);
+    const fila = tarea.rows[0];
+    if (!fila) throw new NotFoundException('No está esa tarea.');
+    if (!fila.campana) throw new BadRequestException('Esta cotización no está en modo campaña.');
+    const leidas = await this.leerTiendas(fila.cot);
+    await this.guardarTiendas(id, leidas);
+    const actuales = await this.conexiones.pg.query<{ id: string; clave: string; estado: string; tarea_hija_id: string | null; con_hilo: boolean; con_nota: boolean }>(
+      `SELECT t.id, t.clave, t.estado, t.tarea_hija_id,
+              EXISTS (SELECT 1 FROM hilo_atencion h WHERE h.tarea_id = t.tarea_hija_id) AS con_hilo,
+              EXISTS (SELECT 1 FROM nota_bitacora n WHERE n.tienda_id = t.id OR n.tarea_id = t.tarea_hija_id) AS con_nota
+       FROM tienda t
+       WHERE t.tarea_id = $1`,
+      [id],
+    );
+    let quitadas = 0;
+    for (const tienda of actuales.rows) {
+      if (leidas.has(tienda.clave) || tienda.con_hilo || tienda.con_nota || tienda.estado !== 'pendiente') continue;
+      const cliente = await this.conexiones.pg.connect();
+      try {
+        await cliente.query('BEGIN');
+        await cliente.query(`UPDATE tienda SET tarea_hija_id = NULL WHERE id = $1`, [tienda.id]);
+        if (tienda.tarea_hija_id) {
+          await cliente.query(
+            `DELETE FROM tarea
+             WHERE id = $1 AND padre_id = $2
+               AND NOT EXISTS (SELECT 1 FROM hilo_atencion h WHERE h.tarea_id = $1)`,
+            [tienda.tarea_hija_id, id],
+          );
+        }
+        await cliente.query(`DELETE FROM tienda WHERE id = $1 AND tarea_id = $2`, [tienda.id, id]);
+        await cliente.query('COMMIT');
+        quitadas += 1;
+      } catch (error) {
+        await cliente.query('ROLLBACK');
+        throw error;
+      } finally {
+        cliente.release();
+      }
+    }
+    return quitadas;
+  }
+
   async abrirTienda(tareaId: string, tiendaId: string): Promise<string> {
     await vincularHijas(this.conexiones.pg, tareaId);
     const fila = await this.conexiones.pg.query<{ tarea_hija_id: string | null }>(
@@ -719,7 +762,7 @@ export class TareasService {
     return listas.length > 0 ? listas : [PLANTILLA_BASE];
   }
 
-  private async incorporarTiendas(tareaId: string, cot: string): Promise<number> {
+  private async leerTiendas(cot: string): Promise<Map<string, TiendaLeida>> {
     const mensajes = await this.conexiones.pg.query<{ html: string; texto: string }>(
       `SELECT html, texto FROM mensaje_correo
        WHERE asunto ~ ('(^|[^0-9])' || $1 || '([^0-9]|$)') OR texto ~ ('(^|[^0-9])' || $1 || '([^0-9]|$)')
@@ -733,6 +776,16 @@ export class TareasService {
       const lista = delHtml.length > 0 ? delHtml : tiendasDeTexto(mensaje.texto ?? '', plantillas);
       for (const tienda of lista) leidas.set(claveTienda(tienda.cadena, tienda.tienda), tienda);
     }
+    return leidas;
+  }
+
+  private async incorporarTiendas(tareaId: string, cot: string): Promise<number> {
+    const leidas = await this.leerTiendas(cot);
+    await this.guardarTiendas(tareaId, leidas);
+    return leidas.size;
+  }
+
+  private async guardarTiendas(tareaId: string, leidas: Map<string, TiendaLeida>): Promise<void> {
     for (const tienda of leidas.values()) {
       await this.conexiones.pg.query(
         `INSERT INTO tienda (id, tarea_id, clave, orden, cadena, nombre, contacto, celular, entrega_fecha, entrega_hora, status, tamano, direccion, mapa)
@@ -766,7 +819,6 @@ export class TareasService {
       );
     }
     await vincularHijas(this.conexiones.pg, tareaId);
-    return leidas.size;
   }
 
   private async asimilarServicios(tarea: FilaTarea, ordenId: number | null): Promise<void> {

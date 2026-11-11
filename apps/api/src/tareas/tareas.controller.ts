@@ -477,6 +477,15 @@ export class TareasController {
     return ficha;
   }
 
+  @Post('tareas/:id/tiendas/reordenar')
+  async reordenarTiendas(@Headers('authorization') autorizacion: string | undefined, @Param('id') id: string) {
+    await this.exigirSuper(autorizacion);
+    await this.tareas.reordenarTiendas(id);
+    const ficha = await this.tareas.ficha(id);
+    if (!ficha) throw new NotFoundException('No está esa tarea.');
+    return ficha;
+  }
+
   @Post('tareas/:id/tiendas/:tiendaId/abrir')
   async abrirTienda(
     @Headers('authorization') autorizacion: string | undefined,
