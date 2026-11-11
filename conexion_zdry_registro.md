@@ -74,6 +74,7 @@ Si falta un obligatorio, cada ítem de la llamada vuelve `rechazado` con:
 |---|---|---|
 | `telefono` | Sí | Número de destino. Solo se usan los dígitos. Si son 9, se antepone `51`. Tiene que quedar entre 8 y 15 dígitos. |
 | `contacto` | Sí | Número al que esa persona debe llamar si responde. Misma regla de dígitos. |
+| `referencia` | No | Hasta 80 caracteres. La misma regla que en `POST /SGIT/salida`: si ya está en cola responde `en_espera`; si salió hace menos de 3 minutos responde `ya_enviado`. |
 
 SGIT arma el mensaje. Cada dato va en su línea, con un espacio entre grupos:
 

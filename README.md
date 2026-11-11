@@ -42,6 +42,7 @@ SGIT hace cuatro cosas:
 - Las tareas con avance salen del recordatorio horario. Un incidente nuevo siempre se puede registrar.
 - Zona horaria de operación: `America/Lima`. Ventana de consulta automática: 08:00 a 18:00.
 
+sudo systemctl restart sgit-bot
 ## Estructura prevista del repositorio
 
 ```text

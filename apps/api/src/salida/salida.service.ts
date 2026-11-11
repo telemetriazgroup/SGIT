@@ -3,7 +3,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { Conexiones } from '../conexiones';
 import { leerConfiguracion } from '../configuracion';
 import { asuntoRegistro, htmlFichaConductor, leerRegistro, mensajeWhatsappRegistro, textoRegistro } from './ficha-registro';
-import { candidatosTelefono, htmlRegistro, listaDe, momentoCorreo, NOMBRE_REGISTRO_CONDUCTORES, separarCorreos, telefonoSalida, telefonoValido, TOPE_SALIDA } from './reglas';
+import { candidatosTelefono, htmlRegistro, leerReferencia, listaDe, momentoCorreo, MOTIVO_REFERENCIA_COLA, MOTIVO_YA_ENVIADO, NOMBRE_REGISTRO_CONDUCTORES, repetirReferencia, separarCorreos, telefonoSalida, telefonoValido, TOPE_SALIDA } from './reglas';
 
 export type FilaWhatsapp = {
   id: string;
@@ -31,7 +31,7 @@ export type FilaCorreo = {
 
 export type CasillaSalida = { correo: string; conectado: boolean };
 
-export type PiezaWhatsapp = { telefono?: string; mensaje?: string; cuerpo?: string; contacto?: string };
+export type PiezaWhatsapp = { telefono?: string; mensaje?: string; cuerpo?: string; contacto?: string; referencia?: string };
 export type PiezaCorreo = {
   direccion?: string;
   para?: string;
@@ -45,7 +45,7 @@ export type PiezaCorreo = {
   html?: string;
 };
 
-export type ResultadoWhatsapp = { id: string; telefono: string; estado: 'en_cola' | 'en_espera' | 'rechazado'; aviso: string | null; motivo?: string };
+export type ResultadoWhatsapp = { id: string; telefono: string; estado: 'en_cola' | 'en_espera' | 'ya_enviado' | 'rechazado'; aviso: string | null; motivo?: string };
 export type ResultadoCorreo = { id: string; direccion: string; estado: 'en_cola' | 'en_espera' | 'rechazado'; noEnviarAntes: string | null; motivo?: string };
 
 export class SalidaService {
@@ -223,6 +223,7 @@ export class SalidaService {
           telefono: pieza.telefono,
           contacto: pieza.contacto,
           mensaje: mensajeWhatsappRegistro(ficha),
+          referencia: pieza.referencia,
         })),
         correo: correos.map((pieza) => ({
           direccion: pieza.direccion,
@@ -259,16 +260,42 @@ export class SalidaService {
         salida.push({ id: '', telefono, estado: 'rechazado', aviso: null, motivo: 'El mensaje es obligatorio y llega hasta 4000 caracteres.' });
         continue;
       }
-      const puesto = await this.guardarWhatsapp(telefono, mensaje, contacto);
+      const referencia = leerReferencia(pieza.referencia);
+      if (referencia.motivo) {
+        salida.push({ id: '', telefono, estado: 'rechazado', aviso: null, motivo: referencia.motivo });
+        continue;
+      }
+      const puesto = await this.guardarWhatsapp(telefono, mensaje, contacto, referencia.referencia);
       salida.push(puesto);
     }
     return salida;
   }
 
-  private async guardarWhatsapp(telefono: string, mensaje: string, contacto: string): Promise<ResultadoWhatsapp> {
+  private async guardarWhatsapp(telefono: string, mensaje: string, contacto: string, referencia = ''): Promise<ResultadoWhatsapp> {
     const cliente = await this.conexiones.pg.connect();
     try {
       await cliente.query('BEGIN');
+      if (referencia) {
+        const misma = await cliente.query<{ id: string; estado: string; enviado_en: Date | null; salida_id: string | null }>(
+          `SELECT a.id, a.estado, a.enviado_en, s.id AS salida_id
+           FROM aviso a
+           LEFT JOIN salida_whatsapp s ON s.aviso_id = a.id
+           WHERE a.referencia = $1
+           ORDER BY a.creado_en DESC
+           LIMIT 1
+           FOR UPDATE OF a`,
+          [referencia],
+        );
+        const repetido = repetirReferencia(misma.rows[0]?.estado ?? null, misma.rows[0]?.enviado_en ?? null, new Date());
+        if (repetido === 'en_espera') {
+          await cliente.query('COMMIT');
+          return { id: misma.rows[0]?.salida_id ?? '', telefono, estado: 'en_espera', aviso: 'pendiente', motivo: MOTIVO_REFERENCIA_COLA };
+        }
+        if (repetido === 'ya_enviado') {
+          await cliente.query('COMMIT');
+          return { id: misma.rows[0]?.salida_id ?? '', telefono, estado: 'ya_enviado', aviso: 'enviado', motivo: MOTIVO_YA_ENVIADO };
+        }
+      }
       const previo = await cliente.query<{ id: string; aviso: string | null }>(
         `SELECT s.id, a.estado AS aviso
          FROM salida_whatsapp s
@@ -292,9 +319,9 @@ export class SalidaService {
       const id = randomUUID();
       const avisoId = randomUUID();
       await cliente.query(
-        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
-         VALUES ($1, 'salida', NULL, $2, $3, 'pendiente', now())`,
-        [avisoId, telefono, mensaje],
+        `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes, referencia)
+         VALUES ($1, 'salida', NULL, $2, $3, 'pendiente', now(), $4)`,
+        [avisoId, telefono, mensaje, referencia],
       );
       await cliente.query(
         `INSERT INTO salida_whatsapp (id, telefono, cuerpo, contacto, aviso_id) VALUES ($1, $2, $3, $4, $5)`,

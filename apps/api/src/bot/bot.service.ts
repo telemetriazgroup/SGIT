@@ -516,10 +516,12 @@ export class BotService {
         `SELECT id, destino, cuerpo, no_enviar_antes
          FROM aviso
          WHERE estado = 'pendiente'
+           AND no_enviar_antes <= $1
            AND (tomado_en IS NULL OR tomado_en < now() - interval '2 minutes')
          ORDER BY CASE WHEN tipo = 'prueba' THEN 0 ELSE 1 END, no_enviar_antes, creado_en
          LIMIT 1
          FOR UPDATE SKIP LOCKED`,
+        [ahora.toISOString()],
       );
       const fila = pendiente.rows[0];
       if (!fila) {

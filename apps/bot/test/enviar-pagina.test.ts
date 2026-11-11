@@ -51,3 +51,49 @@ test('el chat ya abierto recibe el texto y una imagen sale sin texto', async () 
   assert.equal(enviados[1].contenido, '');
   assert.equal(enviados[1].opciones.media?.filename, 'foto.jpg');
 });
+
+test('si el texto ya quedó en el chat, un fallo posterior cuenta como enviado', async () => {
+  let llamadas = 0;
+  const pagina: Pagina = {
+    require(nombre) {
+      if (nombre !== 'WAWebCollections') throw new Error(`no debía pedir ${nombre}`);
+      return {
+        Chat: {
+          getModelsArray: () => [{
+            id: { _serialized: '51929467505@c.us' },
+            msgs: {
+              getModelsArray: () => [{ id: { fromMe: true }, body: 'Hola, Rafael prueba.', t: Math.floor(Date.now() / 1000) }],
+            },
+          }],
+        },
+      };
+    },
+    WWebJS: {
+      async sendMessage() {
+        llamadas += 1;
+        throw new Error('__name is not defined');
+      },
+    },
+  };
+  const resultado = await conPagina(pagina, () => enviarEnWhatsapp('51929467505', { texto: 'Hola, Rafael prueba.' }));
+  assert.equal(resultado.ok, true);
+  assert.equal(resultado.error, '');
+  assert.equal(llamadas, 1);
+});
+
+test('un fallo sin el texto en el chat no se da por enviado', async () => {
+  const pagina: Pagina = {
+    require(nombre) {
+      if (nombre !== 'WAWebCollections') throw new Error(`no debía pedir ${nombre}`);
+      return { Chat: { getModelsArray: () => [{ id: { _serialized: '51929467505@c.us' }, msgs: { getModelsArray: () => [] } }] } };
+    },
+    WWebJS: {
+      async sendMessage() {
+        throw new Error('WhatsApp rechazó el envío');
+      },
+    },
+  };
+  const resultado = await conPagina(pagina, () => enviarEnWhatsapp('51929467505', { texto: 'hola' }));
+  assert.equal(resultado.ok, false);
+  assert.equal(resultado.error, 'WhatsApp rechazó el envío');
+});

@@ -64,10 +64,40 @@ export const enviarEnWhatsapp = new Function(
       opciones.media = { mimetype: envio.mime, data: envio.data, filename: envio.filename || 'archivo' };
       contenido = '';
     }
+    async function yaSalio(texto) {
+      var buscado = String(texto || '').replace(/\\s+/g, ' ').trim();
+      if (!buscado) return false;
+      var intento;
+      for (intento = 0; intento < 3; intento++) {
+        if (intento > 0) await new Promise(function (resolver) { setTimeout(resolver, 300); });
+        var msgs = [];
+        try {
+          msgs = (chat.msgs && chat.msgs.getModelsArray && chat.msgs.getModelsArray()) || [];
+        } catch (error) {
+          msgs = [];
+        }
+        var desde = Math.max(0, msgs.length - 25);
+        var j;
+        var limite = Date.now() - 3 * 60 * 1000;
+        for (j = msgs.length - 1; j >= desde; j--) {
+          var msg = msgs[j];
+          var cuerpo = '';
+          var mio = false;
+          var cuando = 0;
+          try { cuerpo = String(msg.body || '').replace(/\\s+/g, ' ').trim(); } catch (error) { cuerpo = ''; }
+          try { mio = Boolean((msg.id && msg.id.fromMe) || msg.fromMe); } catch (error) { mio = false; }
+          try { cuando = Number(msg.t || 0) * 1000; } catch (error) { cuando = 0; }
+          if (mio && cuerpo === buscado && (cuando === 0 || cuando >= limite)) return true;
+        }
+      }
+      return false;
+    }
     try {
       var enviado = await paginaWa.WWebJS.sendMessage(chat, contenido, opciones);
-      return { ok: Boolean(enviado), error: enviado ? '' : 'WhatsApp no confirmó el envío.' };
+      if (enviado || await yaSalio(contenido)) return { ok: true, error: '' };
+      return { ok: false, error: 'WhatsApp no confirmó el envío.' };
     } catch (error) {
+      if (await yaSalio(contenido)) return { ok: true, error: '' };
       return { ok: false, error: (error && error.message) || 'WhatsApp rechazó el envío' };
     }
   })();`,

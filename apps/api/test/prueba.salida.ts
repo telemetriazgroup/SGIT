@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { asuntoRegistro, htmlFichaConductor, leerRegistro, mensajeWhatsappRegistro, MOTIVO_FICHA_REGISTRO, textoRegistro } from '../src/salida/ficha-registro';
-import { candidatosTelefono, correoRaw, htmlRegistro, momentoCorreo, MOTIVO_HTML_REGISTRO, NOMBRE_REGISTRO_CONDUCTORES, PAUSA_CORREO_MS, separarCorreos, telefonoSalida, telefonoValido, textoContacto } from '../src/salida/reglas';
+import { candidatosTelefono, correoRaw, htmlRegistro, leerReferencia, momentoCorreo, MOTIVO_HTML_REGISTRO, MOTIVO_REFERENCIA, NOMBRE_REGISTRO_CONDUCTORES, PAUSA_CORREO_MS, repetirReferencia, separarCorreos, telefonoSalida, telefonoValido, textoContacto, VENTANA_YA_ENVIADO_MS } from '../src/salida/reglas';
 
 test('un correo queda 20 segundos después del anterior', () => {
   const ahora = new Date('2026-10-29T14:00:00.000Z');
@@ -152,6 +152,18 @@ test('el correo del registro dibuja la ficha y escapa el html', () => {
   assert.ok(html.length <= 20000);
   assert.ok(texto.length <= 8000);
   assert.equal(htmlRegistro(html).motivo, null);
+});
+
+test('la misma referencia de conductor no se vuelve a encolar recién enviada', () => {
+  const ahora = new Date('2026-11-11T12:00:00-05:00');
+  assert.equal(leerReferencia(' zdry:visita:ZG-1:confirmacion ').referencia, 'zdry:visita:ZG-1:confirmacion');
+  assert.equal(leerReferencia('').referencia, '');
+  assert.equal(leerReferencia('x'.repeat(81)).motivo, MOTIVO_REFERENCIA);
+  assert.equal(repetirReferencia('pendiente', null, ahora), 'en_espera');
+  assert.equal(repetirReferencia('enviado', new Date(ahora.getTime() - 60_000), ahora), 'ya_enviado');
+  assert.equal(repetirReferencia('enviado', new Date(ahora.getTime() - VENTANA_YA_ENVIADO_MS), ahora), null);
+  assert.equal(repetirReferencia('cerrado', ahora, ahora), null);
+  assert.equal(repetirReferencia(null, null, ahora), null);
 });
 
 test('una lista de correos acepta coma, punto y coma y saltos de línea', () => {

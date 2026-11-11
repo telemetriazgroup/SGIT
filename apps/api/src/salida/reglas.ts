@@ -108,3 +108,21 @@ export function listaDe<T>(valor: T | T[] | undefined): T[] {
   if (!valor) return [];
   return Array.isArray(valor) ? valor : [valor];
 }
+
+export const VENTANA_YA_ENVIADO_MS = 3 * 60 * 1000;
+export const MOTIVO_REFERENCIA = 'La referencia llega hasta 80 caracteres.';
+export const MOTIVO_REFERENCIA_COLA = 'Ese envío ya está en la cola.';
+export const MOTIVO_YA_ENVIADO = 'Ese envío ya salió.';
+
+export function leerReferencia(valor: string | undefined): { referencia: string; motivo: string | null } {
+  const referencia = (valor ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!referencia) return { referencia: '', motivo: null };
+  if (referencia.length > 80) return { referencia: '', motivo: MOTIVO_REFERENCIA };
+  return { referencia, motivo: null };
+}
+
+export function repetirReferencia(estado: string | null, enviadoEn: Date | null, ahora: Date): 'en_espera' | 'ya_enviado' | null {
+  if (estado === 'pendiente') return 'en_espera';
+  if (estado === 'enviado' && enviadoEn && ahora.getTime() - new Date(enviadoEn).getTime() < VENTANA_YA_ENVIADO_MS) return 'ya_enviado';
+  return null;
+}

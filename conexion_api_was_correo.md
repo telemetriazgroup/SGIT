@@ -38,6 +38,7 @@ Un ítem inválido no tumba al resto. Ese ítem vuelve con `estado: "rechazado"`
 | `telefono` | Sí | Número de destino. Solo se usan los dígitos. Si son 9, se antepone `51`. Tiene que quedar entre 8 y 15 dígitos. |
 | `mensaje` | Sí | Texto que envía el bot. También se acepta el nombre `cuerpo`. Hasta 4000 caracteres. |
 | `contacto` | Sí | Número al que esa persona debe llamar si responde. Misma regla de dígitos que `telefono`. |
+| `referencia` | No | Hasta 80 caracteres. Si viene, identifica ese envío. ZDRY usa `zdry:visita:{id}:confirmacion` o `zdry:visita:{id}:ubicacion`. |
 
 SGIT guarda el mensaje y lo pone en la cola del bot. El texto no se recorta ni se rechaza por haber mandado uno antes.
 
@@ -193,7 +194,8 @@ curl -sS -X POST "$BASE/salida" \
 | `estado` | Significado |
 |---|---|
 | `en_cola` | Quedó guardado. WhatsApp lo toma el bot. El correo sale cuando llega `noEnviarAntes`, con 20 segundos de separación. |
-| `en_espera` | El destino ya tiene un mensaje que todavía no sale. No se cargó otro. `motivo` lo dice. Cuando el anterior salga, se puede volver a llamar. |
+| `en_espera` | El destino ya tiene un mensaje que todavía no sale, o la misma `referencia` ya está en cola. No se cargó otro. `motivo` lo dice. |
+| `ya_enviado` | La misma `referencia` salió hace menos de 3 minutos. No se cargó otro. |
 | `rechazado` | No se guardó. `motivo` dice por qué. El `id` viene vacío. |
 
 Motivos de rechazo:
@@ -208,6 +210,9 @@ Motivos de rechazo:
 | Más de 20 correos en una lista | `Cada lista admite hasta 20 correos.` |
 | Asunto vacío o de más de 180 caracteres | `El asunto es obligatorio y llega hasta 180 caracteres.` |
 | Cuerpo vacío o de más de 8000 caracteres | `El cuerpo es obligatorio y llega hasta 8000 caracteres.` |
+| `referencia` de más de 80 caracteres | `La referencia llega hasta 80 caracteres.` |
+| La misma `referencia` sigue en cola | `Ese envío ya está en la cola.` |
+| La misma `referencia` salió hace menos de 3 minutos | `Ese envío ya salió.` El `estado` es `ya_enviado`. |
 
 ## Qué no hace esta ruta
 

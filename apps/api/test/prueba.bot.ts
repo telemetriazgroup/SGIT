@@ -196,6 +196,25 @@ test('la consulta pide la acción y guarda la imagen solo si la aceptan', () =>
     );
   }));
 
+test('un aviso que todavía no está en hora deja pasar al que ya puede salir', () =>
+  enSerie(async () => {
+    await bot.publicar('listo', ahora);
+    await pool.query(`UPDATE sesion_bot SET ultimo_envio_en = NULL, fallo_envio = NULL WHERE id = 1`);
+    const tarde = randomUUID();
+    const listo = randomUUID();
+    await pool.query(
+      `INSERT INTO aviso (id, tipo, tarea_id, destino, cuerpo, estado, no_enviar_antes)
+       VALUES ($1, 'prueba', NULL, '51900000071', 'todavía no', 'pendiente', $3),
+              ($2, 'prueba', NULL, '51900000072', 'ya puede', 'pendiente', $4)`,
+      [tarde, listo, new Date(ahora.getTime() + 45_000).toISOString(), ahora.toISOString()],
+    );
+    const tomado = await bot.tomarAviso(ahora);
+    assert.equal(tomado?.id, listo);
+    assert.equal(tomado?.cuerpo, 'ya puede');
+    await pool.query(`DELETE FROM aviso WHERE destino IN ('51900000071', '51900000072')`);
+    await bot.publicar('desconectado', ahora);
+  }));
+
 test('la sesión caída se ve desconectada y un segundo proceso no toma el liderazgo', () =>
   enSerie(async () => {
     await bot.publicar('desconectado', ahora);
