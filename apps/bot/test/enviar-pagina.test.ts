@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { enviarEnWhatsapp } from '../src/enviar-pagina';
+import { enviarEnWhatsapp, sanearMediaWhatsapp } from '../src/enviar-pagina';
 
 type Pagina = {
   require: (nombre: string) => unknown;
@@ -20,7 +20,36 @@ test('el script que entra a WhatsApp no lleva el ayudante de tsx', () => {
   assert.equal(fuente.includes('__name'), false);
   assert.match(fuente, /sendMessage/);
   assert.match(fuente, /waitUntilMsgSent: false/);
+  assert.match(fuente, /__x_id/);
   assert.doesNotMatch(fuente, /: string/);
+});
+
+test('el archivo pierde el id interno que rompe el envío', async () => {
+  const pagina: Pagina & { WWebJS: { processMediaData: () => Promise<{ __x_id?: string; mimetype: string; toJSON: () => { __x_id?: string; mimetype: string } }> } } = {
+    require() {
+      return {};
+    },
+    WWebJS: {
+      async processMediaData() {
+        return {
+          __x_id: 'id-interno-del-archivo',
+          mimetype: 'application/pdf',
+          toJSON() {
+            return { __x_id: 'id-interno-del-archivo', mimetype: 'application/pdf' };
+          },
+        };
+      },
+    },
+  };
+  await conPagina(pagina, async () => {
+    sanearMediaWhatsapp();
+    return undefined;
+  });
+  const data = await pagina.WWebJS.processMediaData();
+  assert.equal(data.__x_id, undefined);
+  assert.equal(data.mimetype, 'application/pdf');
+  assert.equal(data.toJSON().__x_id, undefined);
+  assert.equal(data.toJSON().mimetype, 'application/pdf');
 });
 
 test('sin la página lista el envío explica el corte', async () => {

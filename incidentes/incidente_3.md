@@ -27,12 +27,20 @@ WhatsApp arma el mensaje y después busca su id para esperar el acuse. El id no 
 
 En las fotos el corte se agrava: el envío de la imagen iba con el texto vacío y el cuerpo del aviso salía en un segundo mensaje. Si la imagen fallaba, el segundo mensaje no se intentaba, o el texto salía solo. Como el cuerpo de la imagen iba vacío, el bot no podía reconocer que el archivo ya estaba en el chat y lo daba por no enviado.
 
+## Confirmado a las 11:57
+
+El menú nuevo ya está en el teléfono. Al elegir «1. Ver el PDF de la orden» el bot escribe «Ahí va el PDF de ZGROU/MO/06841» y repite el menú. El archivo no aparece. La impresora sí recibe el PDF, porque ese camino no entra a WhatsApp.
+
+La API sí arma el archivo: esa frase solo se escribe cuando el PDF ya está leído y va junto a la respuesta. El bot intenta mandarlo como documento y, al fallar, manda solo el texto. Por eso se lee que lo envía y el archivo no está.
+
+El corte es de los archivos, no del chat. WhatsApp Web, al preparar una imagen o un PDF, devuelve un modelo con un campo interno `__x_id`. La librería lo mezcla con el mensaje y ese campo pisa el id real. Al crear el mensaje, la página tira `Data passed to getter must include an id property (it's how we memoize) but got undefined`. Un texto no lleva ese modelo, y por eso el menú sí sale. La misma librería lo tiene anotado en el arreglo `delete message.__x_id` (whatsapp-web.js, envío de media, 2026).
+
 ## Qué queda hecho
 
 El PDF que el técnico pide dentro del chat sale en la respuesta a su mensaje, como documento, no como un aviso de la cola. Al confirmar la orden pasa lo mismo: llega el PDF y la pregunta «¿La imprimo?». `si` manda la copia a la impresora. `menu` vuelve al menú del hilo. `0` vuelve al menú general.
 
 Si la orden ya está confirmada, al entrar al hilo el chat dice el número de la orden. El menú de fabricación ya no ofrece pedir insumo ni agregar o modificar. Ofrece ver el PDF, imprimir, el reporte de instalación, volver al hilo o el menú general.
 
-En la cola, el envío ya no espera el acuse (`waitUntilMsgSent: false`). La primera foto o el PDF llevan el texto como pie. Si WhatsApp ya dejó ese pie en el chat y la página tira el error del id, el aviso se da por enviado y no se repite. Las fotos de despacho salen en el mismo mensaje que el texto.
+En la cola, el envío ya no espera el acuse (`waitUntilMsgSent: false`). La primera foto o el PDF llevan el texto como pie. Antes de cada archivo, el bot quita `__x_id` del modelo que devuelve WhatsApp, que es lo que pisaba el id del mensaje. Con eso el PDF pedido en el chat y las fotos de despacho usan el mismo arreglo.
 
 Los avisos que ya se cerraron a las 11:30 no se reintentan. Hay que pedir el PDF otra vez desde el menú de la orden, después de copiar este cambio al servidor y reiniciar la API y `sgit-bot`.

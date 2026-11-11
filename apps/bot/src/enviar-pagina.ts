@@ -1,14 +1,43 @@
 export type EnvioPagina = { texto: string; mime?: string; data?: string; filename?: string };
 export type ResultadoEnvio = { ok: boolean; error: string };
 
+// El modelo de un archivo trae __x_id. Al armar el mensaje, ese campo pisa el
+// id real y WhatsApp tira "Data passed to getter must include an id property".
+// El texto no pasa por ahí. Hay que quitarlo antes de cada envío con archivo.
+const parcheMedia = `
+  var paginaWa = window;
+  if (paginaWa.WWebJS && paginaWa.WWebJS.processMediaData && !paginaWa.WWebJS.processMediaData.__sgit) {
+    var original = paginaWa.WWebJS.processMediaData;
+    var envuelto = async function() {
+      var data = await original.apply(this, arguments);
+      function quitar(obj) {
+        if (!obj || typeof obj !== 'object') return obj;
+        try { delete obj.__x_id; } catch (error) {}
+        return obj;
+      }
+      if (data && typeof data.toJSON === 'function' && !data.toJSON.__sgit) {
+        var previo = data.toJSON.bind(data);
+        var limpio = function() { return quitar(previo()); };
+        limpio.__sgit = true;
+        data.toJSON = limpio;
+      }
+      return quitar(data);
+    };
+    envuelto.__sgit = true;
+    paginaWa.WWebJS.processMediaData = envuelto;
+  }
+`;
+
 // JavaScript plano a propósito. Esta función se copia dentro de la página de
 // WhatsApp. Si se escribe en TypeScript, tsx le inyecta __name y la página
 // corta el envío con "__name is not defined".
+export const sanearMediaWhatsapp = new Function(`${parcheMedia}\nreturn true;`) as () => boolean;
+
 export const enviarEnWhatsapp = new Function(
   'telefono',
   'envio',
   `return (async () => {
-    var paginaWa = window;
+    ${parcheMedia}
     if (!paginaWa.WWebJS || !paginaWa.WWebJS.sendMessage) return { ok: false, error: 'WhatsApp todavía no está listo.' };
     function textoDe(valor) {
       try {

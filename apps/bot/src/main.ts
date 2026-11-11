@@ -4,7 +4,7 @@ import path from 'path';
 import qrcodeTerminal from 'qrcode-terminal';
 import { Client, LocalAuth, MessageMedia } from 'whatsapp-web.js';
 import { crearClienteBot, type CapturaMensaje } from './api';
-import { enviarEnWhatsapp } from './enviar-pagina';
+import { enviarEnWhatsapp, sanearMediaWhatsapp } from './enviar-pagina';
 import { enlazarEstado } from './estado';
 import { cerrarNavegadorDeSesion } from './navegador';
 import { directorioDeEstado, rutaDeSesion } from './rutas';
@@ -382,7 +382,9 @@ async function atender(mensaje: MensajeEntrante): Promise<void> {
   const resultado = await api.entrar(telefono, texto, usados[0] ?? null, usados.slice(1), captura);
   if (resultado.archivo?.contenido) {
     const media = new MessageMedia(resultado.archivo.mime, resultado.archivo.contenido, resultado.archivo.nombre);
-    const opciones = { caption: resultado.respuesta, sendSeen: false };
+    const opciones: { caption: string; sendSeen: false; sendMediaAsDocument?: boolean } = { caption: resultado.respuesta, sendSeen: false };
+    if ((resultado.archivo.mime || '').toLowerCase().includes('pdf')) opciones.sendMediaAsDocument = true;
+    if (cliente.pupPage) await cliente.pupPage.evaluate(sanearMediaWhatsapp).catch(() => undefined);
     try {
       await ultimo.reply(media, ultimo.from, opciones);
       return;
