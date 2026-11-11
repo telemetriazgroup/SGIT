@@ -290,6 +290,18 @@ export function menuOrden(titulo: string, cierre: string): string {
   return [titulo, cierre, '1. Pedir insumo en orden de fabricación', '2. Agregar o modificar insumos, si está en borrador', '3. Confirmar orden de fabricación', '4. Ver PDF de orden de producción', '5. Imprimir PDF de orden de producción', '6. Reporte de instalación', '7. Volver al menú anterior'].filter(Boolean).join('\n');
 }
 
+export function menuOrdenConfirmada(titulo: string, orden: string): string {
+  return [
+    titulo,
+    `Este hilo ya está confirmado con la orden *${orden}*.`,
+    '1. Ver el PDF de la orden',
+    '2. Imprimir el PDF',
+    '3. Reporte de instalación',
+    '4. Volver al menú del hilo',
+    '0. Menú general',
+  ].join('\n');
+}
+
 export function menuInstalacion(titulo: string, modem: string): string {
   return [titulo, modem, '1. Registrar imágenes de la instalación', '2. Agregar comentario', '3. Validar conexión Starcool', '4. Validar conexión Thermoking', '5. Validar conexión Genset', '6. Módulo 4G. IMEI de la instalación', '7. Volver al menú anterior'].filter(Boolean).join('\n');
 }

@@ -58,11 +58,10 @@ export const enviarEnWhatsapp = new Function(
       }
     }
     if (!chat) return { ok: false, error: 'no hay chat para ' + telefono };
-    var opciones = { waitUntilMsgSent: true, linkPreview: false };
-    var contenido = envio.texto;
+    var opciones = { waitUntilMsgSent: false, linkPreview: false };
+    var contenido = envio.texto || '';
     if (envio.data && envio.mime) {
       opciones.media = { mimetype: envio.mime, data: envio.data, filename: envio.filename || 'archivo' };
-      contenido = '';
     }
     async function yaSalio(texto) {
       var buscado = String(texto || '').replace(/\\s+/g, ' ').trim();

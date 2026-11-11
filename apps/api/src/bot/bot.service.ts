@@ -31,6 +31,7 @@ import {
   menuDecision,
   menuInstalacion,
   menuOrden,
+  menuOrdenConfirmada,
   menuGeneral,
   menuSinInstalacion,
   menuValidarInstalacion,
@@ -2241,9 +2242,12 @@ export class BotService {
     const juicio = hiloListo(hilo);
     await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'hilo' });
     const ref = await this.referencia(tareaId);
-    const cierre = juicio.listo
-      ? 'Este hilo ya tiene lo necesario.'
-      : juicio.falta.length ? `Para resolverlo: ${juicio.falta.join('; ')}.` : '';
+    const vista = await new FabricacionServicio(this.conexiones).vista(hiloId);
+    const cierre = vista && !vista.borrador
+      ? `Este hilo ya está confirmado con la orden *${vista.nombre}*.`
+      : juicio.listo
+        ? 'Este hilo ya tiene lo necesario.'
+        : juicio.falta.length ? `Para resolverlo: ${juicio.falta.join('; ')}.` : '';
     const contexto = hilo.contenedor && hilo.maquina
       ? ''
       : hilo.despacho_texto
@@ -2261,13 +2265,14 @@ export class BotService {
     const hiloId = charla.pendiente?.hiloId;
     if (!tareaId || !hiloId) return this.abrirMenu(telefono);
     const zona = charla.pendiente?.zona ?? 'hilo';
-    if (charla.pendiente?.corrige) return this.corregirHilo(telefono, tareaId, hiloId, charla.pendiente.corrige, zona === 'orden' || zona === 'confirmar' || zona === 'instalacion' || zona === 'fotos' || zona === 'comentario' || zona === 'modem' || zona === 'entrega' || zona === 'recepcion' || zona === 'validacion' ? 'hilo' : zona, limpio, archivo, extras);
+    if (charla.pendiente?.corrige) return this.corregirHilo(telefono, tareaId, hiloId, charla.pendiente.corrige, zona === 'orden' || zona === 'confirmar' || zona === 'tras_confirmar' || zona === 'instalacion' || zona === 'fotos' || zona === 'comentario' || zona === 'modem' || zona === 'entrega' || zona === 'recepcion' || zona === 'validacion' ? 'hilo' : zona, limpio, archivo, extras);
     const imagenes = [archivo, ...extras].filter((item): item is ArchivoNota => Boolean(item));
     if (zona === 'fotos') return this.enFotos(telefono, tareaId, hiloId, limpio, imagenes);
     if (zona === 'entrega' || zona === 'recepcion' || zona === 'validacion') return this.enTramiteAlmacen(telefono, tareaId, hiloId, limpio, imagenes, zona);
     if (zona === 'comentario') return this.enComentarioInstalacion(telefono, tareaId, hiloId, limpio);
     if (zona === 'modem') return this.enModem(telefono, tareaId, hiloId, limpio, imagenes);
     if (zona === 'confirmar') return this.enConfirmarOrden(telefono, tareaId, hiloId, limpio);
+    if (zona === 'tras_confirmar') return this.enTrasConfirmar(telefono, tareaId, hiloId, limpio);
     if (zona === 'orden') return this.enOrden(telefono, tareaId, hiloId, limpio);
     if (zona === 'instalacion') return this.enInstalacion(telefono, tareaId, hiloId, limpio);
     if (archivo) return this.dejar(telefono, true, 'Para una foto, entra al área y elige regularizar el contenedor, la máquina, el chip o el módulo 4G.');
@@ -2601,15 +2606,18 @@ export class BotService {
     if (!titulo) return this.abrirHilos(telefono, tareaId);
     const hilos = await listarHilos(this.conexiones.pg, tareaId);
     const hilo = hilos.find((item) => item.id === hiloId);
-    const cierre = hilo && hiloListo(hilo).listo ? 'Este hilo ya tiene lo necesario.' : '';
+    const vista = await new FabricacionServicio(this.conexiones).vista(hiloId);
     await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'orden' });
+    if (vista && !vista.borrador) return this.dejar(telefono, true, menuOrdenConfirmada(titulo, vista.nombre));
+    const cierre = hilo && hiloListo(hilo).listo ? 'Este hilo ya tiene lo necesario.' : '';
     return this.dejar(telefono, true, menuOrden(titulo, cierre));
   }
 
   private async enOrden(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
-    if (/^(7|volver|menu|menú)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
     const servicio = new FabricacionServicio(this.conexiones);
     const vista = await servicio.vista(hiloId);
+    if (vista && !vista.borrador) return this.enOrdenConfirmada(telefono, tareaId, hiloId, limpio);
+    if (/^(7|volver|menu|menú)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
     if (/^1$/.test(limpio)) {
       if (vista) {
         const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
@@ -2641,13 +2649,8 @@ export class BotService {
     }
     if (/^3$/.test(limpio)) return this.ofrecerConfirmacion(telefono, tareaId, hiloId, vista);
     if (/^4$/.test(limpio)) {
-      if (!vista || vista.borrador) {
-        const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
-        return { ...menu, respuesta: `Falta confirmar la orden.\n${menu.respuesta}` };
-      }
-      const reporte = await this.pedirReporte(telefono, hiloId);
       const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
-      return { ...menu, respuesta: `${reporte.respuesta}\n${menu.respuesta}` };
+      return { ...menu, respuesta: `Falta confirmar la orden.\n${menu.respuesta}` };
     }
     if (/^5$/.test(limpio)) return this.imprimirOrden(telefono, tareaId, hiloId);
     if (/^6$/.test(limpio)) {
@@ -2658,6 +2661,26 @@ export class BotService {
       return this.menuReporteInstalacion(telefono, tareaId, hiloId);
     }
     return this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+  }
+
+  private async enOrdenConfirmada(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^0$/.test(limpio)) return this.abrirMenu(telefono);
+    if (/^(4|volver|menu|menú)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
+    if (/^1$/.test(limpio)) return this.mostrarPdfOrden(telefono, tareaId, hiloId);
+    if (/^2$/.test(limpio)) return this.imprimirOrden(telefono, tareaId, hiloId);
+    if (/^3$/.test(limpio)) return this.menuReporteInstalacion(telefono, tareaId, hiloId);
+    return this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+  }
+
+  private async mostrarPdfOrden(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
+    const leido = await new FabricacionServicio(this.conexiones).leerReporte(hiloId);
+    const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+    if (!leido.ok) return { ...menu, respuesta: `${leido.texto}\n${menu.respuesta}` };
+    return {
+      ...menu,
+      respuesta: `Ahí va el PDF de *${leido.orden}*.\n${menu.respuesta}`,
+      archivo: { nombre: leido.nombre, mime: 'application/pdf', contenido: leido.pdf.toString('base64') },
+    };
   }
 
   async anotarCapturaImpresion(telefono: string, captura: CapturaMensaje | null): Promise<void> {
@@ -2721,9 +2744,33 @@ export class BotService {
     const id = await this.idFabricacion(hiloId);
     const servicio = new FabricacionServicio(this.conexiones);
     const confirmado = id ? await servicio.confirmar(id) : 'Esa orden ya no está.';
-    const reporte = /quedó confirmada/i.test(confirmado) ? await servicio.pedirReporte(hiloId) : '';
-    const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
-    return { ...menu, respuesta: [confirmado, reporte, menu.respuesta].filter(Boolean).join('\n') };
+    if (!/quedó confirmada/i.test(confirmado)) {
+      const menu = await this.menuOrdenFabricacion(telefono, tareaId, hiloId);
+      return { ...menu, respuesta: `${confirmado}\n${menu.respuesta}` };
+    }
+    const leido = await servicio.leerReporte(hiloId);
+    await this.guardarCharla(telefono, 'hilo', tareaId, [], { hiloId, zona: 'tras_confirmar' });
+    const pregunta = [
+      confirmado,
+      leido.ok ? `Ahí va el PDF de *${leido.orden}*.` : leido.texto,
+      '¿La imprimo?',
+      'Escribe si para imprimir.',
+      'Escribe menu para volver al menú del hilo.',
+      'Escribe 0 para el menú general.',
+    ].join('\n');
+    return this.dejar(
+      telefono,
+      true,
+      pregunta,
+      leido.ok ? { nombre: leido.nombre, mime: 'application/pdf', contenido: leido.pdf.toString('base64') } : null,
+    );
+  }
+
+  private async enTrasConfirmar(telefono: string, tareaId: string, hiloId: string, limpio: string): Promise<RespuestaBot> {
+    if (/^0$/.test(limpio)) return this.abrirMenu(telefono);
+    if (/^(menu|menú|volver|no)$/i.test(limpio)) return this.menuHilo(telefono, tareaId, hiloId);
+    if (/^(si|sí|imprimir)$/i.test(limpio)) return this.imprimirOrden(telefono, tareaId, hiloId);
+    return this.dejar(telefono, true, 'Escribe si para imprimir.\nEscribe menu para volver al menú del hilo.\nEscribe 0 para el menú general.');
   }
 
   private async menuReporteInstalacion(telefono: string, tareaId: string, hiloId: string): Promise<RespuestaBot> {
@@ -2915,11 +2962,6 @@ export class BotService {
     return { ...menu, respuesta: `${aviso}\n${menu.respuesta}` };
   }
 
-  private async pedirReporte(telefono: string, hiloId: string): Promise<RespuestaBot> {
-    const texto = await new FabricacionServicio(this.conexiones).pedirReporte(hiloId);
-    return this.dejar(telefono, true, texto);
-  }
-
   private async pedirInsumos(telefono: string, hiloId: string): Promise<RespuestaBot> {
     const quien = await this.conexiones.pg.query<{ correo: string; nombre: string }>(`SELECT correo, nombre FROM usuario WHERE telefono = $1`, [telefono]);
     const pedido = await new FabricacionServicio(this.conexiones).pedir(hiloId, telefono, quien.rows[0] ?? { correo: '', nombre: 'Técnico' }, true);
@@ -3063,7 +3105,7 @@ export class BotService {
     const servicio = new FabricacionServicio(this.conexiones);
     if (/^(ok|listo|confirmar|confirmo|si|sí)$/i.test(limpio)) return this.dejar(telefono, true, await servicio.confirmar(fabricacionId));
     if (/^(enlace|link|corregir|modificar)$/i.test(limpio)) return this.dejar(telefono, true, await servicio.reenviar(fabricacionId));
-    if (/^reporte$/i.test(limpio) && hiloId) return this.dejar(telefono, true, await servicio.pedirReporte(hiloId));
+    if (/^reporte$/i.test(limpio) && hiloId && charla.tarea_id) return this.mostrarPdfOrden(telefono, charla.tarea_id, hiloId);
     return this.dejar(telefono, true, 'Escribe ok para confirmar la orden.\nEscribe enlace si quieres modificar los materiales.\nEscribe reporte para pedir el PDF.\nEscribe menu para volver al hilo.');
   }
 

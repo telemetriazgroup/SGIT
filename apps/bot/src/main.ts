@@ -273,10 +273,18 @@ async function enviarPendiente(): Promise<void> {
     if (!aviso) return;
     const imagenes = aviso.imagenes ?? [];
     try {
-      for (const imagen of imagenes) {
-        await enviarEnSesion(aviso.destino, { texto: '', mime: imagen.mime, data: imagen.contenido, filename: imagen.nombre });
+      if (imagenes.length === 0) {
+        await enviarEnSesion(aviso.destino, { texto: aviso.cuerpo });
+      } else {
+        for (const [indice, imagen] of imagenes.entries()) {
+          await enviarEnSesion(aviso.destino, {
+            texto: indice === 0 ? aviso.cuerpo : '',
+            mime: imagen.mime,
+            data: imagen.contenido,
+            filename: imagen.nombre,
+          });
+        }
       }
-      await enviarEnSesion(aviso.destino, { texto: aviso.cuerpo });
     } catch (error) {
       const motivo = detalle(error);
       const cierre = await api.soltarAviso(aviso.id, motivo);
@@ -374,11 +382,18 @@ async function atender(mensaje: MensajeEntrante): Promise<void> {
   const resultado = await api.entrar(telefono, texto, usados[0] ?? null, usados.slice(1), captura);
   if (resultado.archivo?.contenido) {
     const media = new MessageMedia(resultado.archivo.mime, resultado.archivo.contenido, resultado.archivo.nombre);
+    const opciones = { caption: resultado.respuesta, sendSeen: false };
     try {
-      await cliente.sendMessage(ultimo.from, media, { caption: resultado.respuesta, sendSeen: false });
+      await ultimo.reply(media, ultimo.from, opciones);
       return;
     } catch (error) {
-      console.error(`SGIT bot: no pude enviar la imagen guardada. ${detalle(error)}`);
+      console.error(`SGIT bot: no pude adjuntar el archivo a la respuesta. ${detalle(error)}`);
+      try {
+        await cliente.sendMessage(ultimo.from, media, opciones);
+        return;
+      } catch (segundo) {
+        console.error(`SGIT bot: no pude enviar la imagen guardada. ${detalle(segundo)}`);
+      }
     }
   }
   if (resultado.respuesta) await ultimo.reply(resultado.respuesta);

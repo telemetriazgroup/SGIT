@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { atajoDeLista, menuAreaAlmacen, menuAreaDespacho, menuDeHilo, menuInstalacion, menuOrden, menuValidarInstalacion, opcionesCot, preguntaHilosPendientes, textoColaHilos, textoCuentaHilos } from '../src/bot/avisos';
+import { atajoDeLista, menuAreaAlmacen, menuAreaDespacho, menuDeHilo, menuInstalacion, menuOrden, menuOrdenConfirmada, menuValidarInstalacion, opcionesCot, preguntaHilosPendientes, textoColaHilos, textoCuentaHilos } from '../src/bot/avisos';
 
 test('la cotización del admin ya no pide chip ni respuesta de despacho', () => {
   const menu = opcionesCot(true);
@@ -37,6 +37,13 @@ test('la orden de fabricación y la instalación tienen su menú', () => {
   assert.match(orden, /4\. Ver PDF de orden de producción/);
   assert.match(orden, /6\. Reporte de instalación/);
   assert.match(orden, /7\. Volver al menú anterior/);
+  const confirmada = menuOrdenConfirmada('ORDEN', 'ZGROU/MO/06841');
+  assert.match(confirmada, /Este hilo ya está confirmado con la orden \*ZGROU\/MO\/06841\*\./);
+  assert.match(confirmada, /1\. Ver el PDF de la orden/);
+  assert.match(confirmada, /2\. Imprimir el PDF/);
+  assert.doesNotMatch(confirmada, /Pedir insumo/);
+  assert.doesNotMatch(confirmada, /Agregar o modificar/);
+  assert.match(confirmada, /0\. Menú general/);
   const instalacion = menuInstalacion('INSTALACIÓN', 'Módulo 4G validado: *1234*. Con 6 lo cambias.');
   assert.match(instalacion, /1\. Registrar imágenes de la instalación/);
   assert.match(instalacion, /6\. Módulo 4G\. IMEI de la instalación/);
