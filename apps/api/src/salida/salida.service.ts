@@ -305,11 +305,12 @@ export class SalidaService {
          FOR UPDATE OF s`,
         [candidatosTelefono(telefono)],
       );
-      const enCola = previo.rows.find((fila) => fila.aviso === 'pendiente');
-      if (enCola) {
+      const pendientes = previo.rows.filter((fila) => fila.aviso === 'pendiente');
+      const tope = referencia.startsWith('zdry:') ? 2 : 1;
+      if (pendientes.length >= tope) {
         await cliente.query('COMMIT');
         return {
-          id: enCola.id,
+          id: pendientes[0]?.id ?? '',
           telefono,
           estado: 'en_espera',
           aviso: 'pendiente',
@@ -335,6 +336,24 @@ export class SalidaService {
     } finally {
       cliente.release();
     }
+  }
+
+  async estado(referencias: string[]): Promise<Array<{ referencia: string; estado: string; enviadoEn: string | null; motivo: string }>> {
+    const lista = [...new Set(referencias.map((item) => leerReferencia(item).referencia).filter(Boolean))].slice(0, 30);
+    if (!lista.length) return [];
+    const filas = await this.conexiones.pg.query<{ referencia: string; estado: string; enviado_en: Date | null; ultimo_error: string | null }>(
+      `SELECT DISTINCT ON (referencia) referencia, estado, enviado_en, ultimo_error
+       FROM aviso
+       WHERE referencia = ANY($1::text[])
+       ORDER BY referencia, creado_en DESC`,
+      [lista],
+    );
+    return filas.rows.map((fila) => ({
+      referencia: fila.referencia,
+      estado: fila.estado,
+      enviadoEn: fila.enviado_en ? new Date(fila.enviado_en).toISOString() : null,
+      motivo: (fila.ultimo_error ?? '').slice(0, 300),
+    }));
   }
 
   private async encolarCorreos(piezas: PiezaCorreo[], opciones?: { htmlObligatorio?: boolean; remitenteNombre?: string }): Promise<ResultadoCorreo[]> {

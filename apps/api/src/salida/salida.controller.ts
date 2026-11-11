@@ -35,6 +35,16 @@ export class SalidaController {
     return this.salida.registros();
   }
 
+  @Post('salida/estado')
+  async estado(
+    @Headers('authorization') autorizacion: string | undefined,
+    @Headers('x-salida-clave') clave: string | undefined,
+    @Body() cuerpo: { referencias?: string[] },
+  ) {
+    await this.exigir(autorizacion, clave);
+    return { avisos: await this.salida.estado(cuerpo?.referencias ?? []) };
+  }
+
   @Post('salida')
   async cargar(
     @Headers('authorization') autorizacion: string | undefined,
